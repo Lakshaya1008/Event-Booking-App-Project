@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JWT Token Decoder - Event Booking Platform</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .input-section {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+        textarea {
+            width: 100%;
+            height: 120px;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 12px;
+            resize: vertical;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 12px 25px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 10px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            border-left: 4px solid #007bff;
+        }
+        .role-info {
+            background-color: #e8f5e8;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border-left: 4px solid #28a745;
+        }
+        .user-info {
+            background-color: #fff3cd;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border-left: 4px solid #ffc107;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 5px;
+            border-left: 4px solid #dc3545;
+        }
+        .json-container {
+            background-color: #f8f8f8;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 12px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            margin-top: 10px;
+        }
+        .role-badge {
+            display: inline-block;
+            padding: 5px 10px;
+            background-color: #007bff;
+            color: white;
+            border-radius: 15px;
+            font-size: 12px;
+            margin: 2px;
+        }
+        .organizer { background-color: #dc3545; }
+        .attendee { background-color: #28a745; }
+        .staff { background-color: #ffc107; color: black; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎟️ JWT Token Decoder - Event Booking Platform</h1>
+        
+        <div class="input-section">
+            <label for="jwtToken">Paste your JWT Access Token here:</label>
+            <textarea id="jwtToken" placeholder="Paste your access_token here (starts with eyJ...)"></textarea>
+            <button onclick="decodeToken()">🔍 Decode Token & Identify Role</button>
+        </div>
+
+        <div id="result"></div>
+    </div>
+
+    <script>
+        function decodeToken() {
+            const token = document.getElementById('jwtToken').value.trim();
+            const resultDiv = document.getElementById('result');
+            
+            if (!token) {
+                resultDiv.innerHTML = '<div class="error">Please paste a JWT token</div>';
+                return;
+            }
+
+            try {
+                // JWT tokens have 3 parts separated by dots
+                const parts = token.split('.');
+                if (parts.length !== 3) {
+                    throw new Error('Invalid JWT format');
+                }
+
+                // Decode the payload (second part)
+                const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+                
+                // Extract relevant information
+                const username = payload.preferred_username || payload.name || 'Unknown';
+                const email = payload.email || 'Not provided';
+                const roles = payload.realm_access?.roles || [];
+                const sub = payload.sub;
+                const iss = payload.iss;
+                const exp = new Date(payload.exp * 1000);
+                
+                // Determine user role based on username or specific roles
+                let userRole = 'Unknown';
+                let roleClass = '';
+                
+                if (username.toLowerCase().includes('organizer') || username === 'organaizer') {
+                    userRole = 'ORGANIZER';
+                    roleClass = 'organizer';
+                } else if (username.toLowerCase().includes('attendee')) {
+                    userRole = 'ATTENDEE';
+                    roleClass = 'attendee';
+                } else if (username.toLowerCase().includes('staff')) {
+                    userRole = 'STAFF';
+                    roleClass = 'staff';
+                } else {
+                    // Check if specific application roles exist
+                    if (roles.includes('ROLE_ORGANIZER')) {
+                        userRole = 'ORGANIZER';
+                        roleClass = 'organizer';
+                    } else if (roles.includes('ROLE_ATTENDEE')) {
+                        userRole = 'ATTENDEE';
+                        roleClass = 'attendee';
+                    } else if (roles.includes('ROLE_STAFF')) {
+                        userRole = 'STAFF';
+                        roleClass = 'staff';
+                    }
+                }
+
+                let html = `
+                    <div class="result">
+                        <h3>🎯 Token Decoded Successfully!</h3>
+                        
+                        <div class="role-info">
+                            <h4>👤 User Role Identification</h4>
+                            <p><strong>Primary Role:</strong> <span class="role-badge ${roleClass}">${userRole}</span></p>
+                            <p><strong>Username:</strong> ${username}</p>
+                            <p><strong>Email:</strong> ${email}</p>
+                        </div>
+
+                        <div class="user-info">
+                            <h4>🔑 Token Information</h4>
+                            <p><strong>User ID (sub):</strong> ${sub}</p>
+                            <p><strong>Issuer:</strong> ${iss}</p>
+                            <p><strong>Expires:</strong> ${exp.toLocaleString()}</p>
+                        </div>
+
+                        <div>
+                            <h4>🎭 All Keycloak Roles</h4>
+                            <div>
+                                ${roles.map(role => `<span class="role-badge">${role}</span>`).join('')}
+                            </div>
+                        </div>
+
+                        <div>
+                            <h4>📄 Full Token Payload</h4>
+                            <div class="json-container">${JSON.stringify(payload, null, 2)}</div>
+                        </div>
+                    </div>
+                `;
+
+                resultDiv.innerHTML = html;
+                
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="error">Error decoding token: ${error.message}</div>`;
+            }
+        }
+
+        // Auto-fill if there's a token in the page
+        window.onload = function() {
+            // Current token from your Keycloak response
+            const currentToken = "eyJhbGciOiJSUzI1NiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICJJOGcyd3U5ZEJUbTk2VW5NVHV5blpTTDV6SkhyTmJfM2pQeUlpQ0M3R0ZZIn0.eyJleHAiOjE3NTgzOTc3NDcsImlhdCI6MTc1ODM5NzQ0NywianRpIjoib25ydHJvOjA3MTk4NWJkLWQxYzMtYThhNi0wNDkxLWJkYjgwODZhMzdlYSIsImlzcyI6Imh0dHA6Ly9sb2NhbGhvc3Q6OTA5MC9yZWFsbXMvZXZlbnQtdGlja2V0LXBsYXRmb3JtIiwiYXVkIjoiYWNjb3VudCIsInN1YiI6ImExZmM0NTgxLWRhMGUtNDY3ZS1iNDcyLWRlZWVkM2YxMjA3ZSIsInR5cCI6IkJlYXJlciIsImF6cCI6ImV2ZW50LXRpY2tldC1wbGF0Zm9ybS1hcHAiLCJzaWQiOiJhZWExYjEyYS01ZmQwLTRkZWYtYTVkMC05NzA2OGFkZTEzYmIiLCJhY3IiOiIxIiwiYWxsb3dlZC1vcmlnaW5zIjpbImh0dHA6Ly9sb2NhbGhvc3Q6NTE3MyJdLCJyZWFsbV9hY2Nlc3MiOnsicm9sZXMiOlsiZGVmYXVsdC1yb2xlcy1ldmVudC10aWNrZXQtcGxhdGZvcm0iLCJvZmZsaW5lX2FjY2VzcyIsInVtYV9hdXRob3JpemF0aW9uIl19LCJyZXNvdXJjZV9hY2Nlc3MiOnsiYWNjb3VudCI6eyJyb2xlcyI6WyJtYW5hZ2UtYWNjb3VudCIsIm1hbmFnZS1hY2NvdW50LWxpbmtzIiwidmlldy1wcm9maWxlIl19fSwic2NvcGUiOiJvcGVuaWQgZW1haWwgcHJvZmlsZSIsImVtYWlsX3ZlcmlmaWVkIjpmYWxzZSwibmFtZSI6Ik9yZ2FuaXplciBVc2VyIiwicHJlZmVycmVkX3VzZXJuYW1lIjoib3JnYW5haXplciIsImdpdmVuX25hbWUiOiJPcmdhbml6ZXIiLCJmYW1pbHlfbmFtZSI6IlVzZXIiLCJlbWFpbCI6Imxha3NoYXlhamFpbjkzQGdtYWlsLmNvbSJ9.PVd3hdreHBrYGmRn1TFrwQU5hFE5QnLLlT-j7tx-8keIqQVg9Pc-OdnAkFHqB8mtPoWe-03XlBXuIPp-G1r5EJHLi2CMbIsNrX9nFdf_FKVOln_qa-tVpQaPPPnhIy0FZJCw7HGbxJVrLWjeUIxijigOv8Y3tudljt5ateKDNQ6re57EFsJx8EWRRNPxRWaslz7F9yeu7da49FcRoIgYXxeggBHHNzcRzy4HpsjCN9_BkWUGFuLy-9gqbQlS42XZUAINIuGMM0GV3aOZLxWrwvTguG55I2R_4Pgwf5gaHx0otgC0PmkcNTmK71oYkmSwNEyUvuRxd9JWWkwAn9c2lQ";
+
+            if (currentToken) {
+                document.getElementById('jwtToken').value = currentToken;
+                decodeToken();
+
+                // Add the formatted response at the top
+                const resultDiv = document.getElementById('result');
+                const enhancedHeader = `
+                    <div style="background-color: #e8f5e8; padding: 20px; border-radius: 10px; margin-bottom: 20px; border: 2px solid #28a745;">
+                        <h2 style="color: #28a745; margin: 0 0 15px 0;">🎯 Token Role Identification</h2>
+                        <div style="background-color: white; padding: 15px; border-radius: 5px; font-family: monospace; font-size: 14px;">
+                            <strong>Current Token Analysis:</strong><br>
+                            {<br>
+                            &nbsp;&nbsp;"<strong style="color: #dc3545;">role</strong>": "<strong style="color: #dc3545;">ORGANIZER</strong>",<br>
+                            &nbsp;&nbsp;"<strong>username</strong>": "organaizer",<br>
+                            &nbsp;&nbsp;"<strong>name</strong>": "Organizer User",<br>
+                            &nbsp;&nbsp;"<strong>email</strong>": "lakshayajain93@gmail.com",<br>
+                            &nbsp;&nbsp;"<strong>user_id</strong>": "a1fc4581-da0e-467e-b472-deeed3f12071e",<br>
+                            &nbsp;&nbsp;"<strong>access_token</strong>": "eyJhbGciOiJSUzI1NiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICJJOGcyd3U5ZEJUbTk2VW5NVHV5blpTTDV6SkhyTmJfM2pQeUlpQ0M3R0ZZIn0.eyJleHAiOjE3NTgzOTc3NDcsImlhdCI6MTc1ODM5NzQ0NywianRpIjoib25ydHJvOjA3MTk4NWJkLWQxYzMtYThhNi0wNDkxLWJkYjgwODZhMzdlYSIsImlzcyI6Imh0dHA6Ly9sb2NhbGhvc3Q6OTA5MC9yZWFsbXMvZXZlbnQtdGlja2V0LXBsYXRmb3JtIiwiYXVkIjoiYWNjb3VudCIsInN1YiI6ImExZmM0NTgxLWRhMGUtNDY3ZS1iNDcyLWRlZWVkM2YxMjA3ZSIsInR5cCI6IkJlYXJlciIsImF6cCI6ImV2ZW50LXRpY2tldC1wbGF0Zm9ybS1hcHAiLCJzaWQiOiJhZWExYjEyYS01ZmQwLTRkZWYtYTVkMC05NzA2OGFkZTEzYmIiLCJhY3IiOiIxIiwiYWxsb3dlZC1vcmlnaW5zIjpbImh0dHA6Ly9sb2NhbGhvc3Q6NTE3MyJdLCJyZWFsbV9hY2Nlc3MiOnsicm9sZXMiOlsiZGVmYXVsdC1yb2xlcy1ldmVudC10aWNrZXQtcGxhdGZvcm0iLCJvZmZsaW5lX2FjY2VzcyIsInVtYV9hdXRob3JpemF0aW9uIl19LCJyZXNvdXJjZV9hY2Nlc3MiOnsiYWNjb3VudCI6eyJyb2xlcyI6WyJtYW5hZ2UtYWNjb3VudCIsIm1hbmFnZS1hY2NvdW50LWxpbmtzIiwidmlldy1wcm9maWxlIl19fSwic2NvcGUiOiJvcGVuaWQgZW1haWwgcHJvZmlsZSIsImVtYWlsX3ZlcmlmaWVkIjpmYWxzZSwibmFtZSI6Ik9yZ2FuaXplciBVc2VyIiwicHJlZmVycmVkX3VzZXJuYW1lIjoib3JnYW5haXplciIsImdpdmVuX25hbWUiOiJPcmdhbml6ZXIiLCJmYW1pbHlfbmFtZSI6IlVzZXIiLCJlbWFpbCI6Imxha3NoYXlhamFpbjkzQGdtYWlsLmNvbSJ9.PVd3hdreHBrYGmRn1TFrwQU5hFE5QnLLlT-j7tx-8keIqQVg9Pc-OdnAkFHqB8mtPoWe-03XlBXuIPp-G1r5EJHLi2CMbIsNrX9nFdf_FKVOln_qa-tVpQaPPPnhIy0FZJCw7HGbxJVrLWjeUIxijigOv8Y3tudljt5ateKDNQ6re57EFsJx8EWRRNPxRWaslz7F9yeu7da49FcRoIgYXxeggBHHNzcRzy4HpsjCN9_BkWUGFuLy-9gqbQlS42XZUAINIuGMM0GV3aOZLxWrwvTguG55I2R_4Pgwf5gaHx0otgC0PmkcNTmK71oYkmSwNEyUvuRxd9JWWkwAn9c2lQ",<br>
+                            &nbsp;&nbsp;"<strong>expires_in</strong>": 300,<br>
+                            &nbsp;&nbsp;"<strong>token_type</strong>": "Bearer"<br>
+                            }
+                        </div>
+                        <p style="margin-top: 15px; color: #666;"><strong>📝 Usage:</strong> This is an ORGANIZER token - use it to test event creation, ticket type management, and dashboard endpoints.</p>
+                    </div>
+                `;
+                resultDiv.innerHTML = enhancedHeader + resultDiv.innerHTML;
+            }
+        };
+    </script>
+</body>
+</html>
