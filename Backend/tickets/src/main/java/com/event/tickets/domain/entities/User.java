@@ -4,10 +4,13 @@ import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EntityListeners;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.EnumType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.JoinTable;
 import jakarta.persistence.ManyToMany;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 import java.time.LocalDateTime;
@@ -41,6 +44,37 @@ public class User {
 
   @Column(name = "email", nullable = false, unique = true)
   private String email;
+
+  /**
+   * Approval status for admin approval gate.
+   * Default: PENDING for new registrations.
+   * Users must be APPROVED to access protected endpoints.
+   */
+  @Enumerated(EnumType.STRING)
+  @Column(name = "approval_status", nullable = false)
+  private ApprovalStatus approvalStatus = ApprovalStatus.PENDING;
+
+  /**
+   * Timestamp when the user was approved by an admin.
+   * Null if status is PENDING or REJECTED.
+   */
+  @Column(name = "approved_at")
+  private LocalDateTime approvedAt;
+
+  /**
+   * Reference to the admin user who approved this account.
+   * Null if status is PENDING or REJECTED.
+   */
+  @ManyToOne
+  @JoinColumn(name = "approved_by")
+  private User approvedBy;
+
+  /**
+   * Reason provided by admin for rejecting the account.
+   * Only set when status is REJECTED.
+   */
+  @Column(name = "rejection_reason", length = 500)
+  private String rejectionReason;
 
   @OneToMany(mappedBy = "organizer", cascade = CascadeType.ALL)
   private List<Event> organizedEvents = new ArrayList<>();

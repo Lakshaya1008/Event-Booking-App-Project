@@ -7,7 +7,7 @@ services:
       - "5432:5432"
     restart: always
     environment:
-      POSTGRES_PASSWORD: Lakshaya@1008
+      POSTGRES_PASSWORD: postgres123
       POSTGRES_DB: Event_Booking_App_db
 
 

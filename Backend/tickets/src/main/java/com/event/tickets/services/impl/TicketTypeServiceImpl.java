@@ -15,6 +15,7 @@ import com.event.tickets.repositories.EventRepository;
 import com.event.tickets.repositories.TicketRepository;
 import com.event.tickets.repositories.TicketTypeRepository;
 import com.event.tickets.repositories.UserRepository;
+import com.event.tickets.services.AuthorizationService;
 import com.event.tickets.services.QrCodeService;
 import com.event.tickets.services.TicketTypeService;
 import jakarta.transaction.Transactional;
@@ -25,6 +26,12 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+/**
+ * Ticket Type Service Implementation
+ *
+ * Handles ticket type CRUD operations and ticket purchases.
+ * All authorization is delegated to AuthorizationService.
+ */
 @Service
 @RequiredArgsConstructor
 public class TicketTypeServiceImpl implements TicketTypeService {
@@ -34,6 +41,7 @@ public class TicketTypeServiceImpl implements TicketTypeService {
   private final TicketTypeRepository ticketTypeRepository;
   private final TicketRepository ticketRepository;
   private final QrCodeService qrCodeService;
+  private final AuthorizationService authorizationService;
 
   @Override
   @Transactional
@@ -75,10 +83,12 @@ public class TicketTypeServiceImpl implements TicketTypeService {
   @Override
   @Transactional
   public TicketType createTicketType(UUID organizerId, UUID eventId, CreateTicketTypeRequest request) {
-    // Verify organizer owns the event
-    Event event = eventRepository.findByIdAndOrganizerId(eventId, organizerId)
+    // Centralized authorization: verify organizer owns the event
+    authorizationService.requireOrganizerAccess(organizerId, eventId);
+
+    Event event = eventRepository.findById(eventId)
         .orElseThrow(() -> new EventNotFoundException(
-            String.format("Event with ID '%s' not found for organizer '%s'", eventId, organizerId)
+            String.format("Event with ID '%s' not found", eventId)
         ));
 
     TicketType ticketType = new TicketType();
@@ -93,10 +103,12 @@ public class TicketTypeServiceImpl implements TicketTypeService {
 
   @Override
   public List<TicketType> listTicketTypesForEvent(UUID organizerId, UUID eventId) {
-    // Verify organizer owns the event
-    Event event = eventRepository.findByIdAndOrganizerId(eventId, organizerId)
+    // Centralized authorization: verify organizer owns the event
+    authorizationService.requireOrganizerAccess(organizerId, eventId);
+
+    Event event = eventRepository.findById(eventId)
         .orElseThrow(() -> new EventNotFoundException(
-            String.format("Event with ID '%s' not found for organizer '%s'", eventId, organizerId)
+            String.format("Event with ID '%s' not found", eventId)
         ));
 
     return event.getTicketTypes();
@@ -104,11 +116,8 @@ public class TicketTypeServiceImpl implements TicketTypeService {
 
   @Override
   public Optional<TicketType> getTicketType(UUID organizerId, UUID eventId, UUID ticketTypeId) {
-    // Verify organizer owns the event
-    eventRepository.findByIdAndOrganizerId(eventId, organizerId)
-        .orElseThrow(() -> new EventNotFoundException(
-            String.format("Event with ID '%s' not found for organizer '%s'", eventId, organizerId)
-        ));
+    // Centralized authorization: verify organizer owns the event
+    authorizationService.requireOrganizerAccess(organizerId, eventId);
 
     return ticketTypeRepository.findByIdAndEventId(ticketTypeId, eventId);
   }
@@ -116,11 +125,8 @@ public class TicketTypeServiceImpl implements TicketTypeService {
   @Override
   @Transactional
   public TicketType updateTicketType(UUID organizerId, UUID eventId, UUID ticketTypeId, UpdateTicketTypeRequest request) {
-    // Verify organizer owns the event
-    eventRepository.findByIdAndOrganizerId(eventId, organizerId)
-        .orElseThrow(() -> new EventNotFoundException(
-            String.format("Event with ID '%s' not found for organizer '%s'", eventId, organizerId)
-        ));
+    // Centralized authorization: verify organizer owns the event
+    authorizationService.requireOrganizerAccess(organizerId, eventId);
 
     TicketType ticketType = ticketTypeRepository.findByIdAndEventId(ticketTypeId, eventId)
         .orElseThrow(() -> new TicketTypeNotFoundException(
@@ -138,11 +144,8 @@ public class TicketTypeServiceImpl implements TicketTypeService {
   @Override
   @Transactional
   public void deleteTicketType(UUID organizerId, UUID eventId, UUID ticketTypeId) {
-    // Verify organizer owns the event
-    eventRepository.findByIdAndOrganizerId(eventId, organizerId)
-        .orElseThrow(() -> new EventNotFoundException(
-            String.format("Event with ID '%s' not found for organizer '%s'", eventId, organizerId)
-        ));
+    // Centralized authorization: verify organizer owns the event
+    authorizationService.requireOrganizerAccess(organizerId, eventId);
 
     TicketType ticketType = ticketTypeRepository.findByIdAndEventId(ticketTypeId, eventId)
         .orElseThrow(() -> new TicketTypeNotFoundException(

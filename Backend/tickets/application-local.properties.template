@@ -1,0 +1,38 @@
+# =========================================================================
+# APPLICATION-LOCAL.PROPERTIES TEMPLATE
+# =========================================================================
+#
+# INSTRUCTIONS:
+# 1. Copy this file to: application-local.properties
+# 2. Fill in your ACTUAL passwords and secrets
+# 3. application-local.properties is in .gitignore (NEVER commit it to git)
+#
+# This file is used for local development only.
+# For production, use environment variables (see application-prod.properties)
+# =========================================================================
+
+# ===============================
+# Database Configuration (Local)
+# ===============================
+# Your local PostgreSQL credentials
+spring.datasource.url=jdbc:postgresql://localhost:5432/Event_Booking_App_db
+spring.datasource.username=postgres
+spring.datasource.password=YOUR_ACTUAL_POSTGRES_PASSWORD_HERE
+
+# ===============================
+# Keycloak Admin API Configuration (Local)
+# ===============================
+# Your local Keycloak admin credentials
+keycloak.admin.server-url=http://localhost:9090
+keycloak.admin.realm=event-ticket-platform
+keycloak.admin.client-id=event-ticket-platform-app
+keycloak.admin.client-secret=YOUR_ACTUAL_KEYCLOAK_CLIENT_SECRET_HERE
+keycloak.admin.username=admin
+keycloak.admin.password=YOUR_ACTUAL_KEYCLOAK_ADMIN_PASSWORD_HERE
+
+# ===============================
+# Optional: Override other settings
+# ===============================
+# Add any other local overrides here
+# spring.jpa.show-sql=true
+# logging.level.com.event.tickets=DEBUG

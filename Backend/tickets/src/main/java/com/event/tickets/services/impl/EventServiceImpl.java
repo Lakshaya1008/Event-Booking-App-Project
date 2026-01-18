@@ -14,6 +14,7 @@ import com.event.tickets.exceptions.TicketTypeNotFoundException;
 import com.event.tickets.exceptions.UserNotFoundException;
 import com.event.tickets.repositories.EventRepository;
 import com.event.tickets.repositories.UserRepository;
+import com.event.tickets.services.AuthorizationService;
 import com.event.tickets.services.EventService;
 import jakarta.transaction.Transactional;
 import java.util.ArrayList;
@@ -31,12 +32,19 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 
+/**
+ * Event Service Implementation
+ *
+ * Handles event CRUD operations and reporting.
+ * All authorization is delegated to AuthorizationService.
+ */
 @Service
 @RequiredArgsConstructor
 public class EventServiceImpl implements EventService {
 
   private final UserRepository userRepository;
   private final EventRepository eventRepository;
+  private final AuthorizationService authorizationService;
 
   @Override
   @Transactional
@@ -79,7 +87,10 @@ public class EventServiceImpl implements EventService {
 
   @Override
   public Optional<Event> getEventForOrganizer(UUID organizerId, UUID id) {
-    return eventRepository.findByIdAndOrganizerId(id, organizerId);
+    // Centralized authorization: verify organizer owns the event
+    authorizationService.requireOrganizerAccess(organizerId, id);
+
+    return eventRepository.findById(id);
   }
 
   @Override
@@ -93,8 +104,10 @@ public class EventServiceImpl implements EventService {
       throw new EventUpdateException("Cannot update the ID of an event");
     }
 
-    Event existingEvent = eventRepository
-        .findByIdAndOrganizerId(id, organizerId)
+    // Centralized authorization: verify organizer owns the event
+    authorizationService.requireOrganizerAccess(organizerId, id);
+
+    Event existingEvent = eventRepository.findById(id)
         .orElseThrow(() -> new EventNotFoundException(
             String.format("Event with ID '%s' does not exist", id))
         );
@@ -151,7 +164,10 @@ public class EventServiceImpl implements EventService {
   @Override
   @Transactional
   public void deleteEventForOrganizer(UUID organizerId, UUID id) {
-    getEventForOrganizer(organizerId, id).ifPresent(eventRepository::delete);
+    // Centralized authorization: verify organizer owns the event
+    authorizationService.requireOrganizerAccess(organizerId, id);
+
+    eventRepository.findById(id).ifPresent(eventRepository::delete);
   }
 
   @Override
@@ -172,9 +188,12 @@ public class EventServiceImpl implements EventService {
   // Sales dashboard operations
   @Override
   public Map<String, Object> getSalesDashboard(UUID organizerId, UUID eventId) {
-    Event event = getEventForOrganizer(organizerId, eventId)
+    // Centralized authorization: verify organizer owns the event
+    authorizationService.requireOrganizerAccess(organizerId, eventId);
+
+    Event event = eventRepository.findById(eventId)
         .orElseThrow(() -> new EventNotFoundException(
-            String.format("Event with ID '%s' not found for organizer '%s'", eventId, organizerId)
+            String.format("Event with ID '%s' not found", eventId)
         ));
 
     Map<String, Object> dashboard = new HashMap<>();
@@ -213,9 +232,12 @@ public class EventServiceImpl implements EventService {
 
   @Override
   public Map<String, Object> getAttendeesReport(UUID organizerId, UUID eventId) {
-    Event event = getEventForOrganizer(organizerId, eventId)
+    // Centralized authorization: verify organizer owns the event
+    authorizationService.requireOrganizerAccess(organizerId, eventId);
+
+    Event event = eventRepository.findById(eventId)
         .orElseThrow(() -> new EventNotFoundException(
-            String.format("Event with ID '%s' not found for organizer '%s'", eventId, organizerId)
+            String.format("Event with ID '%s' not found", eventId)
         ));
 
     Map<String, Object> report = new HashMap<>();

@@ -31,3 +31,19 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Sensitive Configuration Files ###
+# Local configuration with real passwords (never commit)
+application-local.properties
+**/application-local.properties
+**/application-local.yml
+
+# Environment-specific files with secrets
+.env
+.env.local
+.env.*.local
+
+# JaCoCo coverage reports (optional - can be large)
+jacoco.exec
+**/jacoco.exec
+

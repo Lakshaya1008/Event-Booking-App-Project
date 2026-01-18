@@ -7,10 +7,10 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
 public interface TicketValidationService {
-  TicketValidation validateTicketByQrCode(UUID qrCodeId);
-  TicketValidation validateTicketManually(UUID ticketId);
+  TicketValidation validateTicketByQrCode(UUID userId, UUID qrCodeId);
+  TicketValidation validateTicketManually(UUID userId, UUID ticketId);
 
-  // Staff listing operations
-  Page<TicketValidation> listValidationsForEvent(UUID eventId, Pageable pageable);
-  List<TicketValidation> getValidationsByTicket(UUID ticketId);
+  // Staff listing operations - now with authorization
+  Page<TicketValidation> listValidationsForEvent(UUID userId, UUID eventId, Pageable pageable);
+  List<TicketValidation> getValidationsByTicket(UUID userId, UUID ticketId);
 }

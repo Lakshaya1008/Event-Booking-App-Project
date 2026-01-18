@@ -1,6 +1,7 @@
 package com.event.tickets.config;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
@@ -27,9 +28,22 @@ public class SecurityConfig {
 
     private final CustomSecurityErrorHandler customSecurityErrorHandler;
 
+    @Value("${cors.allowed-origins:http://localhost:3000,http://localhost:5173}")
+    private String allowedOrigins;
+
+    @Value("${cors.allowed-methods:GET,POST,PUT,DELETE,OPTIONS}")
+    private String allowedMethods;
+
+    @Value("${cors.allow-credentials:true}")
+    private boolean allowCredentials;
+
     /**
      * Primary security filter chain, which disables CSRF and enables stateless sessions.
      * It also configures OAuth2 resource server with JWT authentication and custom error handling.
+     *
+     * Public endpoints:
+     * - /actuator/health/** - Health check endpoints
+     * - /api/v1/auth/register - Public registration endpoint (invite-code based)
      */
     @Bean
     @Primary
@@ -38,7 +52,9 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/actuator/**").permitAll()
+                        .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info", "/actuator/metrics", "/actuator/metrics/**").permitAll()
+                        .requestMatchers("/actuator/**").denyAll()
+                        .requestMatchers("/api/v1/auth/register").permitAll() // Public registration endpoint
                         .anyRequest().authenticated()
                 )
                 .oauth2ResourceServer(oauth2 -> oauth2
@@ -67,22 +83,35 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(List.of(
-            "http://localhost:3000",
-            "http://127.0.0.1:5500",
-            "http://localhost:5500",
-            "http://localhost:8080",
-            "http://localhost:5173"
-        ));
-        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+
+        // Parse allowed origins from comma-separated string
+        configuration.setAllowedOrigins(Arrays.asList(allowedOrigins.split(",")));
+
+        // Parse allowed methods from comma-separated string
+        configuration.setAllowedMethods(Arrays.asList(allowedMethods.split(",")));
+
         configuration.setAllowedHeaders(List.of("*"));
-        configuration.setAllowCredentials(true);
-        
+        configuration.setAllowCredentials(allowCredentials);
+        configuration.setMaxAge(3600L); // Cache preflight requests for 1 hour
+
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);
         return source;
     }
 
+    /**
+     * Extracts authorities from JWT claims and adds ROLE_ prefix for Spring Security.
+     *
+     * Spring Security's hasRole() method automatically prepends "ROLE_" to the role name,
+     * so we need to add the prefix here to match. For example:
+     * - JWT contains: "ORGANIZER"
+     * - We create: "ROLE_ORGANIZER"
+     * - @PreAuthorize("hasRole('ORGANIZER')") checks for: "ROLE_ORGANIZER" ✓
+     *
+     * Roles are extracted from:
+     * 1. realm_access.roles (realm-level roles)
+     * 2. resource_access.event-ticket-platform-app.roles (client-specific roles)
+     */
     private Collection<GrantedAuthority> extractAuthorities(Jwt jwt) {
         Collection<GrantedAuthority> authorities = new ArrayList<>();
 
@@ -90,7 +119,8 @@ public class SecurityConfig {
         Map<String, Object> realmAccess = jwt.getClaim("realm_access");
         if (realmAccess != null && realmAccess.get("roles") instanceof Collection<?>) {
             for (Object role : (Collection<?>) realmAccess.get("roles")) {
-                authorities.add(new SimpleGrantedAuthority(role.toString()));
+                // Add ROLE_ prefix for Spring Security compatibility
+                authorities.add(new SimpleGrantedAuthority("ROLE_" + role.toString()));
             }
         }
 
@@ -100,7 +130,8 @@ public class SecurityConfig {
             Object clientRoles = clientAccess.get("roles");
             if (clientRoles instanceof Collection<?>) {
                 for (Object role : (Collection<?>) clientRoles) {
-                    authorities.add(new SimpleGrantedAuthority(role.toString()));
+                    // Add ROLE_ prefix for Spring Security compatibility
+                    authorities.add(new SimpleGrantedAuthority("ROLE_" + role.toString()));
                 }
             }
         }

@@ -13,13 +13,17 @@ import com.event.tickets.domain.dtos.UpdateEventResponseDto;
 import com.event.tickets.domain.entities.Event;
 import com.event.tickets.mappers.EventMapper;
 import com.event.tickets.services.EventService;
+import com.event.tickets.services.ExportService;
 import jakarta.validation.Valid;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -33,13 +37,27 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+/**
+ * Event Controller
+ *
+ * Handles event CRUD operations and report exports.
+ *
+ * SALES REPORT EXPORT (READ-ONLY):
+ * - ORGANIZER only (must own event)
+ * - ADMIN: NO bypass access
+ * - ATTENDEE/STAFF: NO access
+ * - Reuses EventService.getSalesDashboard() for data consistency
+ * - IDEMPOTENT: Same content for same event state
+ */
 @RestController
 @RequestMapping(path = "/api/v1/events")
 @RequiredArgsConstructor
+@Slf4j
 public class EventController {
 
   private final EventMapper eventMapper;
   private final EventService eventService;
+  private final ExportService exportService;
 
   @PostMapping
   @PreAuthorize("hasRole('ORGANIZER')")
@@ -128,5 +146,67 @@ public class EventController {
     UUID organizerId = parseUserId(jwt);
     Map<String, Object> report = eventService.getAttendeesReport(organizerId, eventId);
     return ResponseEntity.ok(report);
+  }
+
+  /**
+   * EXPORT SALES REPORT (Excel .xlsx)
+   *
+   * Downloads complete sales report as Excel spreadsheet.
+   * Content-Disposition: attachment (forces download)
+   * Filename: <event-name>_sales_report_<yyyyMMdd_HHmmss>.xlsx
+   *
+   * DATA SOURCE:
+   * - Reuses EventService.getSalesDashboard() for consistency
+   * - NO duplicate queries or parallel business logic
+   *
+   * IDEMPOTENT: Safe to download multiple times, no state change.
+   * AUDIT: Logs SALES_REPORT_EXPORTED action.
+   *
+   * ACCESS CONTROL:
+   * - ORGANIZER: Must own the event (checked in ExportService)
+   * - ADMIN: NO bypass access
+   * - ATTENDEE/STAFF: NO access
+   */
+  @GetMapping("/{eventId}/sales-report.xlsx")
+  @PreAuthorize("hasRole('ORGANIZER')")
+  public ResponseEntity<byte[]> exportSalesReportExcel(
+      @AuthenticationPrincipal Jwt jwt,
+      @PathVariable UUID eventId) {
+
+    UUID organizerId = parseUserId(jwt);
+    log.info("Sales report Excel export requested: organizerId={}, eventId={}",
+        organizerId, eventId);
+
+    // Generate Excel (authorization checked in service layer)
+    byte[] excelBytes = exportService.generateSalesReportExcel(organizerId, eventId);
+
+    // Get event name for filename (already authorized, safe to fetch)
+    String filename = "sales_report.xlsx"; // Fallback
+    try {
+      var event = eventService.getEventForOrganizer(organizerId, eventId);
+      if (event.isPresent()) {
+        filename = exportService.generateSalesReportFilename(event.get().getName());
+      }
+    } catch (Exception ex) {
+      log.warn("Failed to generate custom filename for eventId={}", eventId, ex);
+    }
+
+    HttpHeaders headers = new HttpHeaders();
+    headers.setContentType(MediaType.parseMediaType(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    ));
+    headers.setContentLength(excelBytes.length);
+    headers.setContentDisposition(
+        org.springframework.http.ContentDisposition.attachment()
+            .filename(filename)
+            .build()
+    );
+
+    log.info("Sales report Excel export completed: eventId={}, size={} bytes, filename={}",
+        eventId, excelBytes.length, filename);
+
+    return ResponseEntity.ok()
+        .headers(headers)
+        .body(excelBytes);
   }
 }

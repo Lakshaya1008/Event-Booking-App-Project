@@ -1,0 +1,77 @@
+package com.event.tickets.services;
+
+import com.event.tickets.domain.dtos.StaffMemberDto;
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * Event Staff Management Service
+ *
+ * Manages event-scoped staff assignments.
+ *
+ * Business Rules:
+ * - Only event organizers can manage staff for their events
+ * - STAFF role in Keycloak is prerequisite (assigned via ADMIN)
+ * - Event-staff relationship persisted in database
+ * - STAFF role alone provides no access without event assignment
+ *
+ * Authorization:
+ * - Enforced via AuthorizationService (organizer ownership)
+ * - No direct Keycloak calls from organizers
+ * - Database is source of truth for event-staff assignments
+ */
+public interface EventStaffService {
+
+  /**
+   * Assigns a staff member to an event.
+   *
+   * Requirements:
+   * - User must have STAFF role in Keycloak
+   * - Organizer must own the event
+   * - Creates entry in user_staffing_events table
+   *
+   * @param organizerId The ID of the organizer (for authorization)
+   * @param eventId The ID of the event
+   * @param userId The ID of the user to assign as staff
+   * @throws org.springframework.security.access.AccessDeniedException if not organizer
+   * @throws com.event.tickets.exceptions.EventNotFoundException if event doesn't exist
+   * @throws com.event.tickets.exceptions.UserNotFoundException if user doesn't exist
+   * @throws IllegalStateException if user already assigned or doesn't have STAFF role
+   */
+  void assignStaffToEvent(UUID organizerId, UUID eventId, UUID userId);
+
+  /**
+   * Removes a staff member from an event.
+   *
+   * Requirements:
+   * - Organizer must own the event
+   * - Removes entry from user_staffing_events table
+   *
+   * @param organizerId The ID of the organizer (for authorization)
+   * @param eventId The ID of the event
+   * @param userId The ID of the staff member to remove
+   * @throws org.springframework.security.access.AccessDeniedException if not organizer
+   * @throws com.event.tickets.exceptions.EventNotFoundException if event doesn't exist
+   */
+  void removeStaffFromEvent(UUID organizerId, UUID eventId, UUID userId);
+
+  /**
+   * Lists all staff members assigned to an event.
+   *
+   * @param organizerId The ID of the organizer (for authorization)
+   * @param eventId The ID of the event
+   * @return List of staff members assigned to the event
+   * @throws org.springframework.security.access.AccessDeniedException if not organizer
+   * @throws com.event.tickets.exceptions.EventNotFoundException if event doesn't exist
+   */
+  List<StaffMemberDto> listEventStaff(UUID organizerId, UUID eventId);
+
+  /**
+   * Checks if a user is assigned as staff to an event.
+   *
+   * @param eventId The ID of the event
+   * @param userId The ID of the user to check
+   * @return true if user is assigned as staff, false otherwise
+   */
+  boolean isStaffAssignedToEvent(UUID eventId, UUID userId);
+}

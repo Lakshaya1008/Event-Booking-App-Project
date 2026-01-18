@@ -1,5 +1,7 @@
 package com.event.tickets.controllers;
 
+import static com.event.tickets.util.JwtUtil.parseUserId;
+
 import com.event.tickets.domain.dtos.TicketValidationRequestDto;
 import com.event.tickets.domain.dtos.TicketValidationResponseDto;
 import com.event.tickets.domain.entities.TicketValidation;
@@ -13,6 +15,8 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -31,15 +35,19 @@ public class TicketValidationController {
   @PostMapping
   @PreAuthorize("hasRole('STAFF') or hasRole('ORGANIZER')")
   public ResponseEntity<TicketValidationResponseDto> validateTicket(
+      @AuthenticationPrincipal Jwt jwt,
       @RequestBody TicketValidationRequestDto ticketValidationRequestDto
   ){
+    UUID userId = parseUserId(jwt);
     TicketValidationMethod method = ticketValidationRequestDto.getMethod();
     TicketValidation ticketValidation;
     if(TicketValidationMethod.MANUAL.equals(method)) {
       ticketValidation = ticketValidationService.validateTicketManually(
+          userId,
           ticketValidationRequestDto.getId());
     } else {
       ticketValidation = ticketValidationService.validateTicketByQrCode(
+          userId,
           ticketValidationRequestDto.getId()
       );
     }
@@ -52,9 +60,11 @@ public class TicketValidationController {
   @GetMapping("/events/{eventId}")
   @PreAuthorize("hasRole('STAFF') or hasRole('ORGANIZER')")
   public ResponseEntity<Page<TicketValidationResponseDto>> listValidationsForEvent(
+      @AuthenticationPrincipal Jwt jwt,
       @PathVariable UUID eventId,
       Pageable pageable) {
-    Page<TicketValidation> validations = ticketValidationService.listValidationsForEvent(eventId, pageable);
+    UUID userId = parseUserId(jwt);
+    Page<TicketValidation> validations = ticketValidationService.listValidationsForEvent(userId, eventId, pageable);
     Page<TicketValidationResponseDto> responseDtos = validations.map(ticketValidationMapper::toTicketValidationResponseDto);
     return ResponseEntity.ok(responseDtos);
   }
@@ -62,8 +72,10 @@ public class TicketValidationController {
   @GetMapping("/tickets/{ticketId}")
   @PreAuthorize("hasRole('STAFF') or hasRole('ORGANIZER')")
   public ResponseEntity<List<TicketValidationResponseDto>> getValidationsByTicket(
+      @AuthenticationPrincipal Jwt jwt,
       @PathVariable UUID ticketId) {
-    List<TicketValidation> validations = ticketValidationService.getValidationsByTicket(ticketId);
+    UUID userId = parseUserId(jwt);
+    List<TicketValidation> validations = ticketValidationService.getValidationsByTicket(userId, ticketId);
     List<TicketValidationResponseDto> responseDtos = validations.stream()
         .map(ticketValidationMapper::toTicketValidationResponseDto)
         .toList();

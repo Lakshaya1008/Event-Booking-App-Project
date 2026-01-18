@@ -3,6 +3,9 @@ package com.event.tickets.controllers;
 import com.event.tickets.domain.dtos.ErrorDto;
 import com.event.tickets.exceptions.EventNotFoundException;
 import com.event.tickets.exceptions.EventUpdateException;
+import com.event.tickets.exceptions.InvalidInviteCodeException;
+import com.event.tickets.exceptions.InviteCodeNotFoundException;
+import com.event.tickets.exceptions.KeycloakOperationException;
 import com.event.tickets.exceptions.QrCodeGenerationException;
 import com.event.tickets.exceptions.QrCodeNotFoundException;
 import com.event.tickets.exceptions.TicketNotFoundException;
@@ -15,6 +18,7 @@ import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -32,6 +36,9 @@ import org.springframework.web.servlet.NoHandlerFoundException;
 @RestControllerAdvice
 @Slf4j
 public class GlobalExceptionHandler {
+
+  @Value("${spring.profiles.active:dev}")
+  private String activeProfile;
 
   // ============= 400 BAD REQUEST =============
 
@@ -80,14 +87,15 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler({TicketsSoldOutException.class, EventUpdateException.class,
                     TicketNotFoundException.class, TicketTypeNotFoundException.class,
-                    EventNotFoundException.class, UserNotFoundException.class})
+                    EventNotFoundException.class, UserNotFoundException.class,
+                    InviteCodeNotFoundException.class, InvalidInviteCodeException.class})
   public ResponseEntity<ErrorDto> handleBusinessLogicExceptions(
       Exception ex, HttpServletRequest request) {
     log.error("Business logic error", ex);
 
     ErrorDto errorDto = new ErrorDto();
     errorDto.setError("Business Logic Error");
-    errorDto.setMessage(ex.getMessage());
+    errorDto.setMessage(sanitizeErrorMessage(ex.getMessage()));
     errorDto.setStatusCode(400);
     errorDto.setStatusDescription("BAD REQUEST - Business rule violation");
     errorDto.setTimestamp(LocalDateTime.now().toString());
@@ -186,13 +194,14 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(AccessDeniedException.class)
   public ResponseEntity<ErrorDto> handleAccessDeniedException(
       AccessDeniedException ex, HttpServletRequest request) {
-    log.error("Access denied", ex);
+    log.error("Access denied: {}", ex.getMessage());
 
     ErrorDto errorDto = new ErrorDto();
     errorDto.setError("Access Denied");
-    errorDto.setMessage("Insufficient permissions for this operation");
+    // Use the detailed message from centralized authorization service
+    errorDto.setMessage(ex.getMessage());
     errorDto.setStatusCode(403);
-    errorDto.setStatusDescription("FORBIDDEN - Insufficient permissions");
+    errorDto.setStatusDescription("FORBIDDEN - Authorization Failed");
     errorDto.setTimestamp(LocalDateTime.now().toString());
     errorDto.setPath(request.getRequestURI());
 
@@ -200,24 +209,25 @@ public class GlobalExceptionHandler {
     String endpointAnalysis = analyzeEndpointError(request.getRequestURI(), 403, "Access denied");
 
     errorDto.setPossibleCauses(Arrays.asList(
+        "CLIENT ISSUE: User is not the organizer of this event",
+        "CLIENT ISSUE: Staff member is not assigned to this event",
         "CLIENT ISSUE: User doesn't have required role (ORGANIZER, ATTENDEE, or STAFF)",
-        "CLIENT ISSUE: Token is valid but lacks necessary permissions",
         "CLIENT ISSUE: Trying to access another user's resources",
-        "SERVER ISSUE: Role mapping not configured correctly in Keycloak",
-        "CLIENT ISSUE: Token missing required scopes or claims",
+        "SERVER ISSUE: Event-staff relationship not properly configured",
         "ENDPOINT ANALYSIS: " + endpointAnalysis
     ));
     errorDto.setSolutions(Arrays.asList(
+        "Verify you are the organizer of this event",
+        "Contact event organizer to be assigned as staff",
         "Check user has correct role in Keycloak (ORGANIZER/ATTENDEE/STAFF)",
-        "Verify role mapping is configured in Keycloak client",
-        "Ensure you're accessing your own resources",
-        "Contact admin to assign proper roles",
-        "Get new token with correct scopes",
-        "Check endpoint documentation for required roles"
+        "Ensure you're accessing your own resources only",
+        "Get new token if roles were recently updated",
+        "Check endpoint documentation for required permissions"
     ));
 
     return new ResponseEntity<>(errorDto, HttpStatus.FORBIDDEN);
   }
+
 
   // ============= 404 NOT FOUND =============
 
@@ -296,14 +306,14 @@ public class GlobalExceptionHandler {
   // ============= 500 INTERNAL SERVER ERROR =============
 
   @ExceptionHandler({QrCodeGenerationException.class, QrCodeNotFoundException.class,
-                    DataIntegrityViolationException.class})
+                    DataIntegrityViolationException.class, KeycloakOperationException.class})
   public ResponseEntity<ErrorDto> handleInternalServerError(
       Exception ex, HttpServletRequest request) {
     log.error("Internal server error", ex);
 
     ErrorDto errorDto = new ErrorDto();
     errorDto.setError("Internal Server Error");
-    errorDto.setMessage("An unexpected error occurred on the server");
+    errorDto.setMessage(ex.getMessage());
     errorDto.setStatusCode(500);
     errorDto.setStatusDescription("INTERNAL SERVER ERROR - Server-side issue");
     errorDto.setTimestamp(LocalDateTime.now().toString());
@@ -315,6 +325,8 @@ public class GlobalExceptionHandler {
     errorDto.setPossibleCauses(Arrays.asList(
         "SERVER ISSUE: Database connection issues",
         "SERVER ISSUE: QR code generation service failure",
+        "SERVER ISSUE: Keycloak Admin API connection failed",
+        "SERVER ISSUE: Keycloak Admin API authentication failed",
         "SERVER ISSUE: Data constraint violations in database",
         "SERVER ISSUE: External service (Keycloak) unavailable",
         "CODE ISSUE: Application configuration errors",
@@ -324,6 +336,8 @@ public class GlobalExceptionHandler {
     errorDto.setSolutions(Arrays.asList(
         "Check if PostgreSQL database is running on localhost:5432",
         "Verify Keycloak is running on http://localhost:9090",
+        "Check Keycloak admin credentials in application.properties",
+        "Verify user exists in both application database and Keycloak",
         "Check application logs for detailed error information",
         "Ensure database schema is up to date",
         "Restart the application if persistent",
@@ -421,5 +435,62 @@ public class GlobalExceptionHandler {
     }
 
     return "General API issue - Check HTTP method, URL format, authentication, and request body";
+  }
+
+  /**
+   * Sanitizes error messages to prevent information leakage in production.
+   *
+   * In production:
+   * - Removes stack traces
+   * - Masks sensitive information (UUIDs, file paths, SQL)
+   * - Provides user-friendly messages
+   *
+   * In development:
+   * - Returns full error message for debugging
+   *
+   * @param message Original error message
+   * @return Sanitized error message
+   */
+  private String sanitizeErrorMessage(String message) {
+    if (message == null) {
+      return "An error occurred";
+    }
+
+    // In development, return full message for debugging
+    if ("dev".equals(activeProfile) || "local".equals(activeProfile)) {
+      return message;
+    }
+
+    // In production, sanitize sensitive information
+    String sanitized = message;
+
+    // Remove UUIDs (except in user-facing contexts)
+    sanitized = sanitized.replaceAll(
+        "(?i)user with id '[a-f0-9-]{36}'",
+        "user"
+    );
+    sanitized = sanitized.replaceAll(
+        "(?i)event with id '[a-f0-9-]{36}'",
+        "event"
+    );
+
+    // Remove file paths
+    sanitized = sanitized.replaceAll(
+        "(?i)at [a-z0-9._]+\\([^)]+\\)",
+        ""
+    );
+
+    // Remove SQL statements
+    sanitized = sanitized.replaceAll(
+        "(?i)SQL.*?;",
+        "database query"
+    );
+
+    // Limit message length in production
+    if (sanitized.length() > 200) {
+      sanitized = sanitized.substring(0, 200) + "...";
+    }
+
+    return sanitized;
   }
 }
