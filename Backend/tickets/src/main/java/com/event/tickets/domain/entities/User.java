@@ -49,9 +49,14 @@ public class User {
    * Approval status for admin approval gate.
    * Default: PENDING for new registrations.
    * Users must be APPROVED to access protected endpoints.
+   *
+   * NOTE: Column is nullable to allow Hibernate to add it to existing tables.
+   * Application logic ensures it's never actually null via:
+   * 1. Default value in Java (PENDING)
+   * 2. DatabaseInitializer auto-approves existing users on startup
    */
   @Enumerated(EnumType.STRING)
-  @Column(name = "approval_status", nullable = false)
+  @Column(name = "approval_status", nullable = true, columnDefinition = "VARCHAR(255) DEFAULT 'APPROVED'")
   private ApprovalStatus approvalStatus = ApprovalStatus.PENDING;
 
   /**
@@ -99,11 +104,11 @@ public class User {
   private List<Event> staffingEvents = new ArrayList<>();
 
   @CreatedDate
-  @Column(name = "created_at", updatable = false, nullable = false)
+  @Column(name = "created_at", updatable = false, nullable = true)
   private LocalDateTime createdAt;
 
   @LastModifiedDate
-  @Column(name = "updated_at", nullable = false)
+  @Column(name = "updated_at", nullable = true)
   private LocalDateTime updatedAt;
 
   @Override
