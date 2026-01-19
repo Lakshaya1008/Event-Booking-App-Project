@@ -1,8 +1,8 @@
 # TESTING GUIDE - NEW FEATURES ADDENDUM
 
-**Version**: 2.0  
+**Version**: 2.1  
 **Date**: January 19, 2026  
-**Covers**: QR Code Exports, Sales Report Export, Approval Gate System, Discount Management
+**Covers**: Event Update API Fix, QR Code Exports, Sales Report Export, Approval Gate System, Discount Management
 
 This addendum extends the main TESTING_GUIDE.md with comprehensive testing procedures for new features implemented in v2.0.
 
@@ -10,12 +10,328 @@ This addendum extends the main TESTING_GUIDE.md with comprehensive testing proce
 
 ## Table of Contents
 
-1. [Discount Management Testing](#discount-management-testing)
-2. [QR Code Export Testing](#qr-code-export-testing)
-3. [Sales Report Export Testing](#sales-report-export-testing)
-4. [Approval Gate Testing](#approval-gate-testing)
-5. [Regression Test Suite](#regression-test-suite)
-6. [Complete Test Checklist](#complete-test-checklist)
+1. [Event Update API Testing](#event-update-api-testing) ← **NEW FIX**
+2. [Discount Management Testing](#discount-management-testing)
+3. [QR Code Export Testing](#qr-code-export-testing)
+4. [Sales Report Export Testing](#sales-report-export-testing)
+5. [Approval Gate Testing](#approval-gate-testing)
+6. [Regression Test Suite](#regression-test-suite)
+7. [Complete Test Checklist](#complete-test-checklist)
+
+---
+
+## Event Update API Testing
+
+### Overview
+
+**API Contract Fix (CRITICAL)**:
+The `PUT /api/v1/events/{eventId}` endpoint has been fixed to follow REST best practices:
+- **Source of Truth**: `eventId` comes ONLY from URL path parameter
+- **Request Body**: Does NOT require `id` field
+- **Defensive Check**: If `id` is provided in body, it must match URL `eventId`
+- **Backward Compatible**: Clients sending matching `id` still work
+
+**Access Control**:
+- ORGANIZER: Can update their own events only
+- ADMIN: NO bypass (must own event)
+- ATTENDEE/STAFF: NO access
+
+**Endpoint**:
+`PUT /api/v1/events/{eventId}`
+
+### Test Scenarios
+
+#### EU-001: Update Event Without ID in Body (Recommended)
+
+**Objective**: Verify event update works without `id` in request body
+
+```powershell
+# Setup
+$BASE_URL = "http://localhost:8081"
+$ORGANIZER_TOKEN = "<organizer-jwt>"
+$EVENT_ID = "<event-uuid-owned-by-organizer>"
+
+# Request body WITHOUT id field
+$body = @{
+    name = "Updated Tech Conference 2025"
+    start = "2025-12-15T10:00:00"
+    end = "2025-12-15T19:00:00"
+    venue = "Main Hall - Updated"
+    salesStart = "2025-11-01T00:00:00"
+    salesEnd = "2025-12-14T23:59:59"
+    status = "PUBLISHED"
+    ticketTypes = @(@{
+        name = "General Admission"
+        price = 199.99
+        description = "Standard ticket"
+        totalAvailable = 200
+    })
+} | ConvertTo-Json -Depth 5
+
+# Execute
+$response = Invoke-RestMethod -Method Put `
+  -Uri "$BASE_URL/api/v1/events/$EVENT_ID" `
+  -Headers @{ 
+    Authorization = "Bearer $ORGANIZER_TOKEN"
+    "Content-Type" = "application/json"
+  } `
+  -Body $body
+
+# Assert
+Write-Host "Updated Event: $($response.name)"
+assert ($response.id -eq $EVENT_ID) "Event ID should match"
+assert ($response.name -eq "Updated Tech Conference 2025") "Name should be updated"
+assert ($response.venue -eq "Main Hall - Updated") "Venue should be updated"
+
+Write-Host "✅ EU-001 PASS: Event updated successfully without id in body"
+```
+
+**Expected Result**: 200 OK with updated event details
+
+---
+
+#### EU-002: Update Event With Matching ID in Body (Backward Compatible)
+
+**Objective**: Verify backward compatibility when `id` matches URL
+
+```powershell
+# Request body WITH matching id field
+$body = @{
+    id = $EVENT_ID  # Matches URL path parameter
+    name = "Updated Tech Conference 2025 v2"
+    start = "2025-12-15T10:00:00"
+    end = "2025-12-15T19:00:00"
+    venue = "Main Hall - Updated v2"
+    salesStart = "2025-11-01T00:00:00"
+    salesEnd = "2025-12-14T23:59:59"
+    status = "PUBLISHED"
+    ticketTypes = @(@{
+        name = "General Admission"
+        price = 199.99
+        description = "Standard ticket"
+        totalAvailable = 200
+    })
+} | ConvertTo-Json -Depth 5
+
+$response = Invoke-RestMethod -Method Put `
+  -Uri "$BASE_URL/api/v1/events/$EVENT_ID" `
+  -Headers @{ 
+    Authorization = "Bearer $ORGANIZER_TOKEN"
+    "Content-Type" = "application/json"
+  } `
+  -Body $body
+
+assert ($response.name -eq "Updated Tech Conference 2025 v2")
+Write-Host "✅ EU-002 PASS: Backward compatible with matching id"
+```
+
+**Expected Result**: 200 OK
+
+---
+
+#### EU-003: Reject Mismatched ID in Body
+
+**Objective**: Verify defensive check rejects mismatched IDs
+
+```powershell
+$DIFFERENT_ID = [guid]::NewGuid().ToString()
+
+$body = @{
+    id = $DIFFERENT_ID  # Different from URL
+    name = "Malicious Update Attempt"
+    venue = "Hacked Venue"
+    status = "PUBLISHED"
+    ticketTypes = @()
+} | ConvertTo-Json -Depth 5
+
+try {
+    Invoke-RestMethod -Method Put `
+      -Uri "$BASE_URL/api/v1/events/$EVENT_ID" `
+      -Headers @{ 
+        Authorization = "Bearer $ORGANIZER_TOKEN"
+        "Content-Type" = "application/json"
+      } `
+      -Body $body
+    Write-Host "❌ EU-003 FAIL: Should have returned 400"
+    exit 1
+} catch {
+    $statusCode = $_.Exception.Response.StatusCode.value__
+    assert ($statusCode -eq 400) "Should return 400 Bad Request"
+    Write-Host "✅ EU-003 PASS: Mismatched ID rejected"
+}
+```
+
+**Expected Result**: 400 Bad Request with error message "Event ID in request body does not match path parameter"
+
+---
+
+#### EU-004: Missing Required Fields Returns 400
+
+**Objective**: Verify validation still works for required fields
+
+```powershell
+# Missing required 'status' field
+$body = @{
+    name = "Updated Event"
+    venue = "Test Venue"
+    # status is missing
+    ticketTypes = @(@{
+        name = "General"
+        price = 100.00
+        totalAvailable = 100
+    })
+} | ConvertTo-Json -Depth 5
+
+try {
+    Invoke-RestMethod -Method Put `
+      -Uri "$BASE_URL/api/v1/events/$EVENT_ID" `
+      -Headers @{ 
+        Authorization = "Bearer $ORGANIZER_TOKEN"
+        "Content-Type" = "application/json"
+      } `
+      -Body $body
+    Write-Host "❌ EU-004 FAIL: Should have returned 400"
+    exit 1
+} catch {
+    $statusCode = $_.Exception.Response.StatusCode.value__
+    assert ($statusCode -eq 400) "Should return 400 for missing status"
+    Write-Host "✅ EU-004 PASS: Missing status field rejected"
+}
+```
+
+**Expected Result**: 400 Bad Request
+
+---
+
+#### EU-005: Non-Owner Organizer Denied
+
+**Objective**: Verify organizers cannot update other organizers' events
+
+```powershell
+$OTHER_ORGANIZER_TOKEN = "<different-organizer-jwt>"
+
+$body = @{
+    name = "Unauthorized Update"
+    venue = "Test Venue"
+    status = "PUBLISHED"
+    ticketTypes = @()
+} | ConvertTo-Json -Depth 5
+
+try {
+    Invoke-RestMethod -Method Put `
+      -Uri "$BASE_URL/api/v1/events/$EVENT_ID" `
+      -Headers @{ 
+        Authorization = "Bearer $OTHER_ORGANIZER_TOKEN"
+        "Content-Type" = "application/json"
+      } `
+      -Body $body
+    Write-Host "❌ EU-005 FAIL: Should have returned 403"
+    exit 1
+} catch {
+    $statusCode = $_.Exception.Response.StatusCode.value__
+    assert ($statusCode -eq 403) "Should return 403 Forbidden"
+    Write-Host "✅ EU-005 PASS: Non-owner denied"
+}
+```
+
+**Expected Result**: 403 Forbidden
+
+---
+
+#### EU-006: Non-Existent Event Returns 404
+
+**Objective**: Verify proper handling of non-existent events
+
+```powershell
+$FAKE_EVENT_ID = [guid]::NewGuid().ToString()
+
+$body = @{
+    name = "Update Non-Existent"
+    venue = "Test Venue"
+    status = "PUBLISHED"
+    ticketTypes = @()
+} | ConvertTo-Json -Depth 5
+
+try {
+    Invoke-RestMethod -Method Put `
+      -Uri "$BASE_URL/api/v1/events/$FAKE_EVENT_ID" `
+      -Headers @{ 
+        Authorization = "Bearer $ORGANIZER_TOKEN"
+        "Content-Type" = "application/json"
+      } `
+      -Body $body
+    Write-Host "❌ EU-006 FAIL: Should have returned 404"
+    exit 1
+} catch {
+    $statusCode = $_.Exception.Response.StatusCode.value__
+    assert ($statusCode -eq 404) "Should return 404 Not Found"
+    Write-Host "✅ EU-006 PASS: Non-existent event returns 404"
+}
+```
+
+**Expected Result**: 404 Not Found
+
+---
+
+#### EU-007: Empty Ticket Types Returns 400
+
+**Objective**: Verify @NotEmpty validation on ticketTypes
+
+```powershell
+$body = @{
+    name = "Event with No Tickets"
+    venue = "Test Venue"
+    status = "PUBLISHED"
+    ticketTypes = @()  # Empty array
+} | ConvertTo-Json -Depth 5
+
+try {
+    Invoke-RestMethod -Method Put `
+      -Uri "$BASE_URL/api/v1/events/$EVENT_ID" `
+      -Headers @{ 
+        Authorization = "Bearer $ORGANIZER_TOKEN"
+        "Content-Type" = "application/json"
+      } `
+      -Body $body
+    Write-Host "❌ EU-007 FAIL: Should have returned 400"
+    exit 1
+} catch {
+    $statusCode = $_.Exception.Response.StatusCode.value__
+    assert ($statusCode -eq 400) "Should return 400 for empty ticketTypes"
+    Write-Host "✅ EU-007 PASS: Empty ticketTypes rejected"
+}
+```
+
+**Expected Result**: 400 Bad Request
+
+---
+
+### Event Update Test Summary
+
+| Test ID | Test Name | Expected Result |
+|---------|-----------|-----------------|
+| EU-001 | Update without id in body | 200 OK |
+| EU-002 | Update with matching id | 200 OK |
+| EU-003 | Reject mismatched id | 400 Bad Request |
+| EU-004 | Missing required fields | 400 Bad Request |
+| EU-005 | Non-owner denied | 403 Forbidden |
+| EU-006 | Non-existent event | 404 Not Found |
+| EU-007 | Empty ticketTypes | 400 Bad Request |
+
+### Event Update Checklist
+
+**API Contract** (Priority: Critical):
+- [ ] EU-001: Update works without `id` in body
+- [ ] EU-002: Backward compatible with matching `id`
+- [ ] EU-003: Mismatched `id` rejected with 400
+
+**Validation** (Priority: High):
+- [ ] EU-004: Missing required fields return 400
+- [ ] EU-007: Empty ticketTypes rejected
+
+**Authorization** (Priority: Critical):
+- [ ] EU-005: Non-owner organizer gets 403
+- [ ] EU-006: Non-existent event returns 404
 
 ---
 
@@ -1105,6 +1421,15 @@ try {
 
 ## Complete Test Checklist
 
+### Event Update API Tests (CRITICAL)
+- [ ] EU-001: Update event without id in body → 200 OK
+- [ ] EU-002: Update event with matching id → 200 OK
+- [ ] EU-003: Update event with mismatched id → 400 Bad Request
+- [ ] EU-004: Update with missing required fields → 400 Bad Request
+- [ ] EU-005: Update other organizer's event → 403 Forbidden
+- [ ] EU-006: Update non-existent event → 404 Not Found
+- [ ] EU-007: Update with empty ticketTypes → 400 Bad Request
+
 ### Functional Tests
 - [ ] All new endpoints return correct status codes
 - [ ] Request/response formats match API spec
@@ -1120,6 +1445,7 @@ try {
 - [ ] Approval gate applies to all non-allowlisted paths
 - [ ] JWT validation happens before approval check
 - [ ] Non-owners cannot manage discounts
+- [ ] Event update id mismatch rejected (defensive check)
 
 ### Performance Tests
 - [ ] QR generation < 200ms (p95)
@@ -1149,6 +1475,7 @@ try {
 - [ ] Existing endpoints still work
 - [ ] Existing security rules maintained
 - [ ] No breaking changes introduced
+- [ ] Event update backward compatible (matching id works)
 
 ---
 
@@ -1166,6 +1493,16 @@ $ORGANIZER_TOKEN = Get-Token -Role "ORGANIZER"
 $ATTENDEE_TOKEN = Get-Token -Role "ATTENDEE"
 $STAFF_TOKEN = Get-Token -Role "STAFF"
 $PENDING_TOKEN = Get-Token -ApprovalStatus "PENDING"
+
+# Run Event Update Tests (CRITICAL - API Contract Fix)
+Write-Host "`n=== Event Update API Tests ===`n"
+Run-Test EU-001
+Run-Test EU-002
+Run-Test EU-003
+Run-Test EU-004
+Run-Test EU-005
+Run-Test EU-006
+Run-Test EU-007
 
 # Run QR Export Tests
 Write-Host "`n=== QR Export Tests ===`n"
@@ -1212,7 +1549,7 @@ Run-Test AG-006
 
 # Summary
 Write-Host "`n=== Test Summary ===`n"
-Write-Host "Total Tests: 31"
+Write-Host "Total Tests: 38"
 Write-Host "Passed: $passedCount"
 Write-Host "Failed: $failedCount"
 ```

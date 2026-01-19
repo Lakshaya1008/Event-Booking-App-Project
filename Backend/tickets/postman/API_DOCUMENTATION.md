@@ -3,7 +3,7 @@
 This document reflects the current codebase (controllers, DTOs, properties) and shows how to test every API in Postman.
 
 **Last Updated:** January 19, 2026  
-**API Version:** v1.0  
+**API Version:** v1.1  
 **Status:** Production Ready with Export Features  
 
 - Base URL: http://localhost:8081
@@ -11,12 +11,31 @@ This document reflects the current codebase (controllers, DTOs, properties) and 
 - Auth: OAuth2 Bearer JWT (Keycloak)
 - Pagination: Spring Pageable (page, size, sort)
 
+## Recent Changes
+
+### v1.1 - Event Update API Fix (January 19, 2026)
+
+**BREAKING FIX**: The `PUT /api/v1/events/{eventId}` endpoint has been corrected:
+
+- ✅ **Before**: Required `id` field in request body (broken - caused validation error)
+- ✅ **After**: `id` field is OPTIONAL (eventId comes from URL path parameter)
+
+**Migration Guide**:
+- **Recommended**: Remove `id` field from request body
+- **Backward Compatible**: If you include `id`, it must match URL `eventId`
+- **Will Fail**: Sending a different `id` than URL returns 400 Bad Request
+
+See [Event Management Endpoints](#1-organizer-events--apiv1events) for details.
+
+---
+
 ## Contents
 - Prerequisites and environment
 - Authentication (get a token)
 - Endpoint reference (paths, auth, payloads, responses)
 - Role-based security requirements
 - **User Registration & Authentication** (Current workflow + planned endpoint)
+- **FIX:** Event Update API (id field now optional)
 - **NEW:** Discount Management APIs
 - **NEW:** Admin Governance APIs
 - **NEW:** Event Staff Management APIs
@@ -220,9 +239,45 @@ Until the registration endpoint is implemented, use this workflow:
 
 - **PUT /api/v1/events/{eventId}**
   - Updates an event owned by the authenticated organizer.
-  - Headers: Authorization: Bearer {{access_token}}
-  - Body (UpdateEventRequestDto): Same as create but with id field
-  - Response 200 (UpdateEventResponseDto)
+  - **Source of Truth**: `eventId` from URL path parameter (NOT request body)
+  - Headers: Content-Type: application/json; Authorization: Bearer {{access_token}}
+  - Body (UpdateEventRequestDto):
+    ```json
+    {
+      "name": "Updated Tech Conference 2025",
+      "start": "2025-12-15T09:00:00",
+      "end": "2025-12-15T18:00:00",
+      "venue": "Updated Convention Center",
+      "salesStart": "2025-11-01T00:00:00",
+      "salesEnd": "2025-12-14T23:59:59",
+      "status": "PUBLISHED",
+      "ticketTypes": [
+        {
+          "id": "existing-ticket-type-uuid",
+          "name": "Updated Early Bird",
+          "price": 179.99,
+          "description": "Updated discount",
+          "totalAvailable": 120
+        },
+        {
+          "name": "New VIP Pass",
+          "price": 499.99,
+          "description": "Premium access",
+          "totalAvailable": 50
+        }
+      ]
+    }
+    ```
+  - **Important Notes**:
+    - **DO NOT** include `id` field in request body (eventId from URL is used)
+    - If `id` is included in body, it must match the URL `eventId` or request will fail with 400
+    - `ticketTypes[].id` is optional: include for updates, omit for new ticket types
+    - All fields except `id` are required in the request body
+  - Response 200 (UpdateEventResponseDto): Updated event with all fields
+  - Error Responses:
+    - 400 Bad Request: Missing required fields, validation errors, or ID mismatch
+    - 403 Forbidden: Organizer does not own the event
+    - 404 Not Found: Event does not exist
 
 - **GET /api/v1/events**
   - Lists events for the authenticated organizer.
@@ -1034,8 +1089,9 @@ Invoke-RestMethod -Method Get `
 
 ### Update the event
 ```powershell
+# IMPORTANT: Do NOT include 'id' field in request body
+# The eventId comes from the URL path parameter only
 $updateEventBody = @{
-  id         = $EVENT_ID
   name       = "Tech Conference 2025 - Updated"
   start      = "2025-12-15T10:00:00"
   end        = "2025-12-15T19:00:00"

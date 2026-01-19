@@ -78,6 +78,19 @@ public class EventController {
       @AuthenticationPrincipal Jwt jwt,
       @PathVariable UUID eventId,
       @Valid @RequestBody UpdateEventRequestDto updateEventRequestDto) {
+
+    // Defensive check: if body contains ID, it must match path parameter
+    // This prevents accidental ID mismatch and ensures single source of truth (URL)
+    if (updateEventRequestDto.getId() != null &&
+        !eventId.equals(updateEventRequestDto.getId())) {
+      throw new IllegalArgumentException(
+          "Event ID in request body does not match path parameter"
+      );
+    }
+
+    // Set eventId from path parameter (single source of truth)
+    updateEventRequestDto.setId(eventId);
+
     UpdateEventRequest updateEventRequest = eventMapper.fromDto(updateEventRequestDto);
     UUID userId = parseUserId(jwt);
 

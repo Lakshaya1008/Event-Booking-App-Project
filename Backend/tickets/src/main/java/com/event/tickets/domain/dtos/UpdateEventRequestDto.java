@@ -17,7 +17,8 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 public class UpdateEventRequestDto {
 
-  @NotNull(message = "Event ID must be provided")
+  // ID is sourced from URL path parameter, not request body
+  // This field is optional and ignored if provided (defensive check in controller)
   private UUID id;
 
   @NotBlank(message = "Event name is required")

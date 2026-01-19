@@ -1,9 +1,23 @@
 # Event Booking App — Complete Testing Guide
 
 **Last Updated:** January 19, 2026  
-**Version:** 2.0  
-**Target Application:** Event Booking App API v1  
-**New Features Covered:** QR Code Exports, Sales Report Export, Approval Gate System
+
+**Version:** 2.1  
+**Target Application:** Event Booking App API v1.1  
+**Features Covered:** Event Update API Fix, QR Code Exports, Sales Report Export, Approval Gate System, Discount Management
+
+---
+
+## Recent Updates
+
+### v2.1 - Event Update API Fix Testing
+
+**IMPORTANT**: The `PUT /api/v1/events/{eventId}` endpoint contract has been fixed:
+- `id` field in request body is now **OPTIONAL**
+- `eventId` comes **ONLY** from URL path parameter
+- If `id` is included in body, it must match URL `eventId`
+
+See [TESTING_GUIDE_ADDENDUM_V2.md](./TESTING_GUIDE_ADDENDUM_V2.md) → Section "Event Update API Testing" for complete test scenarios.
 
 ---
 
