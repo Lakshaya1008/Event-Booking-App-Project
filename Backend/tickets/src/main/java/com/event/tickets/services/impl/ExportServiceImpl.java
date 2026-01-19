@@ -127,11 +127,23 @@ public class ExportServiceImpl implements ExportService {
       totalTicketsCell.setCellValue(((Number) salesData.get("totalTicketsSold")).doubleValue());
       totalTicketsCell.setCellStyle(numberStyle);
 
-      Row totalRevenueRow = sheet.createRow(rowNum++);
-      totalRevenueRow.createCell(0).setCellValue("Total Revenue:");
-      Cell totalRevenueCell = totalRevenueRow.createCell(1);
-      totalRevenueCell.setCellValue(((Number) salesData.get("totalRevenue")).doubleValue());
-      totalRevenueCell.setCellStyle(currencyStyle);
+      Row totalRevenueBeforeRow = sheet.createRow(rowNum++);
+      totalRevenueBeforeRow.createCell(0).setCellValue("Total Revenue (Before Discount):");
+      Cell totalRevenueBeforeCell = totalRevenueBeforeRow.createCell(1);
+      totalRevenueBeforeCell.setCellValue(((Number) salesData.get("totalRevenueBeforeDiscount")).doubleValue());
+      totalRevenueBeforeCell.setCellStyle(currencyStyle);
+
+      Row totalDiscountRow = sheet.createRow(rowNum++);
+      totalDiscountRow.createCell(0).setCellValue("Total Discount Given:");
+      Cell totalDiscountCell = totalDiscountRow.createCell(1);
+      totalDiscountCell.setCellValue(((Number) salesData.get("totalDiscountGiven")).doubleValue());
+      totalDiscountCell.setCellStyle(currencyStyle);
+
+      Row totalRevenueFinalRow = sheet.createRow(rowNum++);
+      totalRevenueFinalRow.createCell(0).setCellValue("Final Revenue (After Discount):");
+      Cell totalRevenueFinalCell = totalRevenueFinalRow.createCell(1);
+      totalRevenueFinalCell.setCellValue(((Number) salesData.get("totalRevenueFinal")).doubleValue());
+      totalRevenueFinalCell.setCellStyle(currencyStyle);
 
       // Ticket type breakdown section
       rowNum++;
@@ -140,9 +152,17 @@ public class ExportServiceImpl implements ExportService {
       breakdownHeader.setCellValue("Ticket Type Breakdown");
       breakdownHeader.setCellStyle(headerStyle);
 
-      // Table headers
+      // Table headers - 7 columns for discount-aware reporting
       Row tableHeaderRow = sheet.createRow(rowNum++);
-      String[] headers = {"Ticket Type", "Price", "Total Available", "Sold", "Remaining", "Revenue"};
+      String[] headers = {
+          "Ticket Type",
+          "Base Price",
+          "Sold",
+          "Revenue (Before Discount)",
+          "Discount Given",
+          "Final Revenue",
+          "Remaining"
+      };
       for (int i = 0; i < headers.length; i++) {
         Cell headerCell = tableHeaderRow.createCell(i);
         headerCell.setCellValue(headers[i]);
@@ -157,27 +177,38 @@ public class ExportServiceImpl implements ExportService {
       for (Map<String, Object> typeStats : ticketTypeStats) {
         Row dataRow = sheet.createRow(rowNum++);
 
+        // Ticket Type Name
         dataRow.createCell(0).setCellValue((String) typeStats.get("ticketTypeName"));
 
-        Cell priceCell = dataRow.createCell(1);
-        priceCell.setCellValue(((Number) typeStats.get("price")).doubleValue());
-        priceCell.setCellStyle(currencyStyle);
+        // Base Price
+        Cell basePriceCell = dataRow.createCell(1);
+        basePriceCell.setCellValue(((Number) typeStats.get("basePrice")).doubleValue());
+        basePriceCell.setCellStyle(currencyStyle);
 
-        Cell availableCell = dataRow.createCell(2);
-        availableCell.setCellValue(((Number) typeStats.get("totalAvailable")).doubleValue());
-        availableCell.setCellStyle(numberStyle);
-
-        Cell soldCell = dataRow.createCell(3);
+        // Sold
+        Cell soldCell = dataRow.createCell(2);
         soldCell.setCellValue(((Number) typeStats.get("sold")).doubleValue());
         soldCell.setCellStyle(numberStyle);
 
-        Cell remainingCell = dataRow.createCell(4);
+        // Revenue Before Discount
+        Cell revenueBeforeCell = dataRow.createCell(3);
+        revenueBeforeCell.setCellValue(((Number) typeStats.get("revenueBeforeDiscount")).doubleValue());
+        revenueBeforeCell.setCellStyle(currencyStyle);
+
+        // Discount Given
+        Cell discountCell = dataRow.createCell(4);
+        discountCell.setCellValue(((Number) typeStats.get("discountGiven")).doubleValue());
+        discountCell.setCellStyle(currencyStyle);
+
+        // Final Revenue
+        Cell revenueFinalCell = dataRow.createCell(5);
+        revenueFinalCell.setCellValue(((Number) typeStats.get("revenueFinal")).doubleValue());
+        revenueFinalCell.setCellStyle(currencyStyle);
+
+        // Remaining
+        Cell remainingCell = dataRow.createCell(6);
         remainingCell.setCellValue(((Number) typeStats.get("remaining")).doubleValue());
         remainingCell.setCellStyle(numberStyle);
-
-        Cell revenueCell = dataRow.createCell(5);
-        revenueCell.setCellValue(((Number) typeStats.get("revenue")).doubleValue());
-        revenueCell.setCellStyle(currencyStyle);
       }
 
       // Auto-size columns

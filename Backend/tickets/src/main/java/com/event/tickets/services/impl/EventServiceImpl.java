@@ -198,33 +198,62 @@ public class EventServiceImpl implements EventService {
 
     Map<String, Object> dashboard = new HashMap<>();
 
-    // Calculate total tickets sold and revenue
+    // Calculate totals with discount awareness
     int totalTicketsSold = 0;
-    double totalRevenue = 0.0;
+    double totalRevenueBeforeDiscount = 0.0;
+    double totalDiscountGiven = 0.0;
+    double totalRevenueFinal = 0.0;
 
     List<Map<String, Object>> ticketTypeStats = new ArrayList<>();
 
     for (TicketType ticketType : event.getTicketTypes()) {
       int soldCount = ticketType.getTickets().size();
-      double revenue = soldCount * ticketType.getPrice();
+
+      // Aggregate pricing from actual tickets
+      double revenueBeforeDiscount = 0.0;
+      double discountGiven = 0.0;
+      double revenueFinal = 0.0;
+
+      for (Ticket ticket : ticketType.getTickets()) {
+        // Use originalPrice if available, otherwise fall back to ticket type price
+        double originalPrice = ticket.getOriginalPrice() != null
+            ? ticket.getOriginalPrice().doubleValue()
+            : ticketType.getPrice();
+
+        double discountAmount = ticket.getDiscountApplied() != null
+            ? ticket.getDiscountApplied().doubleValue()
+            : 0.0;
+
+        double pricePaid = ticket.getPricePaid().doubleValue();
+
+        revenueBeforeDiscount += originalPrice;
+        discountGiven += discountAmount;
+        revenueFinal += pricePaid;
+      }
 
       totalTicketsSold += soldCount;
-      totalRevenue += revenue;
+      totalRevenueBeforeDiscount += revenueBeforeDiscount;
+      totalDiscountGiven += discountGiven;
+      totalRevenueFinal += revenueFinal;
 
       Map<String, Object> typeStats = new HashMap<>();
       typeStats.put("ticketTypeName", ticketType.getName());
+      typeStats.put("basePrice", ticketType.getPrice());
       typeStats.put("totalAvailable", ticketType.getTotalAvailable());
       typeStats.put("sold", soldCount);
       typeStats.put("remaining", ticketType.getTotalAvailable() - soldCount);
-      typeStats.put("revenue", revenue);
-      typeStats.put("price", ticketType.getPrice());
+      typeStats.put("revenueBeforeDiscount", revenueBeforeDiscount);
+      typeStats.put("discountGiven", discountGiven);
+      typeStats.put("revenueFinal", revenueFinal);
 
       ticketTypeStats.add(typeStats);
     }
 
     dashboard.put("eventName", event.getName());
     dashboard.put("totalTicketsSold", totalTicketsSold);
-    dashboard.put("totalRevenue", totalRevenue);
+    dashboard.put("totalRevenueBeforeDiscount", totalRevenueBeforeDiscount);
+    dashboard.put("totalDiscountGiven", totalDiscountGiven);
+    dashboard.put("totalRevenueFinal", totalRevenueFinal);
     dashboard.put("ticketTypeBreakdown", ticketTypeStats);
 
     return dashboard;

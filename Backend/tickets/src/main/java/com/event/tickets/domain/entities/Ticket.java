@@ -59,24 +59,29 @@ public class Ticket {
   /**
    * Original base price of the ticket type at time of purchase (before discount).
    * Stored for historical accuracy and audit trail.
+   * Nullable for backward compatibility with existing tickets (will be backfilled).
    */
   @Column(name = "original_price", precision = 10, scale = 2)
   private BigDecimal originalPrice;
 
   /**
    * Final price paid by customer after discount applied.
-   * This is the actual amount charged. Never null for purchased tickets.
+   * This is the actual amount charged.
+   * For legacy tickets without pricing info, defaults to ticket type price.
+   * TEMPORARILY NULLABLE to allow schema migration on existing data.
    */
-  @Column(name = "price_paid", nullable = false, precision = 10, scale = 2)
+  @Column(name = "price_paid", precision = 10, scale = 2)
   private BigDecimal pricePaid;
 
   /**
    * Amount discounted from original price (0 if no discount applied).
    * Formula: discountApplied = originalPrice - pricePaid
    * Stored explicitly for audit and reporting purposes.
+   * Nullable for backward compatibility (will be backfilled as 0).
    */
   @Column(name = "discount_applied", precision = 10, scale = 2)
-  private BigDecimal discountApplied;
+  @Builder.Default
+  private BigDecimal discountApplied = BigDecimal.ZERO;
 
   @OneToMany(mappedBy = "ticket", cascade = CascadeType.ALL)
   @Builder.Default

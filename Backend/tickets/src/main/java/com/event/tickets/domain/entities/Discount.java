@@ -72,7 +72,7 @@ public class Discount {
    * Determines how {@link #value} is interpreted.
    */
   @Enumerated(EnumType.STRING)
-  @Column(name = "discount_type", nullable = false, columnDefinition = "discount_type")
+  @Column(name = "discount_type", nullable = false, length = 20)
   private DiscountType discountType;
 
   /**
