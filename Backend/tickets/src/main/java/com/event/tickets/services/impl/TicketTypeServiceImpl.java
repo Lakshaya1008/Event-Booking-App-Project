@@ -2,6 +2,7 @@ package com.event.tickets.services.impl;
 
 import com.event.tickets.domain.CreateTicketTypeRequest;
 import com.event.tickets.domain.UpdateTicketTypeRequest;
+import com.event.tickets.domain.entities.Discount;
 import com.event.tickets.domain.entities.Event;
 import com.event.tickets.domain.entities.Ticket;
 import com.event.tickets.domain.entities.TicketStatusEnum;
@@ -16,9 +17,11 @@ import com.event.tickets.repositories.TicketRepository;
 import com.event.tickets.repositories.TicketTypeRepository;
 import com.event.tickets.repositories.UserRepository;
 import com.event.tickets.services.AuthorizationService;
+import com.event.tickets.services.DiscountService;
 import com.event.tickets.services.QrCodeService;
 import com.event.tickets.services.TicketTypeService;
 import jakarta.transaction.Transactional;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -42,6 +45,7 @@ public class TicketTypeServiceImpl implements TicketTypeService {
   private final TicketRepository ticketRepository;
   private final QrCodeService qrCodeService;
   private final AuthorizationService authorizationService;
+  private final DiscountService discountService;
 
   @Override
   @Transactional
@@ -63,13 +67,34 @@ public class TicketTypeServiceImpl implements TicketTypeService {
       throw new TicketsSoldOutException();
     }
 
-    // Create multiple tickets
+    // Calculate pricing (base price and discount if applicable)
+    BigDecimal basePrice = BigDecimal.valueOf(ticketType.getPrice());
+    Optional<Discount> activeDiscount = discountService.findActiveDiscount(ticketTypeId);
+
+    BigDecimal finalPrice;
+    BigDecimal discountAmount;
+
+    if (activeDiscount.isPresent()) {
+      Discount discount = activeDiscount.get();
+      finalPrice = discountService.calculateFinalPrice(basePrice, discount);
+      discountAmount = basePrice.subtract(finalPrice);
+    } else {
+      finalPrice = basePrice;
+      discountAmount = BigDecimal.ZERO;
+    }
+
+    // Create multiple tickets with pricing information
     List<Ticket> createdTickets = new ArrayList<>();
     for (int i = 0; i < quantity; i++) {
       Ticket ticket = new Ticket();
       ticket.setStatus(TicketStatusEnum.PURCHASED);
       ticket.setTicketType(ticketType);
       ticket.setPurchaser(user);
+
+      // Store pricing information for audit trail
+      ticket.setOriginalPrice(basePrice);
+      ticket.setPricePaid(finalPrice);
+      ticket.setDiscountApplied(discountAmount);
 
       Ticket savedTicket = ticketRepository.save(ticket);
       qrCodeService.generateQrCode(savedTicket);

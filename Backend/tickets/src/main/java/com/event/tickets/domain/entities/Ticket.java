@@ -14,6 +14,7 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -54,6 +55,28 @@ public class Ticket {
   @ManyToOne(fetch = FetchType.LAZY)
   @JoinColumn(name = "purchaser_id")
   private User purchaser;
+
+  /**
+   * Original base price of the ticket type at time of purchase (before discount).
+   * Stored for historical accuracy and audit trail.
+   */
+  @Column(name = "original_price", precision = 10, scale = 2)
+  private BigDecimal originalPrice;
+
+  /**
+   * Final price paid by customer after discount applied.
+   * This is the actual amount charged. Never null for purchased tickets.
+   */
+  @Column(name = "price_paid", nullable = false, precision = 10, scale = 2)
+  private BigDecimal pricePaid;
+
+  /**
+   * Amount discounted from original price (0 if no discount applied).
+   * Formula: discountApplied = originalPrice - pricePaid
+   * Stored explicitly for audit and reporting purposes.
+   */
+  @Column(name = "discount_applied", precision = 10, scale = 2)
+  private BigDecimal discountApplied;
 
   @OneToMany(mappedBy = "ticket", cascade = CascadeType.ALL)
   @Builder.Default
