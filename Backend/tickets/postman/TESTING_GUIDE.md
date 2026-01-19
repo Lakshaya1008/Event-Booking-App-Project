@@ -48,6 +48,7 @@
 
 | Controller | Endpoint Base | Role Required | Priority | New in v2.0 |
 |------------|---------------|---------------|----------|-------------|
+| **N/A (Planned)** | `/api/v1/auth/register` | **PUBLIC** | **High** | ⚠️ **NOT IMPLEMENTED** |
 | EventController | `/api/v1/events` | ORGANIZER | High | - |
 | EventController | `/api/v1/events/{id}/sales-report.xlsx` | ORGANIZER | High | ✅ Export |
 | PublishedEventController | `/api/v1/published-events` | ATTENDEE | High | - |
@@ -56,16 +57,19 @@
 | TicketController | `/api/v1/tickets/{id}/qr-codes/png` | ATTENDEE/ORGANIZER | Critical | ✅ Export |
 | TicketController | `/api/v1/tickets/{id}/qr-codes/pdf` | ATTENDEE/ORGANIZER | Critical | ✅ Export |
 | TicketTypeController | `/api/v1/events/{id}/ticket-types` | ORGANIZER | High | - |
+| DiscountController | `/api/v1/events/{id}/ticket-types/{tid}/discounts` | ORGANIZER | High | ✅ NEW |
 | TicketValidationController | `/api/v1/ticket-validations` | STAFF | Critical | - |
 | AdminGovernanceController | `/api/v1/admin` | ADMIN | High | - |
-| AdminGovernanceController | `/api/v1/admin/users/pending` | ADMIN | High | ✅ Approval |
-| AdminGovernanceController | `/api/v1/admin/users/{id}/approve` | ADMIN | High | ✅ Approval |
-| AdminGovernanceController | `/api/v1/admin/users/{id}/reject` | ADMIN | High | ✅ Approval |
+| ApprovalController | `/api/v1/admin/approvals/pending` | ADMIN | High | ✅ Approval |
+| ApprovalController | `/api/v1/admin/approvals/{id}/approve` | ADMIN | High | ✅ Approval |
+| ApprovalController | `/api/v1/admin/approvals/{id}/reject` | ADMIN | High | ✅ Approval |
 | EventStaffController | `/api/v1/events/{id}/staff` | ORGANIZER | Medium | - |
 | InviteCodeController | `/api/v1/invites` | ADMIN/ORGANIZER | Medium | - |
 | AuditController | `/api/v1/audit` | ADMIN/ORGANIZER | Low | - |
 
-**Total Endpoints**: 50+ (including 7 new export/approval endpoints)
+**Total Endpoints**: 55+ (including 8 new features: discounts, exports, and approval endpoints)
+
+**⚠️ NOTE**: `/api/v1/auth/register` is configured in SecurityConfig as a public endpoint but the controller implementation does not exist yet. Users must be created manually in Keycloak and then redeem invite codes. See API Documentation Section 0 for current workaround.
 
 ### 1.3 Test Categories
 

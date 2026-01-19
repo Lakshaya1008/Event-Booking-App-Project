@@ -16,6 +16,8 @@ This document reflects the current codebase (controllers, DTOs, properties) and 
 - Authentication (get a token)
 - Endpoint reference (paths, auth, payloads, responses)
 - Role-based security requirements
+- **User Registration & Authentication** (Current workflow + planned endpoint)
+- **NEW:** Discount Management APIs
 - **NEW:** Admin Governance APIs
 - **NEW:** Event Staff Management APIs
 - **NEW:** Invite Code APIs
@@ -63,6 +65,130 @@ Optional: docker-compose up to start Postgres, Adminer, and Keycloak:
   - Approval status is a business gate, separate from Keycloak authentication
 
 ## Endpoint Reference
+
+### 0) User Registration & Authentication — /api/v1/auth
+
+#### Current Registration Workflow
+
+**IMPORTANT**: The system currently uses an **invite-code based registration** workflow through Keycloak. There is NO public self-registration endpoint implemented.
+
+**How Users Are Created**:
+
+1. **Admin/Organizer Creates Invite Code**
+   ```
+   POST /api/v1/invites
+   ```
+   - ADMIN can create invites for any role (ADMIN, ORGANIZER, ATTENDEE, STAFF)
+   - ORGANIZER can create STAFF invites only for their events
+
+2. **User Registers in Keycloak**
+   - Users must be created directly in Keycloak Admin Console
+   - OR through a future self-registration endpoint (planned but not implemented)
+   - User receives credentials from Keycloak
+
+3. **User Redeems Invite Code**
+   ```
+   POST /api/v1/invites/redeem
+   ```
+   - User authenticates with Keycloak (gets JWT)
+   - Redeems invite code to get assigned role
+   - User status set to PENDING (awaiting admin approval)
+
+4. **Admin Approves User**
+   ```
+   POST /api/v1/admin/approvals/{userId}/approve
+   ```
+   - Admin reviews and approves the user
+   - User can now access business operations
+
+**Planned Registration Endpoint (NOT YET IMPLEMENTED)**:
+
+- **POST /api/v1/auth/register** ⚠️ **PLANNED - NOT IMPLEMENTED**
+  - **Status**: Endpoint configured in security but controller NOT implemented
+  - **Purpose**: Public self-registration with invite code
+  - **Security**: Configured as `permitAll()` in SecurityConfig
+  - **Service Interface**: `RegistrationService.java` exists but no implementation
+  
+  **Planned Request (RegisterRequestDto)**:
+  ```json
+  {
+    "email": "user@example.com",
+    "password": "SecurePassword123!",
+    "name": "John Doe",
+    "inviteCode": "ABC123XYZ"
+  }
+  ```
+  
+  **Planned Response (RegisterResponseDto)**:
+  ```json
+  {
+    "userId": "550e8400-e29b-41d4-a716-446655440000",
+    "email": "user@example.com",
+    "name": "John Doe",
+    "roleAssigned": "ATTENDEE",
+    "approvalStatus": "PENDING",
+    "message": "Registration successful. Please wait for admin approval."
+  }
+  ```
+  
+  **Planned Transaction Flow**:
+  1. Validate invite code (exists, PENDING status, not expired)
+  2. Check email not already registered
+  3. Create user in Keycloak
+  4. Assign role from invite code in Keycloak
+  5. Create user record in database (status=PENDING)
+  6. If STAFF role: Assign to event
+  7. Mark invite code as REDEEMED
+  
+  **Rollback on Failure**:
+  - Delete Keycloak user if created
+  - Do NOT mark invite as used
+  - Log failure for investigation
+  
+  **Error Responses**:
+  - 400 Bad Request: Invalid invite code, email already in use, validation errors
+  - 500 Internal Server Error: Keycloak creation failed, transaction rollback
+
+**Current Workaround**:
+
+Until the registration endpoint is implemented, use this workflow:
+
+1. **Create User in Keycloak Admin Console**
+   - Navigate to: http://localhost:9090/admin
+   - Realm: event-ticket-platform
+   - Users → Add user
+   - Set credentials
+
+2. **Get Access Token**
+   ```bash
+   POST http://localhost:9090/realms/event-ticket-platform/protocol/openid-connect/token
+   Content-Type: application/x-www-form-urlencoded
+   
+   grant_type=password&
+   client_id=event-ticket-platform-app&
+   client_secret=YOUR_CLIENT_SECRET&
+   username=user@example.com&
+   password=userpassword&
+   scope=openid profile email
+   ```
+
+3. **Redeem Invite Code** (see Section 9: Invite Code System)
+   ```bash
+   POST /api/v1/invites/redeem
+   Authorization: Bearer {access_token}
+   
+   {
+     "code": "ABC123XYZ"
+   }
+   ```
+
+4. **Admin Approves** (see Section 11: Approval Gate System)
+   ```bash
+   POST /api/v1/admin/approvals/{userId}/approve
+   Authorization: Bearer {admin_token}
+   ```
+
+---
 
 ### 1) Organizer Events — /api/v1/events 
 **Required Role: ORGANIZER**
@@ -235,6 +361,99 @@ Optional: docker-compose up to start Postgres, Adminer, and Keycloak:
   - Deletes a ticket type (only if no tickets sold).
   - Headers: Authorization: Bearer {{access_token}}
   - Response: 204 No Content | 400 Bad Request (if tickets exist)
+
+---
+
+### 2A) Discount Management — /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts
+**Required Role: ORGANIZER**
+
+**Business Rules:**
+- Only ONE active discount per ticket type at a time
+- Discounts apply at purchase time only (never retroactive)
+- Two discount types: PERCENTAGE (0-100%) or FIXED_AMOUNT (currency)
+- Discounts are automatically applied during ticket purchase
+
+- **POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts**
+  - Creates a new discount for a ticket type.
+  - Authorization: ORGANIZER must own the event
+  - Headers: Content-Type: application/json; Authorization: Bearer {{access_token}}
+  - Body (CreateDiscountRequestDto):
+    ```json
+    {
+      "name": "Early Bird Special",
+      "discountType": "PERCENTAGE",
+      "value": 20.0,
+      "validFrom": "2025-11-01T00:00:00",
+      "validTo": "2025-11-30T23:59:59"
+    }
+    ```
+    OR for fixed amount discount:
+    ```json
+    {
+      "name": "Holiday Discount",
+      "discountType": "FIXED_AMOUNT",
+      "value": 50.00,
+      "validFrom": "2025-12-01T00:00:00",
+      "validTo": "2025-12-25T23:59:59"
+    }
+    ```
+  - Validation Rules:
+    - `name`: Required, max 100 characters
+    - `discountType`: Required, must be "PERCENTAGE" or "FIXED_AMOUNT"
+    - `value`: Required, positive number
+      - For PERCENTAGE: 0-100
+      - For FIXED_AMOUNT: must not exceed ticket price
+    - `validTo`: Must be after `validFrom`
+  - Response 201 (DiscountResponseDto):
+    ```json
+    {
+      "id": "660e8400-e29b-41d4-a716-446655440000",
+      "name": "Early Bird Special",
+      "discountType": "PERCENTAGE",
+      "value": 20.0,
+      "validFrom": "2025-11-01T00:00:00",
+      "validTo": "2025-11-30T23:59:59",
+      "ticketTypeId": "440e8400-e29b-41d4-a716-446655440000",
+      "createdAt": "2026-01-19T10:00:00"
+    }
+    ```
+  - Error Responses:
+    - 400 Bad Request: Validation errors or another active discount exists
+    - 403 Forbidden: User doesn't own the event
+    - 404 Not Found: Event or ticket type not found
+
+- **PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}**
+  - Updates an existing discount.
+  - Authorization: ORGANIZER must own the event
+  - Headers: Content-Type: application/json; Authorization: Bearer {{access_token}}
+  - Body (CreateDiscountRequestDto): Same as create
+  - Response 200 (DiscountResponseDto)
+
+- **DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}**
+  - Deletes a discount.
+  - Authorization: ORGANIZER must own the event
+  - Headers: Authorization: Bearer {{access_token}}
+  - Response: 204 No Content
+
+- **GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}**
+  - Gets a specific discount.
+  - Authorization: ORGANIZER must own the event
+  - Headers: Authorization: Bearer {{access_token}}
+  - Response 200 (DiscountResponseDto) | 404 Not Found
+
+- **GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts**
+  - Lists all discounts for a ticket type (active and inactive).
+  - Authorization: ORGANIZER must own the event
+  - Headers: Authorization: Bearer {{access_token}}
+  - Response 200: List<DiscountResponseDto>
+
+**Notes:**
+- Discounts are automatically applied during ticket purchase based on purchase timestamp
+- Only discounts valid at the time of purchase are applied
+- Discount information is saved with each ticket for reporting purposes
+- Organizers can view discount effectiveness in sales reports
+
+---
 
 ### 3) Published Events — /api/v1/published-events
 **Required Role: ATTENDEE**

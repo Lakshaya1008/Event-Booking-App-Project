@@ -2,7 +2,7 @@
 
 **Version**: 2.0  
 **Date**: January 19, 2026  
-**Covers**: QR Code Exports, Sales Report Export, Approval Gate System
+**Covers**: QR Code Exports, Sales Report Export, Approval Gate System, Discount Management
 
 This addendum extends the main TESTING_GUIDE.md with comprehensive testing procedures for new features implemented in v2.0.
 
@@ -10,11 +10,385 @@ This addendum extends the main TESTING_GUIDE.md with comprehensive testing proce
 
 ## Table of Contents
 
-1. [QR Code Export Testing](#qr-code-export-testing)
-2. [Sales Report Export Testing](#sales-report-export-testing)
-3. [Approval Gate Testing](#approval-gate-testing)
-4. [Regression Test Suite](#regression-test-suite)
-5. [Complete Test Checklist](#complete-test-checklist)
+1. [Discount Management Testing](#discount-management-testing)
+2. [QR Code Export Testing](#qr-code-export-testing)
+3. [Sales Report Export Testing](#sales-report-export-testing)
+4. [Approval Gate Testing](#approval-gate-testing)
+5. [Regression Test Suite](#regression-test-suite)
+6. [Complete Test Checklist](#complete-test-checklist)
+
+---
+
+## Discount Management Testing
+
+### Overview
+
+**Business Rules**:
+- Only ONE active discount per ticket type at a time
+- Discounts apply at purchase time only (never retroactive)
+- Two types: PERCENTAGE (0-100%) or FIXED_AMOUNT (currency)
+- Discounts are automatically applied during ticket purchase
+
+**Access Control**:
+- ORGANIZER: Can create/manage discounts for their own events
+- ADMIN: NO special access (no bypass)
+- ATTENDEE/STAFF: NO access
+
+**Endpoints**:
+1. `POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts` - Create discount
+2. `PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}` - Update discount
+3. `DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}` - Delete discount
+4. `GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}` - Get discount
+5. `GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts` - List discounts
+
+### Test Scenarios
+
+#### DISC-001: Create Percentage Discount
+
+**Objective**: Verify organizer can create percentage-based discount
+
+```powershell
+# Setup
+$BASE_URL = "http://localhost:8081"
+$ORGANIZER_TOKEN = "<organizer-jwt>"
+$EVENT_ID = "<event-uuid>"
+$TICKET_TYPE_ID = "<ticket-type-uuid>"
+
+$body = @{
+    name = "Early Bird Special"
+    discountType = "PERCENTAGE"
+    value = 20.0
+    validFrom = "2025-11-01T00:00:00"
+    validTo = "2025-11-30T23:59:59"
+} | ConvertTo-Json
+
+# Execute
+$response = Invoke-RestMethod -Method Post `
+  -Uri "$BASE_URL/api/v1/events/$EVENT_ID/ticket-types/$TICKET_TYPE_ID/discounts" `
+  -Headers @{ 
+    Authorization = "Bearer $ORGANIZER_TOKEN"
+    "Content-Type" = "application/json"
+  } `
+  -Body $body
+
+# Assert
+Write-Host "Discount ID: $($response.id)"
+assert ($response.name -eq "Early Bird Special")
+assert ($response.discountType -eq "PERCENTAGE")
+assert ($response.value -eq 20.0)
+
+Write-Host "✅ DISC-001 PASS"
+```
+
+**Expected Result**: 201 Created with discount details
+
+---
+
+#### DISC-002: Create Fixed Amount Discount
+
+**Objective**: Verify fixed amount discount creation
+
+```powershell
+$body = @{
+    name = "Holiday Discount"
+    discountType = "FIXED_AMOUNT"
+    value = 50.00
+    validFrom = "2025-12-01T00:00:00"
+    validTo = "2025-12-25T23:59:59"
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Method Post `
+  -Uri "$BASE_URL/api/v1/events/$EVENT_ID/ticket-types/$TICKET_TYPE_ID/discounts" `
+  -Headers @{ 
+    Authorization = "Bearer $ORGANIZER_TOKEN"
+    "Content-Type" = "application/json"
+  } `
+  -Body $body
+
+assert ($response.discountType -eq "FIXED_AMOUNT")
+assert ($response.value -eq 50.0)
+
+Write-Host "✅ DISC-002 PASS"
+```
+
+**Expected Result**: 201 Created
+
+---
+
+#### DISC-003: Prevent Multiple Active Discounts
+
+**Objective**: Verify only one active discount per ticket type
+
+```powershell
+# First discount already exists (from DISC-001)
+# Try to create another overlapping discount
+
+$body = @{
+    name = "Conflicting Discount"
+    discountType = "PERCENTAGE"
+    value = 15.0
+    validFrom = "2025-11-15T00:00:00"
+    validTo = "2025-12-15T23:59:59"
+} | ConvertTo-Json
+
+try {
+    Invoke-RestMethod -Method Post `
+      -Uri "$BASE_URL/api/v1/events/$EVENT_ID/ticket-types/$TICKET_TYPE_ID/discounts" `
+      -Headers @{ 
+        Authorization = "Bearer $ORGANIZER_TOKEN"
+        "Content-Type" = "application/json"
+      } `
+      -Body $body
+    Write-Host "❌ DISC-003 FAIL: Should have returned 400"
+    exit 1
+} catch {
+    assert ($_.Exception.Response.StatusCode -eq 400)
+    Write-Host "✅ DISC-003 PASS: Only one active discount allowed"
+}
+```
+
+**Expected Result**: 400 Bad Request
+
+---
+
+#### DISC-004: Validate Percentage Range
+
+**Objective**: Verify percentage validation (0-100)
+
+```powershell
+# Test invalid percentage > 100
+$body = @{
+    name = "Invalid Discount"
+    discountType = "PERCENTAGE"
+    value = 150.0
+    validFrom = "2026-01-01T00:00:00"
+    validTo = "2026-01-31T23:59:59"
+} | ConvertTo-Json
+
+try {
+    Invoke-RestMethod -Method Post `
+      -Uri "$BASE_URL/api/v1/events/$EVENT_ID/ticket-types/$TICKET_TYPE_ID/discounts" `
+      -Headers @{ 
+        Authorization = "Bearer $ORGANIZER_TOKEN"
+        "Content-Type" = "application/json"
+      } `
+      -Body $body
+    Write-Host "❌ DISC-004 FAIL: Should reject percentage > 100"
+    exit 1
+} catch {
+    assert ($_.Exception.Response.StatusCode -eq 400)
+    Write-Host "✅ DISC-004 PASS"
+}
+```
+
+**Expected Result**: 400 Bad Request
+
+---
+
+#### DISC-005: List Discounts for Ticket Type
+
+**Objective**: Verify organizer can list all discounts
+
+```powershell
+$response = Invoke-RestMethod -Method Get `
+  -Uri "$BASE_URL/api/v1/events/$EVENT_ID/ticket-types/$TICKET_TYPE_ID/discounts" `
+  -Headers @{ Authorization = "Bearer $ORGANIZER_TOKEN" }
+
+assert ($response.Count -ge 1)
+Write-Host "Found $($response.Count) discount(s)"
+Write-Host "✅ DISC-005 PASS"
+```
+
+**Expected Result**: 200 OK with list of discounts
+
+---
+
+#### DISC-006: Update Discount
+
+**Objective**: Verify discount can be updated
+
+```powershell
+$DISCOUNT_ID = "<discount-uuid-from-disc-001>"
+
+$body = @{
+    name = "Early Bird Special - Updated"
+    discountType = "PERCENTAGE"
+    value = 25.0
+    validFrom = "2025-11-01T00:00:00"
+    validTo = "2025-11-30T23:59:59"
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Method Put `
+  -Uri "$BASE_URL/api/v1/events/$EVENT_ID/ticket-types/$TICKET_TYPE_ID/discounts/$DISCOUNT_ID" `
+  -Headers @{ 
+    Authorization = "Bearer $ORGANIZER_TOKEN"
+    "Content-Type" = "application/json"
+  } `
+  -Body $body
+
+assert ($response.value -eq 25.0)
+assert ($response.name -eq "Early Bird Special - Updated")
+Write-Host "✅ DISC-006 PASS"
+```
+
+**Expected Result**: 200 OK with updated discount
+
+---
+
+#### DISC-007: Delete Discount
+
+**Objective**: Verify discount can be deleted
+
+```powershell
+Invoke-RestMethod -Method Delete `
+  -Uri "$BASE_URL/api/v1/events/$EVENT_ID/ticket-types/$TICKET_TYPE_ID/discounts/$DISCOUNT_ID" `
+  -Headers @{ Authorization = "Bearer $ORGANIZER_TOKEN" }
+
+Write-Host "✅ DISC-007 PASS: Discount deleted"
+```
+
+**Expected Result**: 204 No Content
+
+---
+
+#### DISC-008: Non-Owner Cannot Manage Discounts
+
+**Objective**: Verify ownership enforcement
+
+```powershell
+$OTHER_ORGANIZER_TOKEN = "<different-organizer-jwt>"
+
+$body = @{
+    name = "Unauthorized Discount"
+    discountType = "PERCENTAGE"
+    value = 10.0
+    validFrom = "2026-01-01T00:00:00"
+    validTo = "2026-01-31T23:59:59"
+} | ConvertTo-Json
+
+try {
+    Invoke-RestMethod -Method Post `
+      -Uri "$BASE_URL/api/v1/events/$EVENT_ID/ticket-types/$TICKET_TYPE_ID/discounts" `
+      -Headers @{ 
+        Authorization = "Bearer $OTHER_ORGANIZER_TOKEN"
+        "Content-Type" = "application/json"
+      } `
+      -Body $body
+    Write-Host "❌ DISC-008 FAIL: Should have returned 403"
+    exit 1
+} catch {
+    assert ($_.Exception.Response.StatusCode -eq 403)
+    Write-Host "✅ DISC-008 PASS: Ownership enforced"
+}
+```
+
+**Expected Result**: 403 Forbidden
+
+---
+
+#### DISC-009: Discount Application on Purchase
+
+**Objective**: Verify discount is automatically applied during ticket purchase
+
+```powershell
+# Create a new discount
+$body = @{
+    name = "Test Purchase Discount"
+    discountType = "PERCENTAGE"
+    value = 30.0
+    validFrom = "2026-01-01T00:00:00"
+    validTo = "2026-12-31T23:59:59"
+} | ConvertTo-Json
+
+$discount = Invoke-RestMethod -Method Post `
+  -Uri "$BASE_URL/api/v1/events/$EVENT_ID/ticket-types/$TICKET_TYPE_ID/discounts" `
+  -Headers @{ 
+    Authorization = "Bearer $ORGANIZER_TOKEN"
+    "Content-Type" = "application/json"
+  } `
+  -Body $body
+
+# Purchase ticket as attendee
+$ATTENDEE_TOKEN = "<attendee-jwt>"
+$purchaseBody = @{ quantity = 1 } | ConvertTo-Json
+
+$tickets = Invoke-RestMethod -Method Post `
+  -Uri "$BASE_URL/api/v1/events/$EVENT_ID/ticket-types/$TICKET_TYPE_ID/tickets" `
+  -Headers @{ 
+    Authorization = "Bearer $ATTENDEE_TOKEN"
+    "Content-Type" = "application/json"
+  } `
+  -Body $purchaseBody
+
+# Verify discount was applied
+$ticket = $tickets[0]
+$basePrice = 100.0  # Assume ticket base price
+$expectedPrice = $basePrice * 0.70  # 30% discount
+
+assert ($ticket.price -eq $expectedPrice)
+Write-Host "✅ DISC-009 PASS: Discount automatically applied"
+```
+
+**Expected Result**: Ticket purchased at discounted price
+
+---
+
+#### DISC-010: Expired Discount Not Applied
+
+**Objective**: Verify expired discounts are not applied
+
+```powershell
+# Create expired discount
+$body = @{
+    name = "Expired Discount"
+    discountType = "PERCENTAGE"
+    value = 50.0
+    validFrom = "2024-01-01T00:00:00"
+    validTo = "2024-12-31T23:59:59"
+} | ConvertTo-Json
+
+$discount = Invoke-RestMethod -Method Post `
+  -Uri "$BASE_URL/api/v1/events/$EVENT_ID/ticket-types/$TICKET_TYPE_ID/discounts" `
+  -Headers @{ 
+    Authorization = "Bearer $ORGANIZER_TOKEN"
+    "Content-Type" = "application/json"
+  } `
+  -Body $body
+
+# Purchase ticket - should get full price
+$tickets = Invoke-RestMethod -Method Post `
+  -Uri "$BASE_URL/api/v1/events/$EVENT_ID/ticket-types/$TICKET_TYPE_ID/tickets" `
+  -Headers @{ 
+    Authorization = "Bearer $ATTENDEE_TOKEN"
+    "Content-Type" = "application/json"
+  } `
+  -Body (@{ quantity = 1 } | ConvertTo-Json)
+
+$ticket = $tickets[0]
+$basePrice = 100.0
+
+assert ($ticket.price -eq $basePrice)
+Write-Host "✅ DISC-010 PASS: Expired discount not applied"
+```
+
+**Expected Result**: Full price charged
+
+---
+
+### Discount Testing Summary
+
+| Test ID | Test Name | Expected Result |
+|---------|-----------|-----------------|
+| DISC-001 | Create Percentage Discount | 201 Created |
+| DISC-002 | Create Fixed Amount Discount | 201 Created |
+| DISC-003 | Prevent Multiple Active Discounts | 400 Bad Request |
+| DISC-004 | Validate Percentage Range | 400 Bad Request |
+| DISC-005 | List Discounts | 200 OK |
+| DISC-006 | Update Discount | 200 OK |
+| DISC-007 | Delete Discount | 204 No Content |
+| DISC-008 | Non-Owner Access Denied | 403 Forbidden |
+| DISC-009 | Discount Applied on Purchase | Price Discounted |
+| DISC-010 | Expired Discount Not Applied | Full Price |
 
 ---
 
@@ -736,6 +1110,8 @@ try {
 - [ ] Request/response formats match API spec
 - [ ] Error messages are clear and actionable
 - [ ] Filenames are properly sanitized
+- [ ] Discount calculations are accurate
+- [ ] Only one active discount per ticket type enforced
 
 ### Security Tests
 - [ ] Access control enforced correctly
@@ -743,16 +1119,26 @@ try {
 - [ ] ADMIN does NOT bypass business rules
 - [ ] Approval gate applies to all non-allowlisted paths
 - [ ] JWT validation happens before approval check
+- [ ] Non-owners cannot manage discounts
 
 ### Performance Tests
 - [ ] QR generation < 200ms (p95)
 - [ ] Excel generation < 500ms (p95)
 - [ ] Approval check < 10ms (p95)
+- [ ] Discount lookup < 50ms (p95)
+
+### Business Logic Tests
+- [ ] Discounts applied automatically at purchase time
+- [ ] Expired discounts not applied
+- [ ] Percentage discounts validated (0-100)
+- [ ] Fixed amount discounts do not exceed ticket price
+- [ ] Discount data saved with tickets for reporting
 
 ### Idempotency Tests
 - [ ] Same QR downloaded multiple times → identical
 - [ ] Same Excel downloaded multiple times → consistent
 - [ ] No side effects during read operations
+- [ ] Discount queries return consistent results
 
 ### Audit Tests
 - [ ] All new operations logged
@@ -802,6 +1188,19 @@ Run-Test SR-004
 Run-Test SR-005
 Run-Test SR-006
 
+# Run Discount Management Tests
+Write-Host "`n=== Discount Management Tests ===`n"
+Run-Test DISC-001
+Run-Test DISC-002
+Run-Test DISC-003
+Run-Test DISC-004
+Run-Test DISC-005
+Run-Test DISC-006
+Run-Test DISC-007
+Run-Test DISC-008
+Run-Test DISC-009
+Run-Test DISC-010
+
 # Run Approval Gate Tests
 Write-Host "`n=== Approval Gate Tests ===`n"
 Run-Test AG-001
@@ -813,7 +1212,7 @@ Run-Test AG-006
 
 # Summary
 Write-Host "`n=== Test Summary ===`n"
-Write-Host "Total Tests: 21"
+Write-Host "Total Tests: 31"
 Write-Host "Passed: $passedCount"
 Write-Host "Failed: $failedCount"
 ```
