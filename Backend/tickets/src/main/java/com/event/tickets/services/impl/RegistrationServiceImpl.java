@@ -21,6 +21,7 @@ import com.event.tickets.repositories.UserRepository;
 import com.event.tickets.services.EventStaffService;
 import com.event.tickets.services.KeycloakAdminService;
 import com.event.tickets.services.RegistrationService;
+import com.event.tickets.services.SystemUserProvider;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.transaction.Transactional;
 import java.time.LocalDateTime;
@@ -67,18 +68,7 @@ public class RegistrationServiceImpl implements RegistrationService {
   private final AuditLogRepository auditLogRepository;
   private final KeycloakAdminService keycloakAdminService;
   private final EventStaffService eventStaffService;
-
-  // SYSTEM_USER_ID is used for unauthenticated audit events (e.g. registration)
-  private static final UUID SYSTEM_USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000000");
-  private static final User SYSTEM_USER = createSystemUser();
-
-  private static User createSystemUser() {
-    User user = new User();
-    user.setId(SYSTEM_USER_ID);
-    user.setName("SYSTEM");
-    user.setEmail("system@system.com");
-    return user;
-  }
+  private final SystemUserProvider systemUserProvider;
 
   /**
    * Registers a new user via invite code or as ATTENDEE (no invite).
@@ -144,19 +134,33 @@ public class RegistrationServiceImpl implements RegistrationService {
         log.info("No invite code provided, assigning default ATTENDEE role");
       }
 
-      // Step 3: Create user in Keycloak
-      try {
-        keycloakUserId = keycloakAdminService.createUser(
-            request.getEmail(), 
-            request.getPassword(), 
-            request.getName()
-        );
-        log.info("Keycloak user created: userId={}", keycloakUserId);
-      } catch (Exception e) {
-        emitAuditEvent(null, null, null, AuditAction.REGISTRATION_FAILED,
-            "email=" + request.getEmail() + ",reason=KEYCLOAK_CREATION_FAILED,error=" + e.getMessage(),
-            clientIp, userAgent);
-        throw new KeycloakUserCreationException("Failed to create user in Keycloak: " + e.getMessage(), e);
+      // Step 3: Check if user already exists in Keycloak
+      UUID existingKeycloakUserId = keycloakAdminService.getUserIdByEmail(request.getEmail());
+      if (existingKeycloakUserId != null) {
+        // User exists in Keycloak, check if in DB
+        if (userRepository.existsById(existingKeycloakUserId)) {
+          // Both exist, throw conflict
+          throw new RegistrationException("User already registered");
+        } else {
+          // Keycloak exists but DB doesn't, reuse the ID
+          keycloakUserId = existingKeycloakUserId;
+          log.info("Reusing existing Keycloak user: userId={}", keycloakUserId);
+        }
+      } else {
+        // Create new user in Keycloak
+        try {
+          keycloakUserId = keycloakAdminService.createUser(
+              request.getEmail(),
+              request.getPassword(),
+              request.getName()
+          );
+          log.info("Keycloak user created: userId={}", keycloakUserId);
+        } catch (Exception e) {
+          emitAuditEvent(null, null, null, AuditAction.REGISTRATION_FAILED,
+              "email=" + request.getEmail() + ",reason=KEYCLOAK_CREATION_FAILED,error=" + e.getMessage(),
+              clientIp, userAgent);
+          throw new KeycloakUserCreationException("Failed to create user in Keycloak: " + e.getMessage(), e);
+        }
       }
 
       // Step 4: Assign role in Keycloak
@@ -346,7 +350,7 @@ public class RegistrationServiceImpl implements RegistrationService {
     try {
       // For unauthenticated actions, use SYSTEM_USER
       if (actor == null) {
-        actor = SYSTEM_USER;
+        actor = systemUserProvider.getSystemUser();
       }
 
       AuditLog auditLog = AuditLog.builder()

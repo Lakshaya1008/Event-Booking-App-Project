@@ -108,4 +108,20 @@ public interface KeycloakAdminService {
    * @throws com.event.tickets.exceptions.KeycloakUserUpdateException if update fails
    */
   void setUserEnabled(UUID userId, boolean enabled);
+
+  /**
+   * Checks if a user exists in Keycloak by email.
+   *
+   * @param email The user's email address
+   * @return true if user exists, false otherwise
+   */
+  boolean userExistsByEmail(String email);
+
+  /**
+   * Gets the Keycloak user ID by email.
+   *
+   * @param email The user's email address
+   * @return The Keycloak user ID if found, null otherwise
+   */
+  UUID getUserIdByEmail(String email);
 }

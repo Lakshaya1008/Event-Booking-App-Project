@@ -198,18 +198,18 @@ public class GlobalExceptionHandler {
     errorDto.setPath(request.getRequestURI());
 
     if (ex instanceof KeycloakUserCreationException) {
+      errorDto.setStatusCode(409);
+      errorDto.setStatusDescription("CONFLICT - User already exists");
       errorDto.setPossibleCauses(Arrays.asList(
-          "SYSTEM ISSUE: Keycloak service unavailable",
-          "SYSTEM ISSUE: Keycloak configuration error",
-          "DATA ISSUE: Invalid user data for Keycloak",
-          "NETWORK ISSUE: Cannot connect to authentication service"
+          "USER ALREADY EXISTS: Email address is already registered",
+          "DUPLICATE REGISTRATION: Attempting to register the same email twice"
       ));
       errorDto.setSolutions(Arrays.asList(
-          "Try registration again later",
-          "Contact system administrator",
-          "Check user data format and requirements",
-          "Verify service availability"
+          "Use a different email address",
+          "Login with existing account if you already registered",
+          "Contact administrator if you forgot your password"
       ));
+      return new ResponseEntity<>(errorDto, HttpStatus.CONFLICT);
     } else {
       errorDto.setPossibleCauses(Arrays.asList(
           "SYSTEM ISSUE: Database connection error",

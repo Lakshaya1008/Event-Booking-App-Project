@@ -11,6 +11,7 @@ import com.event.tickets.exceptions.UserNotFoundException;
 import com.event.tickets.repositories.AuditLogRepository;
 import com.event.tickets.repositories.UserRepository;
 import com.event.tickets.services.KeycloakAdminService;
+import com.event.tickets.services.SystemUserProvider;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.NotFoundException;
@@ -65,18 +66,6 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
   @Value("${keycloak.admin.realm}")
   private String realm;
 
-  // SYSTEM_USER_ID is used for unauthenticated audit events
-  private static final UUID SYSTEM_USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000000");
-  private static final User SYSTEM_USER = createSystemUser();
-
-  private static User createSystemUser() {
-    User user = new User();
-    user.setId(SYSTEM_USER_ID);
-    user.setName("SYSTEM");
-    user.setEmail("system@system.com");
-    return user;
-  }
-
   @Override
   @Transactional
   public void assignRoleToUser(UUID userId, String roleName) {
@@ -103,11 +92,6 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
       User actor = getCurrentUser();
       HttpServletRequest request = getCurrentRequest();
       String ipAddress = extractClientIp(request);
-
-      // For unauthenticated actions (e.g. during registration), use SYSTEM_USER
-      if (actor == null) {
-        actor = SYSTEM_USER;
-      }
 
       // For audit, try to find target user in DB; may be null during registration
       User targetUser = userRepository.findById(userId).orElse(null);
@@ -403,6 +387,36 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
           String.format("Failed to update user enabled status: %s", e.getMessage()),
           e
       );
+    }
+  }
+
+  @Override
+  public boolean userExistsByEmail(String email) {
+    try {
+      RealmResource realmResource = keycloakAdminClient.realm(realm);
+      List<org.keycloak.representations.idm.UserRepresentation> users = realmResource.users()
+          .searchByEmail(email, true);
+      return !users.isEmpty();
+    } catch (Exception e) {
+      log.error("Error checking if user exists by email: {}", email, e);
+      return false;
+    }
+  }
+
+  @Override
+  public UUID getUserIdByEmail(String email) {
+    try {
+      RealmResource realmResource = keycloakAdminClient.realm(realm);
+      List<org.keycloak.representations.idm.UserRepresentation> users = realmResource.users()
+          .searchByEmail(email, true);
+      if (!users.isEmpty()) {
+        String userId = users.get(0).getId();
+        return UUID.fromString(userId);
+      }
+      return null;
+    } catch (Exception e) {
+      log.error("Error getting user ID by email: {}", email, e);
+      return null;
     }
   }
 

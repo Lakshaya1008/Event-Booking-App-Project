@@ -6,6 +6,7 @@ import com.event.tickets.repositories.UserRepository;
 import jakarta.annotation.PostConstruct;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -84,6 +85,35 @@ public class DatabaseInitializer {
       log.error("❌ Error during database migration: {}", e.getMessage(), e);
       log.warn("Application will continue, but existing users may have access issues.");
       log.warn("Please check the database manually or run fix_approval_schema.sql");
+    }
+  }
+
+  /**
+   * Creates the SYSTEM user if it doesn't exist.
+   * This user is used for unauthenticated audit events.
+   */
+  @PostConstruct
+  @Transactional
+  public void createSystemUser() {
+    try {
+      UUID systemUserId = UUID.fromString("00000000-0000-0000-0000-000000000000");
+      if (!userRepository.existsById(systemUserId)) {
+        User systemUser = new User();
+        systemUser.setId(systemUserId);
+        systemUser.setEmail("system@system.local");
+        systemUser.setName("SYSTEM");
+        systemUser.setApprovalStatus(ApprovalStatus.APPROVED);
+        systemUser.setCreatedAt(LocalDateTime.now());
+        systemUser.setUpdatedAt(LocalDateTime.now());
+
+        userRepository.save(systemUser);
+        log.info("✅ SYSTEM user created for audit logging");
+      } else {
+        log.info("✅ SYSTEM user already exists");
+      }
+    } catch (Exception e) {
+      log.error("❌ Failed to create SYSTEM user: {}", e.getMessage(), e);
+      throw new RuntimeException("SYSTEM user creation failed", e);
     }
   }
 
