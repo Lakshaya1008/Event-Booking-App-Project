@@ -274,7 +274,7 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
       userRep.setUsername(email);
       userRep.setEmail(email);
       userRep.setFirstName(name);
-      userRep.setEnabled(true);
+      userRep.setEnabled(false); // Disable until admin approval
       userRep.setEmailVerified(false); // Can be set to true if email verification not required
 
       // Create user in Keycloak
@@ -385,6 +385,64 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
       log.error("Failed to update user enabled status: userId={}", userId, e);
       throw new com.event.tickets.exceptions.KeycloakUserUpdateException(
           String.format("Failed to update user enabled status: %s", e.getMessage()),
+          e
+      );
+    }
+  }
+
+  @Override
+  public void setEmailVerified(UUID userId, boolean verified) {
+    log.info("Setting email verified status in Keycloak: userId={}, verified={}", userId, verified);
+
+    try {
+      RealmResource realmResource = keycloakAdminClient.realm(realm);
+      UserResource userResource = realmResource.users().get(userId.toString());
+
+      org.keycloak.representations.idm.UserRepresentation userRep = userResource.toRepresentation();
+      userRep.setEmailVerified(verified);
+      userResource.update(userRep);
+
+      log.info("Successfully updated email verified status: userId={}, verified={}", userId, verified);
+
+    } catch (NotFoundException e) {
+      log.error("User not found in Keycloak: userId={}", userId, e);
+      throw new com.event.tickets.exceptions.KeycloakUserUpdateException(
+          String.format("User not found in Keycloak: %s", userId),
+          e
+      );
+    } catch (Exception e) {
+      log.error("Failed to update email verified status: userId={}", userId, e);
+      throw new com.event.tickets.exceptions.KeycloakUserUpdateException(
+          String.format("Failed to update email verified status: %s", e.getMessage()),
+          e
+      );
+    }
+  }
+
+  @Override
+  public void clearRequiredActions(UUID userId) {
+    log.info("Clearing required actions in Keycloak: userId={}", userId);
+
+    try {
+      RealmResource realmResource = keycloakAdminClient.realm(realm);
+      UserResource userResource = realmResource.users().get(userId.toString());
+
+      org.keycloak.representations.idm.UserRepresentation userRep = userResource.toRepresentation();
+      userRep.setRequiredActions(java.util.Collections.emptyList());
+      userResource.update(userRep);
+
+      log.info("Successfully cleared required actions: userId={}", userId);
+
+    } catch (NotFoundException e) {
+      log.error("User not found in Keycloak: userId={}", userId, e);
+      throw new com.event.tickets.exceptions.KeycloakUserUpdateException(
+          String.format("User not found in Keycloak: %s", userId),
+          e
+      );
+    } catch (Exception e) {
+      log.error("Failed to clear required actions: userId={}", userId, e);
+      throw new com.event.tickets.exceptions.KeycloakUserUpdateException(
+          String.format("Failed to clear required actions: %s", e.getMessage()),
           e
       );
     }

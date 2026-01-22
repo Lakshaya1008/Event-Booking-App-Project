@@ -68,6 +68,26 @@ public class ApprovalServiceImpl implements ApprovalService {
 
     userRepository.save(user);
 
+    // Update Keycloak user state to allow login
+    try {
+      // Ensure user is enabled in Keycloak
+      keycloakAdminService.setUserEnabled(userId, true);
+      log.info("User enabled in Keycloak: userId={}", userId);
+
+      // Mark email as verified to bypass email verification requirements
+      keycloakAdminService.setEmailVerified(userId, true);
+      log.info("Email marked as verified in Keycloak: userId={}", userId);
+
+      // Clear any required actions (VERIFY_EMAIL, UPDATE_PASSWORD, etc.)
+      keycloakAdminService.clearRequiredActions(userId);
+      log.info("Required actions cleared in Keycloak: userId={}", userId);
+
+    } catch (Exception e) {
+      log.warn("Failed to update Keycloak user state during approval (non-critical): userId={}", userId, e);
+      // Don't fail the approval if Keycloak update fails - user is approved in DB
+      // This allows manual Keycloak fixes if needed
+    }
+
     log.info("User approved successfully: userId={}, adminId={}", userId, adminId);
   }
 

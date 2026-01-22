@@ -110,6 +110,25 @@ public interface KeycloakAdminService {
   void setUserEnabled(UUID userId, boolean enabled);
 
   /**
+   * Sets the email verification status for a user in Keycloak.
+   * Used during approval to mark email as verified without requiring verification.
+   *
+   * @param userId The Keycloak user ID
+   * @param verified true to mark email as verified, false otherwise
+   * @throws com.event.tickets.exceptions.KeycloakUserUpdateException if update fails
+   */
+  void setEmailVerified(UUID userId, boolean verified);
+
+  /**
+   * Clears all required actions for a user in Keycloak.
+   * Used during approval to remove VERIFY_EMAIL, UPDATE_PASSWORD, etc.
+   *
+   * @param userId The Keycloak user ID
+   * @throws com.event.tickets.exceptions.KeycloakUserUpdateException if update fails
+   */
+  void clearRequiredActions(UUID userId);
+
+  /**
    * Checks if a user exists in Keycloak by email.
    *
    * @param email The user's email address
