@@ -1,7 +1,7 @@
 # TESTING GUIDE - NEW FEATURES ADDENDUM
 
 **Version**: 2.1  
-**Date**: January 19, 2026  
+**Date**: January 23, 2026  
 **Covers**: Event Update API Fix, QR Code Exports, Sales Report Export, Approval Gate System, Discount Management
 
 This addendum extends the main TESTING_GUIDE.md with comprehensive testing procedures for new features implemented in v2.0.

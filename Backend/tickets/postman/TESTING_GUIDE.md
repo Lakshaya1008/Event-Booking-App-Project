@@ -1,6 +1,6 @@
 # Event Booking App — Complete Testing Guide
 
-**Last Updated:** January 22, 2026  
+**Last Updated:** January 23, 2026  
 
 **Version:** 3.0  
 **Target Application:** Event Booking App API v1.0  
@@ -62,7 +62,7 @@ See [TESTING_GUIDE_ADDENDUM_V2.md](./TESTING_GUIDE_ADDENDUM_V2.md) → Section "
 
 | Controller | Endpoint Base | Role Required | Priority | New in v2.0 |
 |------------|---------------|---------------|----------|-------------|
-| **N/A (Planned)** | `/api/v1/auth/register` | **PUBLIC** | **High** | ⚠️ **NOT IMPLEMENTED** |
+| AuthController | `/api/v1/auth/register` | PUBLIC | High | - |
 | EventController | `/api/v1/events` | ORGANIZER | High | - |
 | EventController | `/api/v1/events/{id}/sales-report.xlsx` | ORGANIZER | High | ✅ Export |
 | PublishedEventController | `/api/v1/published-events` | ATTENDEE | High | - |
@@ -83,7 +83,6 @@ See [TESTING_GUIDE_ADDENDUM_V2.md](./TESTING_GUIDE_ADDENDUM_V2.md) → Section "
 
 **Total Endpoints**: 55+ (including 8 new features: discounts, exports, and approval endpoints)
 
-**⚠️ NOTE**: `/api/v1/auth/register` is configured in SecurityConfig as a public endpoint but the controller implementation does not exist yet. Users must be created manually in Keycloak and then redeem invite codes. See API Documentation Section 0 for current workaround.
 
 ### 1.3 Test Categories
 
@@ -1670,38 +1669,48 @@ pm.test("Sales report content is valid", function () {
 
 - **Event Not Published:**
   - Create DRAFT event
-  - Try to purchase tickets
-  - Expect 400 Bad Request: "Event not published"
+  - Verify ATTENDEE cannot purchase tickets
+  - Change event to PUBLISHED
+  - Verify ATTENDEE can purchase tickets
 
 - **Sales Window Closed (Before salesStart):**
   - Set event salesStart to future date
-  - Try to purchase tickets
-  - Expect 400 Bad Request: "Sales window not open"
+  - Verify ATTENDEE cannot purchase tickets
+  - Set salesStart to past date
+  - Verify ATTENDEE can purchase tickets
 
 - **Sales Window Closed (After salesEnd):**
   - Set event salesEnd to past date
-  - Try to purchase tickets
-  - Expect 400 Bad Request: "Sales window closed"
+  - Verify ATTENDEE cannot purchase tickets
+  - Set salesEnd to future date
+  - Verify ATTENDEE can purchase tickets
 
 - **Ticket Type Sold Out:**
-  - Set totalAvailable to 0
-  - Try to purchase tickets
-  - Expect 400 Bad Request: "Sold out"
+  - Set ticket type totalAvailable to 0
+  - Verify ATTENDEE cannot purchase tickets
+  - Increase totalAvailable
+  - Verify ATTENDEE can purchase tickets
 
 - **Quantity Exceeds Availability:**
-  - Set totalAvailable to 5
+  - Set ticket type totalAvailable to 5
   - Try to purchase 10 tickets
+  - Expect 400 Bad Request: "Quantity exceeds remaining availability"
+  - Purchase 5 tickets
+  - Expect 201 Created
+  - Purchase 5 tickets again
   - Expect 400 Bad Request: "Quantity exceeds remaining availability"
 
 - **Event Cancelled:**
   - Set event status to CANCELLED
-  - Try to purchase tickets
-  - Expect 400 Bad Request: "Event cancelled"
+  - Verify ATTENDEE cannot purchase tickets
+  - Change status to PUBLISHED
+  - Verify ATTENDEE can purchase tickets
 
 - **Event Completed:**
   - Set event status to COMPLETED
-  - Try to purchase tickets
-  - Expect 400 Bad Request: "Event completed"
+  - Verify ATTENDEE cannot purchase tickets
+  - Change status to PUBLISHED
+  - Verify ATTENDEE can purchase tickets
 
 ### 9.2 Discount Business Rules
 **Test discount-specific business rules**
