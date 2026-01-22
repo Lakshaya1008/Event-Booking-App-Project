@@ -1,6 +1,7 @@
 package com.event.tickets.domain.dtos;
 
 import com.event.tickets.domain.entities.EventStatusEnum;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
@@ -13,8 +14,9 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 @Data
-@AllArgsConstructor
 @NoArgsConstructor
+@AllArgsConstructor
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class UpdateEventRequestDto {
 
   // ID is sourced from URL path parameter, not request body

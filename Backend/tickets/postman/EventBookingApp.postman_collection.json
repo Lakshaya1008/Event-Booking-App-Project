@@ -14,7 +14,10 @@
     { "key": "access_token", "value": "" },
     { "key": "event_id", "value": "" },
     { "key": "ticket_type_id", "value": "" },
-    { "key": "ticket_id", "value": "" }
+    { "key": "ticket_id", "value": "" },
+    { "key": "discount_id", "value": "" },
+    { "key": "user_id", "value": "" },
+    { "key": "invite_code_id", "value": "" }
   ],
   "item": [
     {
@@ -126,6 +129,30 @@
             "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
             "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}"] }
           }
+        },
+        {
+          "name": "Get Sales Dashboard",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/sales-dashboard", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","sales-dashboard"] }
+          }
+        },
+        {
+          "name": "Get Attendees Report",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/attendees-report", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","attendees-report"] }
+          }
+        },
+        {
+          "name": "Export Sales Report (Excel)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/sales-report.xlsx", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","sales-report.xlsx"] }
+          }
         }
       ]
     },
@@ -151,21 +178,148 @@
       ]
     },
     {
+      "name": "Ticket Types (Organizer)",
+      "item": [
+        {
+          "name": "Create Ticket Type",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/ticket-types", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","ticket-types"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"VIP Pass\",\n  \"price\": 499.99,\n  \"description\": \"Premium access\",\n  \"totalAvailable\": 50\n}"
+            }
+          }
+        },
+        {
+          "name": "List Ticket Types",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/ticket-types", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","ticket-types"] }
+          }
+        },
+        {
+          "name": "Get Ticket Type",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","ticket-types","{{ticket_type_id}}"] }
+          }
+        },
+        {
+          "name": "Update Ticket Type",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","ticket-types","{{ticket_type_id}}"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"VIP Pass Updated\",\n  \"price\": 549.99,\n  \"description\": \"Updated premium access\",\n  \"totalAvailable\": 75\n}"
+            }
+          }
+        },
+        {
+          "name": "Delete Ticket Type",
+          "request": {
+            "method": "DELETE",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","ticket-types","{{ticket_type_id}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Discounts (Organizer)",
+      "item": [
+        {
+          "name": "Create Discount",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","ticket-types","{{ticket_type_id}}","discounts"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"discountType\": \"PERCENTAGE\",\n  \"value\": 20.0,\n  \"validFrom\": \"2025-11-01T00:00:00\",\n  \"validTo\": \"2025-11-30T23:59:59\",\n  \"description\": \"Early Bird Special\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Update Discount",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts/{{discount_id}}", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","ticket-types","{{ticket_type_id}}","discounts","{{discount_id}}"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"discountType\": \"PERCENTAGE\",\n  \"value\": 25.0,\n  \"validFrom\": \"2025-11-01T00:00:00\",\n  \"validTo\": \"2025-11-30T23:59:59\",\n  \"description\": \"Early Bird Special Updated\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Delete Discount",
+          "request": {
+            "method": "DELETE",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts/{{discount_id}}", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","ticket-types","{{ticket_type_id}}","discounts","{{discount_id}}"] }
+          }
+        },
+        {
+          "name": "Get Discount",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts/{{discount_id}}", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","ticket-types","{{ticket_type_id}}","discounts","{{discount_id}}"] }
+          }
+        },
+        {
+          "name": "List Discounts",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","ticket-types","{{ticket_type_id}}","discounts"] }
+          }
+        }
+      ]
+    },
+    {
       "name": "Tickets",
       "item": [
         {
           "name": "Purchase Ticket",
           "request": {
             "method": "POST",
-            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
-            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/tickets", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","ticket-types","{{ticket_type_id}}","tickets"] }
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/tickets", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","ticket-types","{{ticket_type_id}}","tickets"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": 1\n}"
+            }
           },
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('No Content', function(){ pm.expect(pm.response.code).to.eql(204); });"
+                  "pm.test('Tickets purchased', function(){ pm.expect(pm.response.code).to.eql(201); });",
+                  "const tickets = pm.response.json();",
+                  "if (tickets && tickets.length) { pm.collectionVariables.set('ticket_id', tickets[0].id); }"
                 ],
                 "type": "text/javascript"
               }
@@ -208,6 +362,30 @@
             "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
             "url": { "raw": "{{base_url}}/api/v1/tickets/{{ticket_id}}/qr-codes", "host": ["{{base_url}}"], "path": ["api","v1","tickets","{{ticket_id}}","qr-codes"] }
           }
+        },
+        {
+          "name": "View QR Code (Inline)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/tickets/{{ticket_id}}/qr-codes/view", "host": ["{{base_url}}"], "path": ["api","v1","tickets","{{ticket_id}}","qr-codes","view"] }
+          }
+        },
+        {
+          "name": "Download QR Code (PNG)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/tickets/{{ticket_id}}/qr-codes/png", "host": ["{{base_url}}"], "path": ["api","v1","tickets","{{ticket_id}}","qr-codes","png"] }
+          }
+        },
+        {
+          "name": "Download QR Code (PDF)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/tickets/{{ticket_id}}/qr-codes/pdf", "host": ["{{base_url}}"], "path": ["api","v1","tickets","{{ticket_id}}","qr-codes","pdf"] }
+          }
         }
       ]
     },
@@ -231,9 +409,236 @@
             "url": { "raw": "{{base_url}}/api/v1/ticket-validations", "host": ["{{base_url}}"], "path": ["api","v1","ticket-validations"] },
             "body": { "mode": "raw", "raw": "{\n  \"id\": \"{{ticket_id}}\",\n  \"method\": \"QR_CODE\"\n}" }
           }
+        },
+        {
+          "name": "List Validations for Event",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/ticket-validations/events/{{event_id}}?page=0&size=20", "host": ["{{base_url}}"], "path": ["api","v1","ticket-validations","events","{{event_id}}"], "query": [ {"key":"page","value":"0"},{"key":"size","value":"20"} ] }
+          }
+        },
+        {
+          "name": "Get Validations by Ticket",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/ticket-validations/tickets/{{ticket_id}}", "host": ["{{base_url}}"], "path": ["api","v1","ticket-validations","tickets","{{ticket_id}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin Governance",
+      "item": [
+        {
+          "name": "Get Available Roles",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/admin/roles", "host": ["{{base_url}}"], "path": ["api","v1","admin","roles"] }
+          }
+        },
+        {
+          "name": "Assign Role to User",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/v1/admin/users/{{user_id}}/roles", "host": ["{{base_url}}"], "path": ["api","v1","admin","users","{{user_id}}","roles"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"roleName\": \"STAFF\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Get User Roles",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/admin/users/{{user_id}}/roles", "host": ["{{base_url}}"], "path": ["api","v1","admin","users","{{user_id}}","roles"] }
+          }
+        },
+        {
+          "name": "Revoke Role from User",
+          "request": {
+            "method": "DELETE",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/admin/users/{{user_id}}/roles/STAFF", "host": ["{{base_url}}"], "path": ["api","v1","admin","users","{{user_id}}","roles","STAFF"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Approval Management (Admin)",
+      "item": [
+        {
+          "name": "List All Users with Approval Status",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/admin/approvals?page=0&size=20", "host": ["{{base_url}}"], "path": ["api","v1","admin","approvals"], "query": [ {"key":"page","value":"0"},{"key":"size","value":"20"} ] }
+          }
+        },
+        {
+          "name": "List Pending Approvals",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/admin/approvals/pending?page=0&size=20", "host": ["{{base_url}}"], "path": ["api","v1","admin","approvals","pending"], "query": [ {"key":"page","value":"0"},{"key":"size","value":"20"} ] }
+          }
+        },
+        {
+          "name": "Approve User",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/admin/approvals/{{user_id}}/approve", "host": ["{{base_url}}"], "path": ["api","v1","admin","approvals","{{user_id}}","approve"] }
+          }
+        },
+        {
+          "name": "Reject User",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/v1/admin/approvals/{{user_id}}/reject", "host": ["{{base_url}}"], "path": ["api","v1","admin","approvals","{{user_id}}","reject"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Account violates terms of service\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Event Staff Management (Organizer)",
+      "item": [
+        {
+          "name": "Assign Staff to Event",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/staff", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","staff"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{user_id}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "List Event Staff",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/staff", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","staff"] }
+          }
+        },
+        {
+          "name": "Remove Staff from Event",
+          "request": {
+            "method": "DELETE",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/staff/{{user_id}}", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","staff","{{user_id}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Invite Codes",
+      "item": [
+        {
+          "name": "Generate Invite Code",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/v1/invites", "host": ["{{base_url}}"], "path": ["api","v1","invites"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"roleName\": \"STAFF\",\n  \"eventId\": \"{{event_id}}\",\n  \"expirationHours\": 48\n}"
+            }
+          }
+        },
+        {
+          "name": "Redeem Invite Code",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/v1/invites/redeem", "host": ["{{base_url}}"], "path": ["api","v1","invites","redeem"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"ABCD-EFGH-IJKL-MNOP\"\n}"
+            }
+          }
+        },
+        {
+          "name": "List Invite Codes",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/invites?page=0&size=20&sort=createdAt,desc", "host": ["{{base_url}}"], "path": ["api","v1","invites"], "query": [ {"key":"page","value":"0"},{"key":"size","value":"20"},{"key":"sort","value":"createdAt,desc"} ] }
+          }
+        },
+        {
+          "name": "List Event Invite Codes",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/invites/events/{{event_id}}?page=0&size=20", "host": ["{{base_url}}"], "path": ["api","v1","invites","events","{{event_id}}"], "query": [ {"key":"page","value":"0"},{"key":"size","value":"20"} ] }
+          }
+        },
+        {
+          "name": "Revoke Invite Code",
+          "request": {
+            "method": "DELETE",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/invites/{{invite_code_id}}?reason=No%20longer%20needed", "host": ["{{base_url}}"], "path": ["api","v1","invites","{{invite_code_id}}"], "query": [ {"key":"reason","value":"No%20longer%20needed"} ] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Audit Logs",
+      "item": [
+        {
+          "name": "View All Audit Logs (Admin)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/audit?page=0&size=20&sort=createdAt,desc", "host": ["{{base_url}}"], "path": ["api","v1","audit"], "query": [ {"key":"page","value":"0"},{"key":"size","value":"20"},{"key":"sort","value":"createdAt,desc"} ] }
+          }
+        },
+        {
+          "name": "View Event Audit Logs (Organizer)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/audit/events/{{event_id}}?page=0&size=20", "host": ["{{base_url}}"], "path": ["api","v1","audit","events","{{event_id}}"], "query": [ {"key":"page","value":"0"},{"key":"size","value":"20"} ] }
+          }
+        },
+        {
+          "name": "View My Audit Trail",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{access_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/audit/me?page=0&size=20", "host": ["{{base_url}}"], "path": ["api","v1","audit","me"], "query": [ {"key":"page","value":"0"},{"key":"size","value":"20"} ] }
+          }
         }
       ]
     }
   ]
 }
-

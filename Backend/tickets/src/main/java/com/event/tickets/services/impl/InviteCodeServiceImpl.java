@@ -131,63 +131,74 @@ public class InviteCodeServiceImpl implements InviteCodeService {
             String.format("User with ID '%s' not found", userId)
         ));
 
-    // Find invite code
-    InviteCode inviteCode = inviteCodeRepository.findByCode(code)
-        .orElseThrow(() -> new InviteCodeNotFoundException(
-            String.format("Invite code '%s' not found", code)
-        ));
-
-    // Check and mark if expired
-    inviteCode.checkAndMarkExpired();
-
-    // Validate code is redeemable
-    validateCodeForRedemption(inviteCode);
-
-    // Assign role via Keycloak Admin API
     try {
-      keycloakAdminService.assignRoleToUser(userId, inviteCode.getRoleName());
-      log.info("Assigned role '{}' to user '{}' via Keycloak",
-          inviteCode.getRoleName(), userId);
-    } catch (Exception e) {
-      log.error("Failed to assign role '{}' to user '{}' in Keycloak",
-          inviteCode.getRoleName(), userId, e);
-      throw new IllegalStateException(
-          String.format(
-              "Failed to assign role '%s' in Keycloak: %s",
-              inviteCode.getRoleName(), e.getMessage()
-          ),
-          e
+      // Find invite code
+      InviteCode inviteCode = inviteCodeRepository.findByCode(code)
+          .orElseThrow(() -> new InviteCodeNotFoundException(
+              String.format("Invite code '%s' not found", code)
+          ));
+
+      // Check and mark if expired
+      inviteCode.checkAndMarkExpired();
+
+      // Validate code is redeemable
+      validateCodeForRedemption(inviteCode);
+
+      // Assign role via Keycloak Admin API
+      try {
+        keycloakAdminService.assignRoleToUser(userId, inviteCode.getRoleName());
+        log.info("Assigned role '{}' to user '{}' via Keycloak",
+            inviteCode.getRoleName(), userId);
+      } catch (Exception e) {
+        log.error("Failed to assign role '{}' to user '{}' in Keycloak",
+            inviteCode.getRoleName(), userId, e);
+        
+        // Emit failed invite redemption audit event
+        emitFailedInviteRedemption(user, inviteCode, "ROLE_ASSIGNMENT_FAILED: " + e.getMessage());
+        
+        throw new IllegalStateException(
+            String.format(
+                "Failed to assign role '%s' in Keycloak: %s",
+                inviteCode.getRoleName(), e.getMessage()
+            ),
+            e
+        );
+      }
+
+      // Create event-staff assignment if STAFF role
+      String eventName = null;
+      if ("STAFF".equals(inviteCode.getRoleName()) && inviteCode.getEvent() != null) {
+        Event event = inviteCode.getEvent();
+        event.getStaff().add(user);
+        eventRepository.save(event);
+        eventName = event.getName();
+        log.info("Assigned user '{}' as staff to event '{}'",
+            user.getName(), event.getName());
+      }
+
+      // Mark code as redeemed
+      inviteCode.setStatus(InviteCodeStatus.REDEEMED);
+      inviteCode.setRedeemedBy(user);
+      inviteCode.setRedeemedAt(LocalDateTime.now());
+      inviteCodeRepository.save(inviteCode);
+
+      log.info("Successfully redeemed invite code '{}' for user '{}'", code, user.getName());
+
+      // Get current roles
+      List<String> currentRoles = keycloakAdminService.getUserRoles(userId);
+
+      return new RedeemInviteCodeResponseDto(
+          "Invite code redeemed successfully",
+          inviteCode.getRoleName(),
+          eventName,
+          currentRoles
       );
+      
+    } catch (InvalidInviteCodeException | InviteCodeNotFoundException e) {
+      // Emit failed invite redemption audit event for validation failures
+      emitFailedInviteRedemption(user, null, e.getClass().getSimpleName() + ": " + e.getMessage());
+      throw e;
     }
-
-    // Create event-staff assignment if STAFF role
-    String eventName = null;
-    if ("STAFF".equals(inviteCode.getRoleName()) && inviteCode.getEvent() != null) {
-      Event event = inviteCode.getEvent();
-      event.getStaff().add(user);
-      eventRepository.save(event);
-      eventName = event.getName();
-      log.info("Assigned user '{}' as staff to event '{}'",
-          user.getName(), event.getName());
-    }
-
-    // Mark code as redeemed
-    inviteCode.setStatus(InviteCodeStatus.REDEEMED);
-    inviteCode.setRedeemedBy(user);
-    inviteCode.setRedeemedAt(LocalDateTime.now());
-    inviteCodeRepository.save(inviteCode);
-
-    log.info("Successfully redeemed invite code '{}' for user '{}'", code, user.getName());
-
-    // Get current roles
-    List<String> currentRoles = keycloakAdminService.getUserRoles(userId);
-
-    return new RedeemInviteCodeResponseDto(
-        "Invite code redeemed successfully",
-        inviteCode.getRoleName(),
-        eventName,
-        currentRoles
-    );
   }
 
   @Override
@@ -382,5 +393,44 @@ public class InviteCodeServiceImpl implements InviteCodeService {
         .redeemedBy(inviteCode.getRedeemedBy() != null ? inviteCode.getRedeemedBy().getName() : null)
         .redeemedAt(inviteCode.getRedeemedAt())
         .build();
+  }
+
+  /**
+   * Emits an audit event for failed invite code redemptions.
+   *
+   * @param user The user attempting redemption
+   * @param inviteCode The invite code (may be null if not found)
+   * @param reason The failure reason
+   */
+  private void emitFailedInviteRedemption(User user, InviteCode inviteCode, String reason) {
+    try {
+      AuditLog auditLog = AuditLog.builder()
+          .action(AuditAction.FAILED_INVITE_REDEMPTION)
+          .actor(user)
+          .targetUser(user)
+          .event(inviteCode != null ? inviteCode.getEvent() : null)
+          .resourceType("INVITE_CODE")
+          .resourceId(inviteCode != null ? inviteCode.getId() : null)
+          .details("code=" + (inviteCode != null ? inviteCode.getCode() : "NOT_FOUND") + ",reason=" + reason)
+          .ipAddress(extractClientIp(getCurrentRequest()))
+          .userAgent(extractUserAgent(getCurrentRequest()))
+          .build();
+
+      auditLogRepository.save(auditLog);
+    } catch (Exception e) {
+      log.error("Failed to emit failed invite redemption audit event: userId={}, error={}", 
+          user.getId(), e.getMessage());
+      // Audit failures should not break the main flow
+    }
+  }
+
+  /**
+   * Gets the current HTTP request.
+   *
+   * @return HttpServletRequest
+   */
+  private HttpServletRequest getCurrentRequest() {
+    ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+    return attributes != null ? attributes.getRequest() : null;
   }
 }

@@ -11,8 +11,8 @@ import lombok.NoArgsConstructor;
 /**
  * Registration Request DTO
  *
- * Used for invite-based user registration.
- * All fields are required and validated.
+ * Used for invite-based or default user registration.
+ * Email, password, and name are required. Invite code is optional.
  */
 @Data
 @NoArgsConstructor
@@ -20,10 +20,11 @@ import lombok.NoArgsConstructor;
 public class RegisterRequestDto {
 
   /**
-   * Invite code provided to the user.
+   * Invite code provided to the user (OPTIONAL).
+   * If provided: User gets role from invite code
+   * If not provided: User gets default ATTENDEE role
    * Format: XXXX-XXXX-XXXX-XXXX (16 characters + 3 hyphens)
    */
-  @NotBlank(message = "Invite code is required")
   @Pattern(
       regexp = "^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$",
       message = "Invalid invite code format. Expected: XXXX-XXXX-XXXX-XXXX"

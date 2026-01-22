@@ -1,7 +1,10 @@
 package com.event.tickets.filters;
 
+import com.event.tickets.domain.entities.AuditAction;
+import com.event.tickets.domain.entities.AuditLog;
 import com.event.tickets.domain.entities.ApprovalStatus;
 import com.event.tickets.domain.entities.User;
+import com.event.tickets.repositories.AuditLogRepository;
 import com.event.tickets.repositories.UserRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
@@ -19,6 +22,9 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+
+import static com.event.tickets.util.RequestUtil.extractClientIp;
+import static com.event.tickets.util.RequestUtil.extractUserAgent;
 
 /**
  * Approval Gate Filter - PRODUCTION HARDENED
@@ -102,6 +108,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class ApprovalGateFilter extends OncePerRequestFilter {
 
   private final UserRepository userRepository;
+  private final AuditLogRepository auditLogRepository;
   private final ObjectMapper objectMapper = new ObjectMapper();
 
   /**
@@ -164,6 +171,10 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
       if (status == ApprovalStatus.PENDING) {
         log.warn("APPROVAL GATE BLOCK: User pending approval - userId={}, email={}, method={}, path={}",
             userId, user.getEmail(), method, path);
+        
+        // Emit approval gate violation audit event
+        emitApprovalGateViolation(user, path, method, "PENDING");
+        
         sendForbiddenResponse(
             response,
             "APPROVAL_PENDING",
@@ -181,6 +192,10 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
         String reason = user.getRejectionReason() != null
             ? user.getRejectionReason()
             : "No reason provided";
+            
+        // Emit approval gate violation audit event
+        emitApprovalGateViolation(user, path, method, "REJECTED: " + reason);
+        
         sendForbiddenResponse(
             response,
             "APPROVAL_REJECTED",
@@ -254,5 +269,34 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
     );
 
     response.getWriter().write(objectMapper.writeValueAsString(errorBody));
+  }
+
+  /**
+   * Emits an audit event for approval gate violations.
+   *
+   * @param user The user being blocked
+   * @param path The requested path
+   * @param method The HTTP method
+   * @param reason The reason for the block
+   */
+  private void emitApprovalGateViolation(User user, String path, String method, String reason) {
+    try {
+      AuditLog auditLog = AuditLog.builder()
+          .action(AuditAction.APPROVAL_GATE_VIOLATION)
+          .actor(user)
+          .targetUser(user)
+          .resourceType("API_ENDPOINT")
+          .resourceId(null)
+          .details("path=" + path + ",method=" + method + ",reason=" + reason)
+          .ipAddress(extractClientIp(null))
+          .userAgent(extractUserAgent(null))
+          .build();
+
+      auditLogRepository.save(auditLog);
+    } catch (Exception e) {
+      log.error("Failed to emit approval gate violation audit event: userId={}, error={}", 
+          user.getId(), e.getMessage());
+      // Audit failures should not break the main flow
+    }
   }
 }

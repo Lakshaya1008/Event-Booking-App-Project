@@ -1,10 +1,10 @@
 # Event Booking App — Complete Testing Guide
 
-**Last Updated:** January 19, 2026  
+**Last Updated:** January 22, 2026  
 
-**Version:** 2.1  
-**Target Application:** Event Booking App API v1.1  
-**Features Covered:** Event Update API Fix, QR Code Exports, Sales Report Export, Approval Gate System, Discount Management
+**Version:** 3.0  
+**Target Application:** Event Booking App API v1.0  
+**Features Covered:** Complete API Testing with Approval Gate System
 
 ---
 
@@ -623,6 +623,8 @@ pm.test("Extract event ID", function () {
 
 ### 5.5 Complete Test Requests
 
+This section provides test requests for all endpoints, including minimum valid payloads, full valid payloads, and invalid examples with expected status codes.
+
 #### 5.5.1 Get Access Token
 
 **Request:**
@@ -643,43 +645,68 @@ pm.test("Token received", function () {
     pm.response.to.have.status(200);
     const jsonData = pm.response.json();
     pm.environment.set("access_token", jsonData.access_token);
-    pm.environment.set("refresh_token", jsonData.refresh_token);
     pm.environment.set("token_expiry", Date.now() + (jsonData.expires_in * 1000));
 });
 ```
 
-#### 5.5.2 Create Event
+#### 5.5.2 Create Event (ORGANIZER)
 
-**Request:**
+**Minimum Valid Payload:**
 ```
 POST {{base_url}}/api/v1/events
 Authorization: Bearer {{access_token}}
 Content-Type: application/json
 
 {
-    "name": "Test Conference {{$timestamp}}",
-    "start": "2025-12-15T09:00:00",
-    "end": "2025-12-15T18:00:00",
-    "venue": "Test Convention Center",
-    "salesStart": "2025-11-01T00:00:00",
-    "salesEnd": "2025-12-14T23:59:59",
-    "status": "PUBLISHED",
-    "ticketTypes": [
-        {
-            "name": "General Admission",
-            "price": 99.99,
-            "description": "Standard entry",
-            "totalAvailable": 500
-        },
-        {
-            "name": "VIP",
-            "price": 299.99,
-            "description": "VIP access",
-            "totalAvailable": 50
-        }
-    ]
+  "name": "Test Conference",
+  "venue": "Convention Center",
+  "status": "PUBLISHED",
+  "ticketTypes": [
+    {
+      "name": "General Admission",
+      "price": 199.99
+    }
+  ]
 }
 ```
+
+**Full Valid Payload:**
+```
+POST {{base_url}}/api/v1/events
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "name": "Test Conference {{$timestamp}}",
+  "start": "2025-12-15T09:00:00",
+  "end": "2025-12-15T18:00:00",
+  "venue": "Test Convention Center",
+  "salesStart": "2025-11-01T00:00:00",
+  "salesEnd": "2025-12-14T23:59:59",
+  "status": "PUBLISHED",
+  "ticketTypes": [
+    {
+      "name": "General Admission",
+      "price": 99.99,
+      "description": "Standard entry",
+      "totalAvailable": 500
+    },
+    {
+      "name": "VIP",
+      "price": 299.99,
+      "description": "VIP access",
+      "totalAvailable": 50
+    }
+  ]
+}
+```
+
+**Invalid Payload Examples:**
+- Missing `name`: 400 Bad Request
+- Missing `venue`: 400 Bad Request
+- Missing `status`: 400 Bad Request
+- Empty `ticketTypes`: 400 Bad Request
+- Invalid `status` value: 400 Bad Request
 
 **Tests:**
 ```javascript
@@ -692,714 +719,780 @@ pm.test("Response has required fields", function () {
     pm.expect(jsonData).to.have.property('id');
     pm.expect(jsonData).to.have.property('name');
     pm.expect(jsonData).to.have.property('ticketTypes');
-    pm.expect(jsonData.ticketTypes).to.be.an('array').that.has.lengthOf(2);
+});
+
+pm.test("Response fields are correct", function () {
+    const jsonData = pm.response.json();
+    pm.expect(jsonData.name).to.eql("Test Conference {{$timestamp}}");
+    pm.expect(jsonData.venue).to.eql("Test Convention Center");
+    pm.expect(jsonData.ticketTypes).to.be.an("array").that.has.lengthOf(2);
+    pm.expect(jsonData.ticketTypes[0]).to.include.keys("id", "name", "price", "description", "totalAvailable");
+    pm.expect(jsonData.ticketTypes[1]).to.include.keys("id", "name", "price", "description", "totalAvailable");
 });
 
 pm.test("Save event data", function () {
     const jsonData = pm.response.json();
     pm.environment.set("event_id", jsonData.id);
     pm.environment.set("ticket_type_id", jsonData.ticketTypes[0].id);
-    pm.environment.set("vip_ticket_type_id", jsonData.ticketTypes[1].id);
 });
 ```
 
-#### 5.5.3 Purchase Ticket
+#### 5.5.3 Update Event (ORGANIZER)
+
+**Minimum Valid Payload:**
+```
+PUT {{base_url}}/api/v1/events/{{event_id}}
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "name": "Updated Conference",
+  "venue": "Updated Venue",
+  "status": "PUBLISHED",
+  "ticketTypes": [
+    {
+      "name": "General Admission",
+      "price": 199.99
+    }
+  ]
+}
+```
+
+**Full Valid Payload:**
+```
+PUT {{base_url}}/api/v1/events/{{event_id}}
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "name": "Updated Conference {{$timestamp}}",
+  "start": "2025-12-15T10:00:00",
+  "end": "2025-12-15T19:00:00",
+  "venue": "Updated Convention Center",
+  "salesStart": "2025-11-01T00:00:00",
+  "salesEnd": "2025-12-14T23:59:59",
+  "status": "PUBLISHED",
+  "ticketTypes": [
+    {
+      "id": "{{ticket_type_id}}",
+      "name": "Updated General Admission",
+      "price": 149.99,
+      "description": "Updated description",
+      "totalAvailable": 400
+    }
+  ]
+}
+```
+
+**Invalid Payload Examples:**
+- Missing `name`: 400 Bad Request
+- Missing `venue`: 400 Bad Request
+- Missing `status`: 400 Bad Request
+- Empty `ticketTypes`: 400 Bad Request
+- ID in body doesn't match URL: 400 Bad Request
+- Non-owner organizer: 403 Forbidden
+- Non-existent event: 404 Not Found
+
+**Tests:**
+```javascript
+pm.test("Event updated successfully", function () {
+    pm.response.to.have.status(200);
+});
+
+pm.test("Response has updated fields", function () {
+    const jsonData = pm.response.json();
+    pm.expect(jsonData.name).to.eql("Updated Conference {{$timestamp}}");
+    pm.expect(jsonData.venue).to.eql("Updated Convention Center");
+    pm.expect(jsonData.ticketTypes).to.be.an("array").that.has.lengthOf(1);
+    pm.expect(jsonData.ticketTypes[0]).to.include.keys("id", "name", "price", "description", "totalAvailable");
+});
+
+pm.test("No new event ID generated", function () {
+    const jsonData = pm.response.json();
+    pm.expect(jsonData.id).to.eql(pm.environment.get("event_id"));
+});
+```
+
+#### 5.5.4 List Events (ORGANIZER)
 
 **Request:**
+```
+GET {{base_url}}/api/v1/events?page=0&size=20&sort=start,desc
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - Page<ListEventResponseDto>
+
+#### 5.5.5 Get Event (ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/events/{{event_id}}
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - GetEventDetailsResponseDto | 404 Not Found
+
+#### 5.5.6 Delete Event (ORGANIZER)
+
+**Request:**
+```
+DELETE {{base_url}}/api/v1/events/{{event_id}}
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 204 No Content | 403 Forbidden | 404 Not Found
+
+#### 5.5.7 Get Sales Dashboard (ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/events/{{event_id}}/sales-dashboard
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - Map<String, Object>
+
+#### 5.5.8 Get Attendees Report (ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/events/{{event_id}}/attendees-report
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - Map<String, Object>
+
+#### 5.5.9 Export Sales Report (ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/events/{{event_id}}/sales-report.xlsx
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+#### 5.5.10 List Published Events (ATTENDEE/ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/published-events?q=tech&page=0&size=20&sort=start,asc
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - Page<ListPublishedEventResponseDto>
+
+#### 5.5.11 Get Published Event (ATTENDEE/ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/published-events/{{event_id}}
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - GetPublishedEventDetailsResponseDto | 404 Not Found
+
+#### 5.5.12 Purchase Ticket (ATTENDEE/ORGANIZER)
+
+**Minimum Valid Payload (uses default quantity=1):**
+```
+POST {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/tickets
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{}
+```
+
+**Full Valid Payload:**
 ```
 POST {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/tickets
 Authorization: Bearer {{access_token}}
 Content-Type: application/json
 
 {
-    "quantity": 2
+  "quantity": 2
 }
+```
+
+**Invalid Payload Examples:**
+- quantity < 1: 400 Bad Request
+- quantity > 10: 400 Bad Request
+- Sold out: 400 Bad Request
+
+**Tests:**
+```javascript
+pm.test("Tickets purchased", function(){ pm.expect(pm.response.code).to.eql(201); });
+const tickets = pm.response.json();
+if (tickets && tickets.length) { pm.environment.set('ticket_id', tickets[0].id); }
+```
+
+#### 5.5.13 List My Tickets (ATTENDEE/ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/tickets?page=0&size=20&sort=id,desc
+Authorization: Bearer {{access_token}}
 ```
 
 **Tests:**
 ```javascript
-pm.test("Tickets purchased successfully", function () {
-    pm.response.to.have.status(201);
-});
-
-pm.test("Correct number of tickets returned", function () {
-    const jsonData = pm.response.json();
-    pm.expect(jsonData).to.be.an('array').that.has.lengthOf(2);
-});
-
-pm.test("Save first ticket ID", function () {
-    const jsonData = pm.response.json();
-    pm.environment.set("ticket_id", jsonData[0].id);
-});
+const page = pm.response.json();
+if (page && page.content && page.content.length) { pm.environment.set('ticket_id', page.content[0].id); }
+pm.test('OK', function(){ pm.expect(pm.response.code).to.eql(200); });
 ```
 
-#### 5.5.4 Validate Ticket
+#### 5.5.14 Get Ticket (ATTENDEE/ORGANIZER)
 
 **Request:**
+```
+GET {{base_url}}/api/v1/tickets/{{ticket_id}}
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - GetTicketResponseDto | 404 Not Found
+
+#### 5.5.15 View QR Code (ATTENDEE/ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/tickets/{{ticket_id}}/qr-codes/view
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - image/png | 403 Forbidden | 404 Not Found
+
+#### 5.5.16 Download QR Code PNG (ATTENDEE/ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/tickets/{{ticket_id}}/qr-codes/png
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - image/png | 403 Forbidden | 404 Not Found
+
+#### 5.5.17 Download QR Code PDF (ATTENDEE/ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/tickets/{{ticket_id}}/qr-codes/pdf
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - application/pdf | 403 Forbidden | 404 Not Found
+
+#### 5.5.18 Create Ticket Type (ORGANIZER)
+
+**Minimum Valid Payload:**
+```
+POST {{base_url}}/api/v1/events/{{event_id}}/ticket-types
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "name": "VIP Pass",
+  "price": 499.99
+}
+```
+
+**Full Valid Payload:**
+```
+POST {{base_url}}/api/v1/events/{{event_id}}/ticket-types
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "name": "VIP Pass",
+  "price": 499.99,
+  "description": "Premium access",
+  "totalAvailable": 50
+}
+```
+
+**Invalid Payload Examples:**
+- Missing `name`: 400 Bad Request
+- Missing `price`: 400 Bad Request
+- price <= 0: 400 Bad Request
+
+#### 5.5.19 List Ticket Types (ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/events/{{event_id}}/ticket-types
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - List<CreateTicketTypeResponseDto>
+
+#### 5.5.20 Get Ticket Type (ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - CreateTicketTypeResponseDto | 404 Not Found
+
+#### 5.5.21 Update Ticket Type (ORGANIZER)
+
+**Minimum Valid Payload:**
+```
+PUT {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "name": "Updated VIP Pass",
+  "price": 549.99
+}
+```
+
+**Full Valid Payload:**
+```
+PUT {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "name": "Updated VIP Pass",
+  "price": 549.99,
+  "description": "Updated premium access",
+  "totalAvailable": 75
+}
+```
+
+**Invalid Payload Examples:**
+- Missing `name`: 400 Bad Request
+- Missing `price`: 400 Bad Request
+- price <= 0: 400 Bad Request
+
+#### 5.5.22 Delete Ticket Type (ORGANIZER)
+
+**Request:**
+```
+DELETE {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 204 No Content | 400 Bad Request | 403 Forbidden | 404 Not Found
+
+#### 5.5.23 Create Discount (ORGANIZER)
+
+**Minimum Valid Payload:**
+```
+POST {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "discountType": "PERCENTAGE",
+  "value": 20.0,
+  "validFrom": "2025-11-01T00:00:00",
+  "validTo": "2025-11-30T23:59:59"
+}
+```
+
+**Full Valid Payload:**
+```
+POST {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "discountType": "PERCENTAGE",
+  "value": 20.0,
+  "validFrom": "2025-11-01T00:00:00",
+  "validTo": "2025-11-30T23:59:59",
+  "active": true,
+  "description": "Early Bird Special"
+}
+```
+
+**Invalid Payload Examples:**
+- Missing `discountType`: 400 Bad Request
+- Missing `value`: 400 Bad Request
+- value <= 0: 400 Bad Request
+- validTo before validFrom: 400 Bad Request
+- Invalid discountType: 400 Bad Request
+
+#### 5.5.24 Update Discount (ORGANIZER)
+
+**Request:** Same as create, with discount ID in URL
+
+```
+PUT {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts/{{discount_id}}
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "discountType": "PERCENTAGE",
+  "value": 25.0,
+  "validFrom": "2025-11-01T00:00:00",
+  "validTo": "2025-11-30T23:59:59",
+  "description": "Updated Early Bird Special"
+}
+```
+
+#### 5.5.25 Delete Discount (ORGANIZER)
+
+**Request:**
+```
+DELETE {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts/{{discount_id}}
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 204 No Content
+
+#### 5.5.26 Get Discount (ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts/{{discount_id}}
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - DiscountResponseDto | 404 Not Found
+
+#### 5.5.27 List Discounts (ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - List<DiscountResponseDto>
+
+#### 5.5.28 Validate Ticket (STAFF/ORGANIZER)
+
+**Minimum Valid Payload:**
+```
+POST {{base_url}}/api/v1/ticket-validations
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{}
+```
+
+**Full Valid Payload:**
 ```
 POST {{base_url}}/api/v1/ticket-validations
 Authorization: Bearer {{access_token}}
 Content-Type: application/json
 
 {
-    "id": "{{ticket_id}}",
-    "method": "MANUAL"
+  "id": "{{ticket_id}}",
+  "method": "MANUAL"
 }
 ```
 
-**Tests:**
-```javascript
-pm.test("Ticket validated successfully", function () {
-    pm.response.to.have.status(200);
-});
+**Expected:** 200 OK - TicketValidationResponseDto
 
-pm.test("Validation response is correct", function () {
-    const jsonData = pm.response.json();
-    pm.expect(jsonData).to.have.property('ticketId');
-    pm.expect(jsonData).to.have.property('status');
-});
+#### 5.5.29 List Validations for Event (STAFF/ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/ticket-validations/events/{{event_id}}?page=0&size=20
+Authorization: Bearer {{access_token}}
 ```
 
-### 5.6 Running Postman Tests
+**Expected:** 200 OK - Page<TicketValidationResponseDto>
 
-#### Using Newman (CLI)
+#### 5.5.30 Get Validations by Ticket (STAFF/ORGANIZER)
 
-```powershell
-# Install Newman globally
-npm install -g newman
-
-# Run collection with environment
-newman run EventBookingApp.postman_collection.json `
-  -e EventBookingApp.postman_environment.json `
-  --reporters cli,html `
-  --reporter-html-export newman-report.html
-
-# Run with iteration data
-newman run EventBookingApp.postman_collection.json `
-  -e EventBookingApp.postman_environment.json `
-  -d test-data.json `
-  -n 10
-
-# Run specific folder
-newman run EventBookingApp.postman_collection.json `
-  -e EventBookingApp.postman_environment.json `
-  --folder "1. Event Management"
+**Request:**
+```
+GET {{base_url}}/api/v1/ticket-validations/tickets/{{ticket_id}}
+Authorization: Bearer {{access_token}}
 ```
 
----
+**Expected:** 200 OK - List<TicketValidationResponseDto>
 
-## 6. Performance Testing
+#### 5.5.31 Get Available Roles (ADMIN)
 
-### 6.1 Performance Metrics to Measure
-
-| Metric | Target | Critical Threshold |
-|--------|--------|-------------------|
-| Response Time (p50) | < 100ms | < 500ms |
-| Response Time (p95) | < 300ms | < 1000ms |
-| Response Time (p99) | < 500ms | < 2000ms |
-| Throughput | > 1000 req/sec | > 500 req/sec |
-| Error Rate | < 0.1% | < 1% |
-| CPU Usage | < 70% | < 90% |
-| Memory Usage | < 70% | < 85% |
-
-### 6.2 Postman Performance Tests
-
-Add to individual requests:
-
-```javascript
-// Response time thresholds
-pm.test("Response time is acceptable", function () {
-    const responseTime = pm.response.responseTime;
-    
-    if (responseTime < 100) {
-        console.log("✅ Excellent: " + responseTime + "ms");
-    } else if (responseTime < 300) {
-        console.log("✓ Good: " + responseTime + "ms");
-    } else if (responseTime < 500) {
-        console.log("⚠ Acceptable: " + responseTime + "ms");
-    } else {
-        console.log("❌ Slow: " + responseTime + "ms");
-    }
-    
-    pm.expect(responseTime).to.be.below(500);
-});
-
-// Response size check
-pm.test("Response size is reasonable", function () {
-    const responseSize = pm.response.responseSize;
-    pm.expect(responseSize).to.be.below(1024 * 100); // 100KB max
-});
+**Request:**
+```
+GET {{base_url}}/api/v1/admin/roles
+Authorization: Bearer {{access_token}}
 ```
 
-### 6.3 Performance Test Collection
+**Expected:** 200 OK - AvailableRolesResponseDto
 
-Create a separate collection for performance tests:
+#### 5.5.32 Assign Role (ADMIN)
 
-```javascript
-// Collection-level variable for metrics
-let metrics = {
-    totalRequests: 0,
-    totalTime: 0,
-    minTime: Infinity,
-    maxTime: 0,
-    errors: 0
-};
-
-// Test script
-pm.test("Record metrics", function () {
-    const collectionMetrics = pm.variables.get("metrics") || metrics;
-    collectionMetrics.totalRequests++;
-    collectionMetrics.totalTime += pm.response.responseTime;
-    collectionMetrics.minTime = Math.min(collectionMetrics.minTime, pm.response.responseTime);
-    collectionMetrics.maxTime = Math.max(collectionMetrics.maxTime, pm.response.responseTime);
-    if (pm.response.code >= 400) {
-        collectionMetrics.errors++;
-    }
-    pm.variables.set("metrics", collectionMetrics);
-    
-    // Log summary
-    console.log("Avg Response Time: " + (collectionMetrics.totalTime / collectionMetrics.totalRequests).toFixed(2) + "ms");
-    console.log("Error Rate: " + ((collectionMetrics.errors / collectionMetrics.totalRequests) * 100).toFixed(2) + "%");
-});
+**Minimum Valid Payload:**
 ```
+POST {{base_url}}/api/v1/admin/users/{{user_id}}/roles
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
 
----
-
-## 7. Security Testing
-
-### 7.1 Authentication Tests
-
-```javascript
-// Test 1: No token
-pm.test("Rejects request without token", function () {
-    pm.response.to.have.status(401);
-});
-
-// Test 2: Invalid token
-pm.test("Rejects invalid token", function () {
-    pm.response.to.have.status(401);
-});
-
-// Test 3: Expired token
-pm.test("Rejects expired token", function () {
-    pm.response.to.have.status(401);
-});
-```
-
-### 7.2 Authorization Tests
-
-| Test Case | User Role | Endpoint | Expected |
-|-----------|-----------|----------|----------|
-| ATTENDEE accessing admin | ATTENDEE | POST /api/v1/admin/users/{id}/roles | 403 |
-| ORGANIZER accessing other's event | ORGANIZER | GET /api/v1/events/{other-id} | 404 |
-| STAFF validating unassigned event | STAFF | POST /api/v1/ticket-validations | 403 |
-| ADMIN accessing event management | ADMIN | GET /api/v1/events | 403 |
-
-### 7.3 Security Test Scripts
-
-```javascript
-// Test unauthorized access
-pm.test("Authorization denied for wrong role", function () {
-    pm.response.to.have.status(403);
-});
-
-// Test for sensitive data leakage
-pm.test("No sensitive data in error response", function () {
-    const jsonData = pm.response.json();
-    pm.expect(JSON.stringify(jsonData)).to.not.include("password");
-    pm.expect(JSON.stringify(jsonData)).to.not.include("secret");
-    pm.expect(JSON.stringify(jsonData)).to.not.include("stackTrace");
-});
-
-// Test rate limiting
-pm.test("Rate limit headers present", function () {
-    pm.expect(pm.response.headers.has('X-Rate-Limit-Remaining')).to.be.true;
-});
-```
-
-### 7.4 OWASP Top 10 Checklist
-
-| Vulnerability | Test | Status |
-|---------------|------|--------|
-| A01 Broken Access Control | Role-based access tests | ⬜ |
-| A02 Cryptographic Failures | JWT validation | ⬜ |
-| A03 Injection | SQL injection tests | ⬜ |
-| A04 Insecure Design | Business logic tests | ⬜ |
-| A05 Security Misconfiguration | Error message tests | ⬜ |
-| A06 Vulnerable Components | Dependency scan | ⬜ |
-| A07 Auth Failures | Token validation | ⬜ |
-| A08 Data Integrity | Input validation | ⬜ |
-| A09 Security Logging | Audit log verification | ⬜ |
-| A10 SSRF | URL validation | ⬜ |
-
----
-
-## 8. Load Testing with JMeter
-
-### 8.1 JMeter Test Plan Structure
-
-```
-Test Plan
-├── Thread Group (100 users, 60s ramp-up, 300s duration)
-│   ├── Config Elements
-│   │   ├── HTTP Header Manager
-│   │   ├── HTTP Cookie Manager
-│   │   └── CSV Data Set Config (user credentials)
-│   ├── Setup Thread Group (Get tokens)
-│   ├── Main Thread Group
-│   │   ├── GET /api/v1/published-events (50%)
-│   │   ├── POST /api/v1/tickets (30%)
-│   │   ├── GET /api/v1/tickets (15%)
-│   │   └── POST /api/v1/ticket-validations (5%)
-│   └── Listeners
-│       ├── Summary Report
-│       ├── Aggregate Report
-│       └── Response Time Graph
-```
-
-### 8.2 JMeter CLI Commands
-
-```powershell
-# Run load test
-jmeter -n -t LoadTest.jmx -l results.jtl -e -o report
-
-# Run with specific properties
-jmeter -n -t LoadTest.jmx `
-  -Jthreads=100 `
-  -Jrampup=60 `
-  -Jduration=300 `
-  -l results.jtl
-
-# Generate HTML report from results
-jmeter -g results.jtl -o html-report
-```
-
-### 8.3 Load Test Scenarios
-
-#### Scenario 1: Normal Load
-- Users: 50
-- Ramp-up: 30 seconds
-- Duration: 5 minutes
-- Expected: < 200ms response, 0% error rate
-
-#### Scenario 2: Peak Load
-- Users: 200
-- Ramp-up: 60 seconds
-- Duration: 10 minutes
-- Expected: < 500ms response, < 0.1% error rate
-
-#### Scenario 3: Stress Test
-- Users: 500
-- Ramp-up: 120 seconds
-- Duration: 15 minutes
-- Expected: System degrades gracefully
-
-#### Scenario 4: Spike Test
-- Users: 100 → 500 → 100 (spike pattern)
-- Duration: 10 minutes
-- Expected: Recovery within 30 seconds
-
-### 8.4 Sample JMeter Test Plan (XML)
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<jmeterTestPlan version="1.2">
-  <hashTree>
-    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="Event Booking Load Test">
-      <boolProp name="TestPlan.functional_mode">false</boolProp>
-    </TestPlan>
-    <hashTree>
-      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Users">
-        <stringProp name="ThreadGroup.num_threads">${__P(threads,100)}</stringProp>
-        <stringProp name="ThreadGroup.ramp_time">${__P(rampup,60)}</stringProp>
-        <stringProp name="ThreadGroup.duration">${__P(duration,300)}</stringProp>
-        <boolProp name="ThreadGroup.scheduler">true</boolProp>
-      </ThreadGroup>
-      <hashTree>
-        <!-- Add samplers here -->
-      </hashTree>
-    </hashTree>
-  </hashTree>
-</jmeterTestPlan>
-```
-
----
-
-## 9. Metrics and Monitoring
-
-### 9.1 Enable Actuator Endpoints
-
-Add to `pom.xml`:
-```xml
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-actuator</artifactId>
-</dependency>
-<dependency>
-    <groupId>io.micrometer</groupId>
-    <artifactId>micrometer-registry-prometheus</artifactId>
-</dependency>
-```
-
-Add to `application.properties`:
-```properties
-# Actuator Configuration
-management.endpoints.web.exposure.include=health,info,metrics,prometheus
-management.endpoint.health.show-details=when_authorized
-management.metrics.export.prometheus.enabled=true
-```
-
-### 9.2 Key Metrics to Monitor
-
-#### Application Metrics
-```powershell
-# Health check
-Invoke-RestMethod -Method Get -Uri "http://localhost:8081/actuator/health"
-
-# Metrics list
-Invoke-RestMethod -Method Get -Uri "http://localhost:8081/actuator/metrics"
-
-# Specific metric - HTTP requests
-Invoke-RestMethod -Method Get -Uri "http://localhost:8081/actuator/metrics/http.server.requests"
-
-# JVM memory
-Invoke-RestMethod -Method Get -Uri "http://localhost:8081/actuator/metrics/jvm.memory.used"
-
-# Prometheus format (for Grafana)
-Invoke-RestMethod -Method Get -Uri "http://localhost:8081/actuator/prometheus"
-```
-
-### 9.3 Custom Metrics Dashboard
-
-Track these key metrics:
-
-| Metric | Prometheus Query | Alert Threshold |
-|--------|-----------------|-----------------|
-| Request Rate | `rate(http_server_requests_seconds_count[5m])` | N/A |
-| Error Rate | `rate(http_server_requests_seconds_count{status=~"5.."}[5m])` | > 1% |
-| P95 Latency | `histogram_quantile(0.95, http_server_requests_seconds_bucket)` | > 500ms |
-| JVM Heap | `jvm_memory_used_bytes{area="heap"}` | > 80% |
-| Active Threads | `jvm_threads_live_threads` | > 200 |
-| DB Connections | `hikaricp_connections_active` | > 80% pool |
-
-### 9.4 Logging Configuration
-
-Add to `application.properties`:
-```properties
-# Logging levels
-logging.level.com.event.tickets=DEBUG
-logging.level.org.springframework.web=INFO
-logging.level.org.hibernate.SQL=DEBUG
-
-# Log file
-logging.file.name=logs/application.log
-logging.pattern.file=%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n
-```
-
-### 9.5 Metrics Collection Script
-
-```powershell
-# metrics-collector.ps1
-$BASE_URL = "http://localhost:8081"
-$OUTPUT_FILE = "metrics-$(Get-Date -Format 'yyyyMMdd-HHmmss').csv"
-
-# Header
-"timestamp,requests_total,requests_per_sec,avg_response_time,error_rate,heap_used_mb" | Out-File $OUTPUT_FILE
-
-while ($true) {
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    
-    try {
-        $metrics = Invoke-RestMethod -Uri "$BASE_URL/actuator/metrics/http.server.requests" -TimeoutSec 5
-        $heap = Invoke-RestMethod -Uri "$BASE_URL/actuator/metrics/jvm.memory.used?tag=area:heap" -TimeoutSec 5
-        
-        $total = ($metrics.measurements | Where-Object { $_.statistic -eq "COUNT" }).value
-        $totalTime = ($metrics.measurements | Where-Object { $_.statistic -eq "TOTAL_TIME" }).value
-        $avgTime = if ($total -gt 0) { ($totalTime / $total) * 1000 } else { 0 }
-        $heapMB = $heap.measurements[0].value / 1024 / 1024
-        
-        "$timestamp,$total,N/A,$([math]::Round($avgTime, 2)),N/A,$([math]::Round($heapMB, 2))" | Add-Content $OUTPUT_FILE
-    }
-    catch {
-        "$timestamp,ERROR,ERROR,ERROR,ERROR,ERROR" | Add-Content $OUTPUT_FILE
-    }
-    
-    Start-Sleep -Seconds 10
-}
-```
-
----
-
-## 10. CI/CD Testing Pipeline
-
-### 10.1 GitHub Actions Workflow
-
-```yaml
-# .github/workflows/test.yml
-name: API Tests
-
-on:
-  push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main]
-
-jobs:
-  unit-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-      - name: Cache Maven packages
-        uses: actions/cache@v3
-        with:
-          path: ~/.m2
-          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
-      - name: Run unit tests
-        run: ./mvnw test
-      - name: Upload test results
-        uses: actions/upload-artifact@v3
-        with:
-          name: test-results
-          path: target/surefire-reports/
-
-  integration-tests:
-    needs: unit-tests
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:latest
-        env:
-          POSTGRES_DB: Event_Booking_App_db
-          POSTGRES_PASSWORD: postgres123
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-      - name: Run integration tests
-        run: ./mvnw verify -Dspring.profiles.active=test
-
-  api-tests:
-    needs: integration-tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Newman
-        run: npm install -g newman newman-reporter-htmlextra
-      - name: Run Postman tests
-        run: |
-          newman run postman/EventBookingApp.postman_collection.json \
-            -e postman/test-environment.json \
-            --reporters cli,htmlextra \
-            --reporter-htmlextra-export newman-results.html
-      - name: Upload API test results
-        uses: actions/upload-artifact@v3
-        with:
-          name: api-test-results
-          path: newman-results.html
-```
-
-### 10.2 Pre-commit Hooks
-
-```bash
-# .git/hooks/pre-commit
-#!/bin/sh
-echo "Running tests..."
-./mvnw test -q
-if [ $? -ne 0 ]; then
-    echo "Tests failed. Commit aborted."
-    exit 1
-fi
-```
-
----
-
-## 11. Troubleshooting Guide
-
-### 11.1 Common Issues and Solutions
-
-| Issue | Symptoms | Solution |
-|-------|----------|----------|
-| Connection refused | `ECONNREFUSED` | Check if app is running on port 8081 |
-| 401 Unauthorized | Token issues | Refresh token, check Keycloak config |
-| 403 Forbidden | Role missing | Verify user has required role |
-| 500 Internal Error | Server crash | Check logs at `target/logs/` |
-| Slow responses | > 1s response | Check DB connections, add indexes |
-| Out of memory | OOM errors | Increase JVM heap: `-Xmx1g` |
-
-### 11.2 Diagnostic Commands
-
-```powershell
-# Check if services are running
-Test-NetConnection -ComputerName localhost -Port 8081  # App
-Test-NetConnection -ComputerName localhost -Port 5432  # PostgreSQL
-Test-NetConnection -ComputerName localhost -Port 9090  # Keycloak
-
-# Check Docker containers
-docker-compose ps
-docker-compose logs -f
-
-# Check application logs
-Get-Content -Path ".\logs\application.log" -Tail 100 -Wait
-
-# Check database connectivity
-psql -h localhost -U postgres -d Event_Booking_App_db -c "SELECT 1"
-
-# Decode JWT token (PowerShell)
-$token = "your.jwt.token"
-$parts = $token.Split('.')
-[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($parts[1] + "=="))
-```
-
-### 11.3 Debug Mode
-
-```powershell
-# Run application in debug mode
-.\mvnw.cmd spring-boot:run -Dspring-boot.run.jvmArguments="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=5005"
-
-# Connect debugger to port 5005
-```
-
----
-
-## 12. Test Checklists
-
-### 12.1 Pre-Release Checklist
-
-#### Environment Setup
-- [ ] Docker services running (PostgreSQL, Keycloak)
-- [ ] Keycloak realm configured
-- [ ] Test users created with proper roles
-- [ ] Application started successfully
-- [ ] Database migrations applied
-
-#### Functional Tests
-- [ ] All CRUD operations for Events
-- [ ] All CRUD operations for Ticket Types
-- [ ] Published events listing and search
-- [ ] Ticket purchase (single and multiple)
-- [ ] QR code generation
-- [ ] Ticket validation (manual and QR)
-- [ ] Admin role management
-- [ ] Event staff assignment
-- [ ] Invite code generation and redemption
-- [ ] Audit log creation and retrieval
-
-#### Security Tests
-- [ ] Authentication required for all protected endpoints
-- [ ] Role-based access control working
-- [ ] Token expiration handled
-- [ ] Rate limiting working
-- [ ] No sensitive data in error responses
-
-#### Performance Tests
-- [ ] Response times within SLA (< 500ms)
-- [ ] No memory leaks under load
-- [ ] Database connection pool not exhausted
-- [ ] Concurrent ticket purchases work correctly
-
-### 12.2 API Test Matrix
-
-| Endpoint | GET | POST | PUT | DELETE | Auth | Role |
-|----------|-----|------|-----|--------|------|------|
-| /api/v1/events | ✅ | ✅ | ✅ | ✅ | ✅ | ORGANIZER |
-| /api/v1/events/{id}/ticket-types | ✅ | ✅ | ✅ | ✅ | ✅ | ORGANIZER |
-| /api/v1/published-events | ✅ | - | - | - | ✅ | ATTENDEE |
-| /api/v1/tickets | ✅ | ✅ | - | - | ✅ | ATTENDEE |
-| /api/v1/ticket-validations | ✅ | ✅ | - | - | ✅ | STAFF |
-| /api/v1/admin/users/{id}/roles | ✅ | ✅ | - | ✅ | ✅ | ADMIN |
-| /api/v1/events/{id}/staff | ✅ | ✅ | - | ✅ | ✅ | ORGANIZER |
-| /api/v1/invites | ✅ | ✅ | - | ✅ | ✅ | ADMIN/ORG |
-| /api/v1/audit | ✅ | - | - | - | ✅ | ADMIN |
-
-### 12.3 Test Data Requirements
-
-```json
 {
-  "testEvents": [
-    {
-      "name": "Published Event",
-      "status": "PUBLISHED",
-      "ticketTypes": 2
-    },
-    {
-      "name": "Draft Event",
-      "status": "DRAFT",
-      "ticketTypes": 1
-    },
-    {
-      "name": "Past Event",
-      "end": "2024-01-01T00:00:00",
-      "ticketTypes": 1
-    }
-  ],
-  "testUsers": [
-    { "role": "ADMIN", "count": 1 },
-    { "role": "ORGANIZER", "count": 2 },
-    { "role": "ATTENDEE", "count": 5 },
-    { "role": "STAFF", "count": 2 }
-  ],
-  "testTickets": {
-    "purchased": 10,
-    "validated": 5,
-    "cancelled": 2
-  }
+  "roleName": "ORGANIZER"
 }
 ```
 
----
+**Full Valid Payload:**
+```
+POST {{base_url}}/api/v1/admin/users/{{user_id}}/roles
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
 
-## Quick Reference Card
-
-### PowerShell Variables Setup
-```powershell
-$BASE_URL = "http://localhost:8081"
-$KEYCLOAK_URL = "http://localhost:9090"
-$REALM = "event-ticket-platform"
-$CLIENT_ID = "event-ticket-platform-app"
+{
+  "roleName": "ORGANIZER"
+}
 ```
 
-### Get Token
-```powershell
-$tokenResponse = Invoke-RestMethod -Method Post `
-  -Uri "$KEYCLOAK_URL/realms/$REALM/protocol/openid-connect/token" `
-  -Headers @{ "Content-Type" = "application/x-www-form-urlencoded" } `
-  -Body "grant_type=password&client_id=$CLIENT_ID&username=YOUR_USER&password=YOUR_PASS&scope=openid"
-$ACCESS_TOKEN = $tokenResponse.access_token
+**Invalid Payload Examples:**
+- Missing `roleName`: 400 Bad Request
+- Invalid role name: 400 Bad Request
+
+#### 5.5.33 Get User Roles (ADMIN)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/admin/users/{{user_id}}/roles
+Authorization: Bearer {{access_token}}
 ```
 
-### API Call Template
-```powershell
-Invoke-RestMethod -Method Get `
-  -Uri "$BASE_URL/api/v1/events" `
-  -Headers @{ Authorization = "Bearer $ACCESS_TOKEN" }
+**Expected:** 200 OK - UserRolesResponseDto
+
+#### 5.5.34 Revoke Role (ADMIN)
+
+**Request:**
+```
+DELETE {{base_url}}/api/v1/admin/users/{{user_id}}/roles/STAFF
+Authorization: Bearer {{access_token}}
 ```
 
-### Run Tests
-```powershell
-.\mvnw.cmd test                    # Unit tests
-.\mvnw.cmd verify                  # All tests
-newman run collection.json         # Postman tests
-jmeter -n -t LoadTest.jmx         # Load tests
+**Expected:** 200 OK - UserRolesResponseDto
+
+#### 5.5.35 List Users with Approval Status (ADMIN)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/admin/approvals?page=0&size=20
+Authorization: Bearer {{access_token}}
 ```
 
----
+**Expected:** 200 OK - Page<UserApprovalDto>
 
-**Document Version:** 1.0  
-**Created:** January 18, 2026  
-**Author:** Event Booking App Team  
-**Status:** Production Ready
+#### 5.5.36 List Pending Approvals (ADMIN)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/admin/approvals/pending?page=0&size=20
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - Page<UserApprovalDto>
+
+#### 5.5.37 Approve User (ADMIN)
+
+**Request:**
+```
+POST {{base_url}}/api/v1/admin/approvals/{{user_id}}/approve
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - Map<String, String>
+
+#### 5.5.38 Reject User (ADMIN)
+
+**Minimum Valid Payload:**
+```
+POST {{base_url}}/api/v1/admin/approvals/{{user_id}}/reject
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "reason": "Account violates terms of service"
+}
+```
+
+**Full Valid Payload:**
+```
+POST {{base_url}}/api/v1/admin/approvals/{{user_id}}/reject
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "reason": "Account violates terms of service or does not meet requirements"
+}
+```
+
+**Invalid Payload Examples:**
+- Missing `reason`: 400 Bad Request
+- reason too short (<10 chars): 400 Bad Request
+- reason too long (>500 chars): 400 Bad Request
+
+#### 5.5.39 Assign Staff to Event (ORGANIZER)
+
+**Minimum Valid Payload:**
+```
+POST {{base_url}}/api/v1/events/{{event_id}}/staff
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "userId": "{{user_id}}"
+}
+```
+
+**Full Valid Payload:**
+```
+POST {{base_url}}/api/v1/events/{{event_id}}/staff
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "userId": "{{user_id}}"
+}
+```
+
+**Invalid Payload Examples:**
+- Missing `userId`: 400 Bad Request
+- User doesn't have STAFF role: 400 Bad Request
+
+#### 5.5.40 List Event Staff (ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/events/{{event_id}}/staff
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - EventStaffResponseDto
+
+#### 5.5.41 Remove Staff from Event (ORGANIZER)
+
+**Request:**
+```
+DELETE {{base_url}}/api/v1/events/{{event_id}}/staff/{{user_id}}
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - EventStaffResponseDto
+
+#### 5.5.42 Generate Invite Code (ADMIN/ORGANIZER)
+
+**Minimum Valid Payload (ORGANIZER):**
+```
+POST {{base_url}}/api/v1/invites
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "roleName": "ORGANIZER",
+  "expirationHours": 48
+}
+```
+
+**Full Valid Payload (STAFF):**
+```
+POST {{base_url}}/api/v1/invites
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "roleName": "STAFF",
+  "eventId": "{{event_id}}",
+  "expirationHours": 48
+}
+```
+
+**Invalid Payload Examples:**
+- Missing `roleName`: 400 Bad Request
+- Missing `expirationHours`: 400 Bad Request
+- Invalid role name: 400 Bad Request
+- eventId required for STAFF: 400 Bad Request
+
+#### 5.5.43 Redeem Invite Code (Any authenticated)
+
+**Minimum Valid Payload:**
+```
+POST {{base_url}}/api/v1/invites/redeem
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "code": "ABCD-EFGH-IJKL-MNOP"
+}
+```
+
+**Full Valid Payload:**
+```
+POST {{base_url}}/api/v1/invites/redeem
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "code": "ABCD-EFGH-IJKL-MNOP"
+}
+```
+
+**Invalid Payload Examples:**
+- Missing `code`: 400 Bad Request
+- Already redeemed: 400 Bad Request
+- Expired: 400 Bad Request
+
+#### 5.5.44 List Invite Codes (ADMIN/ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/invites?page=0&size=20&sort=createdAt,desc
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - Page<InviteCodeResponseDto>
+
+#### 5.5.45 List Event Invite Codes (ADMIN/ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/invites/events/{{event_id}}?page=0&size=20
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - Page<InviteCodeResponseDto>
+
+#### 5.5.46 Revoke Invite Code (ADMIN/ORGANIZER)
+
+**Request:**
+```
+DELETE {{base_url}}/api/v1/invites/{{invite_code_id}}?reason=No%20longer%20needed
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 204 No Content
+
+#### 5.5.47 View All Audit Logs (ADMIN)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/audit?page=0&size=20&sort=createdAt,desc
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - Page<AuditLogDto>
+
+#### 5.5.48 View Event Audit Logs (ORGANIZER)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/audit/events/{{event_id}}?page=0&size=20
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - Page<AuditLogDto>
+
+#### 5.5.49 View My Audit Trail (Any authenticated)
+
+**Request:**
+```
+GET {{base_url}}/api/v1/audit/me?page=0&size=20
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - Page<AuditLogDto>

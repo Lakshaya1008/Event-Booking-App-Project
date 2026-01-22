@@ -6,12 +6,15 @@ import com.event.tickets.exceptions.EventUpdateException;
 import com.event.tickets.exceptions.InvalidInviteCodeException;
 import com.event.tickets.exceptions.InviteCodeNotFoundException;
 import com.event.tickets.exceptions.KeycloakOperationException;
+import com.event.tickets.exceptions.KeycloakUserCreationException;
 import com.event.tickets.exceptions.QrCodeGenerationException;
 import com.event.tickets.exceptions.QrCodeNotFoundException;
+import com.event.tickets.exceptions.RegistrationException;
 import com.event.tickets.exceptions.TicketNotFoundException;
 import com.event.tickets.exceptions.TicketTypeNotFoundException;
 import com.event.tickets.exceptions.TicketsSoldOutException;
 import com.event.tickets.exceptions.UserNotFoundException;
+import com.event.tickets.exceptions.EmailAlreadyInUseException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import java.time.LocalDateTime;
@@ -148,6 +151,81 @@ public class GlobalExceptionHandler {
     }
 
     return new ResponseEntity<>(errorDto, HttpStatus.BAD_REQUEST);
+  }
+
+  // ============= REGISTRATION SPECIFIC EXCEPTIONS =============
+
+  @ExceptionHandler(EmailAlreadyInUseException.class)
+  public ResponseEntity<ErrorDto> handleEmailAlreadyInUseException(
+      EmailAlreadyInUseException ex, HttpServletRequest request) {
+    log.error("Email already in use", ex);
+
+    ErrorDto errorDto = new ErrorDto();
+    errorDto.setError("Email Already Registered");
+    errorDto.setMessage("An account with this email address already exists");
+    errorDto.setStatusCode(409);
+    errorDto.setStatusDescription("CONFLICT - Email already registered");
+    errorDto.setTimestamp(LocalDateTime.now().toString());
+    errorDto.setPath(request.getRequestURI());
+
+    errorDto.setPossibleCauses(Arrays.asList(
+        "CLIENT ISSUE: Email address already has an account",
+        "CLIENT ISSUE: User previously registered with this email",
+        "DATA ISSUE: Account exists but user forgot they registered",
+        "ENDPOINT ANALYSIS: Registration endpoint conflict"
+    ));
+    errorDto.setSolutions(Arrays.asList(
+        "Try logging in with existing account",
+        "Use password reset if credentials forgotten",
+        "Register with a different email address",
+        "Contact administrator if account access issues"
+    ));
+
+    return new ResponseEntity<>(errorDto, HttpStatus.CONFLICT);
+  }
+
+  @ExceptionHandler({RegistrationException.class, KeycloakUserCreationException.class})
+  public ResponseEntity<ErrorDto> handleRegistrationExceptions(
+      Exception ex, HttpServletRequest request) {
+    log.error("Registration failed", ex);
+
+    ErrorDto errorDto = new ErrorDto();
+    errorDto.setError("Registration Failed");
+    errorDto.setMessage("Unable to complete user registration");
+    errorDto.setStatusCode(422);
+    errorDto.setStatusDescription("UNPROCESSABLE ENTITY - Registration error");
+    errorDto.setTimestamp(LocalDateTime.now().toString());
+    errorDto.setPath(request.getRequestURI());
+
+    if (ex instanceof KeycloakUserCreationException) {
+      errorDto.setPossibleCauses(Arrays.asList(
+          "SYSTEM ISSUE: Keycloak service unavailable",
+          "SYSTEM ISSUE: Keycloak configuration error",
+          "DATA ISSUE: Invalid user data for Keycloak",
+          "NETWORK ISSUE: Cannot connect to authentication service"
+      ));
+      errorDto.setSolutions(Arrays.asList(
+          "Try registration again later",
+          "Contact system administrator",
+          "Check user data format and requirements",
+          "Verify service availability"
+      ));
+    } else {
+      errorDto.setPossibleCauses(Arrays.asList(
+          "SYSTEM ISSUE: Database connection error",
+          "SYSTEM ISSUE: Transaction rollback occurred",
+          "DATA ISSUE: Invalid registration data",
+          "SYSTEM ISSUE: Role assignment failure"
+      ));
+      errorDto.setSolutions(Arrays.asList(
+          "Try registration again with same data",
+          "Verify all required fields are complete",
+          "Check invite code validity (if provided)",
+          "Contact administrator if issue persists"
+      ));
+    }
+
+    return new ResponseEntity<>(errorDto, HttpStatus.UNPROCESSABLE_ENTITY);
   }
 
   // ============= 401 UNAUTHORIZED =============

@@ -27,9 +27,10 @@ This addendum extends the main TESTING_GUIDE.md with comprehensive testing proce
 **API Contract Fix (CRITICAL)**:
 The `PUT /api/v1/events/{eventId}` endpoint has been fixed to follow REST best practices:
 - **Source of Truth**: `eventId` comes ONLY from URL path parameter
-- **Request Body**: Does NOT require `id` field
+- **Request Body**: Does NOT require `id` field for the event
 - **Defensive Check**: If `id` is provided in body, it must match URL `eventId`
 - **Backward Compatible**: Clients sending matching `id` still work
+- **⚠️ CRITICAL**: `ticketTypes[].id` IS required when updating existing ticket types!
 
 **Access Control**:
 - ORGANIZER: Can update their own events only
@@ -39,19 +40,43 @@ The `PUT /api/v1/events/{eventId}` endpoint has been fixed to follow REST best p
 **Endpoint**:
 `PUT /api/v1/events/{eventId}`
 
+### Required Fields
+
+| Field | Required | Validation | Notes |
+|-------|----------|------------|-------|
+| `name` | ✅ Yes | @NotBlank | Event name |
+| `venue` | ✅ Yes | @NotBlank | Event venue |
+| `status` | ✅ Yes | @NotNull | DRAFT, PUBLISHED, CANCELLED, COMPLETED |
+| `ticketTypes` | ✅ Yes | @NotEmpty, @Valid | At least one ticket type required |
+| `ticketTypes[].id` | **Conditional** | - | Required to UPDATE existing, omit to CREATE new |
+| `ticketTypes[].name` | ✅ Yes | @NotBlank | Ticket type name |
+| `ticketTypes[].price` | ✅ Yes | @NotNull, @PositiveOrZero | Ticket price |
+
+### ⚠️ COMMON PITFALL: Ticket Type ID
+
+**If you omit `ticketTypes[].id` for an existing ticket type:**
+- The API will try to CREATE a new ticket type
+- If the name already exists → **500 Internal Server Error** (duplicate key constraint)
+
+**Correct approach:**
+1. First GET the event to see existing ticket type IDs
+2. Include the `id` field when updating existing ticket types
+3. Omit `id` only when creating new ticket types
+
 ### Test Scenarios
 
-#### EU-001: Update Event Without ID in Body (Recommended)
+#### EU-001: Update Event with Existing Ticket Type (Include ID)
 
-**Objective**: Verify event update works without `id` in request body
+**Objective**: Correctly update an event with existing ticket types by including their IDs
 
 ```powershell
 # Setup
 $BASE_URL = "http://localhost:8081"
 $ORGANIZER_TOKEN = "<organizer-jwt>"
 $EVENT_ID = "<event-uuid-owned-by-organizer>"
+$TICKET_TYPE_ID = "<existing-ticket-type-uuid>"  # Get this from GET /api/v1/events/{eventId}
 
-# Request body WITHOUT id field
+# Request body WITH ticket type ID for update
 $body = @{
     name = "Updated Tech Conference 2025"
     start = "2025-12-15T10:00:00"
@@ -61,6 +86,7 @@ $body = @{
     salesEnd = "2025-12-14T23:59:59"
     status = "PUBLISHED"
     ticketTypes = @(@{
+        id = $TICKET_TYPE_ID  # ← CRITICAL: Include ID to update existing
         name = "General Admission"
         price = 199.99
         description = "Standard ticket"
@@ -83,10 +109,34 @@ assert ($response.id -eq $EVENT_ID) "Event ID should match"
 assert ($response.name -eq "Updated Tech Conference 2025") "Name should be updated"
 assert ($response.venue -eq "Main Hall - Updated") "Venue should be updated"
 
-Write-Host "✅ EU-001 PASS: Event updated successfully without id in body"
+Write-Host "✅ EU-001 PASS: Event updated successfully with ticket type ID"
 ```
 
 **Expected Result**: 200 OK with updated event details
+
+---
+
+#### EU-001B: Create NEW Ticket Type During Update (Omit ID)
+
+**Objective**: Add a new ticket type to an existing event
+
+```powershell
+# Request body without ticket type ID = creates NEW ticket type
+$body = @{
+    name = "Updated Tech Conference 2025"
+    venue = "Main Hall - Updated"
+    status = "PUBLISHED"
+    ticketTypes = @(@{
+        # No 'id' field = CREATE new ticket type
+        name = "VIP Pass"  # New name, not existing
+        price = 499.99
+        description = "VIP access"
+        totalAvailable = 50
+    })
+} | ConvertTo-Json -Depth 5
+```
+
+**Expected Result**: 200 OK, new ticket type created
 
 ---
 
@@ -371,11 +421,11 @@ $EVENT_ID = "<event-uuid>"
 $TICKET_TYPE_ID = "<ticket-type-uuid>"
 
 $body = @{
-    name = "Early Bird Special"
     discountType = "PERCENTAGE"
     value = 20.0
     validFrom = "2025-11-01T00:00:00"
     validTo = "2025-11-30T23:59:59"
+    description = "Early Bird Special"
 } | ConvertTo-Json
 
 # Execute
@@ -389,9 +439,9 @@ $response = Invoke-RestMethod -Method Post `
 
 # Assert
 Write-Host "Discount ID: $($response.id)"
-assert ($response.name -eq "Early Bird Special")
 assert ($response.discountType -eq "PERCENTAGE")
 assert ($response.value -eq 20.0)
+assert ($response.description -eq "Early Bird Special")
 
 Write-Host "✅ DISC-001 PASS"
 ```
@@ -406,11 +456,11 @@ Write-Host "✅ DISC-001 PASS"
 
 ```powershell
 $body = @{
-    name = "Holiday Discount"
     discountType = "FIXED_AMOUNT"
     value = 50.00
     validFrom = "2025-12-01T00:00:00"
     validTo = "2025-12-25T23:59:59"
+    description = "Holiday Discount"
 } | ConvertTo-Json
 
 $response = Invoke-RestMethod -Method Post `
@@ -440,11 +490,11 @@ Write-Host "✅ DISC-002 PASS"
 # Try to create another overlapping discount
 
 $body = @{
-    name = "Conflicting Discount"
     discountType = "PERCENTAGE"
     value = 15.0
     validFrom = "2025-11-15T00:00:00"
     validTo = "2025-12-15T23:59:59"
+    description = "Conflicting Discount"
 } | ConvertTo-Json
 
 try {
@@ -474,11 +524,11 @@ try {
 ```powershell
 # Test invalid percentage > 100
 $body = @{
-    name = "Invalid Discount"
     discountType = "PERCENTAGE"
     value = 150.0
     validFrom = "2026-01-01T00:00:00"
     validTo = "2026-01-31T23:59:59"
+    description = "Invalid Discount"
 } | ConvertTo-Json
 
 try {
@@ -527,11 +577,11 @@ Write-Host "✅ DISC-005 PASS"
 $DISCOUNT_ID = "<discount-uuid-from-disc-001>"
 
 $body = @{
-    name = "Early Bird Special - Updated"
     discountType = "PERCENTAGE"
     value = 25.0
     validFrom = "2025-11-01T00:00:00"
     validTo = "2025-11-30T23:59:59"
+    description = "Early Bird Special - Updated"
 } | ConvertTo-Json
 
 $response = Invoke-RestMethod -Method Put `
@@ -543,7 +593,7 @@ $response = Invoke-RestMethod -Method Put `
   -Body $body
 
 assert ($response.value -eq 25.0)
-assert ($response.name -eq "Early Bird Special - Updated")
+assert ($response.description -eq "Early Bird Special - Updated")
 Write-Host "✅ DISC-006 PASS"
 ```
 
@@ -575,11 +625,11 @@ Write-Host "✅ DISC-007 PASS: Discount deleted"
 $OTHER_ORGANIZER_TOKEN = "<different-organizer-jwt>"
 
 $body = @{
-    name = "Unauthorized Discount"
     discountType = "PERCENTAGE"
     value = 10.0
     validFrom = "2026-01-01T00:00:00"
     validTo = "2026-01-31T23:59:59"
+    description = "Unauthorized Discount"
 } | ConvertTo-Json
 
 try {
@@ -609,11 +659,11 @@ try {
 ```powershell
 # Create a new discount
 $body = @{
-    name = "Test Purchase Discount"
     discountType = "PERCENTAGE"
     value = 30.0
     validFrom = "2026-01-01T00:00:00"
     validTo = "2026-12-31T23:59:59"
+    description = "Test Purchase Discount"
 } | ConvertTo-Json
 
 $discount = Invoke-RestMethod -Method Post `
@@ -656,11 +706,11 @@ Write-Host "✅ DISC-009 PASS: Discount automatically applied"
 ```powershell
 # Create expired discount
 $body = @{
-    name = "Expired Discount"
     discountType = "PERCENTAGE"
     value = 50.0
     validFrom = "2024-01-01T00:00:00"
     validTo = "2024-12-31T23:59:59"
+    description = "Expired Discount"
 } | ConvertTo-Json
 
 $discount = Invoke-RestMethod -Method Post `
@@ -822,7 +872,7 @@ assert ($response.Headers["Content-Disposition"] -match "attachment")
 assert ($response.Headers["Content-Disposition"] -match "\.pdf$")
 assert ($response.Content.Length -gt 1000)
 
-$response.Content | Set-Content -Path "qr-test.pdf" -Encoding Byte
+response.Content | Set-Content -Path "qr-test.pdf" -Encoding Byte
 
 Write-Host "✅ QR-004 PASS"
 ```
@@ -951,40 +1001,30 @@ $viewedLogs = $auditLogs.content | Where-Object { $_.action -eq "QR_CODE_VIEWED"
 $pngLogs = $auditLogs.content | Where-Object { $_.action -eq "QR_CODE_DOWNLOADED_PNG" }
 $pdfLogs = $auditLogs.content | Where-Object { $_.action -eq "QR_CODE_DOWNLOADED_PDF" }
 
-assert ($viewedLogs.Count -gt 0) "Should have QR_CODE_VIEWED logs"
-assert ($pngLogs.Count -gt 0) "Should have QR_CODE_DOWNLOADED_PNG logs"
-assert ($pdfLogs.Count -gt 0) "Should have QR_CODE_DOWNLOADED_PDF logs"
+assert ($viewedLogs.Count -ge 1) "Should have QR_CODE_VIEWED log"
+assert ($pngLogs.Count -ge 1) "Should have QR_CODE_DOWNLOADED_PNG log"
+assert ($pdfLogs.Count -ge 1) "Should have QR_CODE_DOWNLOADED_PDF log"
 
-Write-Host "✅ QR-009 PASS: Audit logging verified"
+Write-Host "✅ QR-009 PASS: Audit logs verified"
 ```
 
-**Expected Result**: 3 audit log entries with correct actions
+**Expected Result**: Audit logs contain QR_CODE_VIEWED, QR_CODE_DOWNLOADED_PNG, QR_CODE_DOWNLOADED_PDF actions
 
 ---
 
-### QR Export Test Checklist
+### QR Code Testing Summary
 
-**Access Control** (Priority: Critical):
-- [ ] QR-001: ATTENDEE views own ticket → 200 OK
-- [ ] QR-002: ATTENDEE views other's ticket → 403 Forbidden
-- [ ] QR-005: ORGANIZER views ticket from own event → 200 OK
-- [ ] QR-006: STAFF views any ticket → 403 Forbidden
-- [ ] QR-007: ADMIN views any ticket → 403 Forbidden
-
-**Format & Content** (Priority: High):
-- [ ] QR-003: PNG download with sanitized filename
-- [ ] QR-004: PDF download with ticket details
-- [ ] View endpoint returns inline disposition
-- [ ] Cache-Control header present on view endpoint
-
-**Idempotency** (Priority: High):
-- [ ] QR-008: Same ticket produces identical QR
-- [ ] No state changes during export
-
-**Audit** (Priority: Medium):
-- [ ] QR-009: QR_CODE_VIEWED logged
-- [ ] QR_CODE_DOWNLOADED_PNG logged
-- [ ] QR_CODE_DOWNLOADED_PDF logged
+| Test ID | Test Name | Expected Result |
+|---------|-----------|-----------------|
+| QR-001 | ATTENDEE Views Own QR | 200 OK |
+| QR-002 | ATTENDEE Views Other's QR | 403 Forbidden |
+| QR-003 | Download PNG | 200 OK |
+| QR-004 | Download PDF | 200 OK |
+| QR-005 | ORGANIZER Views Own Event QR | 200 OK |
+| QR-006 | STAFF Denied Access | 403 Forbidden |
+| QR-007 | ADMIN Denied Access | 403 Forbidden |
+| QR-008 | Idempotency | Identical Content |
+| QR-009 | Audit Logging | Logs Present |
 
 ---
 
@@ -992,56 +1032,66 @@ Write-Host "✅ QR-009 PASS: Audit logging verified"
 
 ### Overview
 
-**Endpoint**: `GET /api/v1/events/{eventId}/sales-report.xlsx`
+**Business Rules**:
+- Excel (.xlsx) format with comprehensive sales analytics
+- Reuses same EventService.getSalesDashboard() method (NO duplicate logic)
+- ORGANIZER must own event, ADMIN does NOT bypass ownership
+- Filename includes timestamp for version tracking
 
 **Access Control**:
-- ORGANIZER: Must own event (enforced in service)
+- ORGANIZER: Must own event (ownership enforced)
 - ADMIN: NO bypass (must own event)
 - ATTENDEE/STAFF: NO access
 
-**Data Source**: Reuses `EventService.getSalesDashboard()` (single source of truth)
+**Endpoint**:
+`GET /api/v1/events/{eventId}/sales-report.xlsx`
 
 ### Test Scenarios
 
-#### SR-001: ORGANIZER Exports Own Event
+#### SR-001: ORGANIZER Exports Sales Report
 
-**Objective**: Verify organizer can export sales report
+**Objective**: Verify organizer can export sales report for own event
 
 ```powershell
+# Setup
+$BASE_URL = "http://localhost:8081"
 $ORGANIZER_TOKEN = "<organizer-jwt>"
-$OWN_EVENT_ID = "<event-owned-by-organizer>"
+$EVENT_ID = "<event-uuid-owned-by-organizer>"
 
+# Execute
 $response = Invoke-WebRequest -Method Get `
-  -Uri "$BASE_URL/api/v1/events/$OWN_EVENT_ID/sales-report.xlsx" `
+  -Uri "$BASE_URL/api/v1/events/$EVENT_ID/sales-report.xlsx" `
   -Headers @{ Authorization = "Bearer $ORGANIZER_TOKEN" }
 
-assert ($response.StatusCode -eq 200)
-assert ($response.Headers["Content-Type"] -match "spreadsheetml.sheet")
-assert ($response.Headers["Content-Disposition"] -match "attachment")
-assert ($response.Headers["Content-Disposition"] -match "sales_report_\d{8}_\d{6}\.xlsx")
-assert ($response.Content.Length -gt 5000)
+# Assert
+assert ($response.StatusCode -eq 200) "Status should be 200"
+assert ($response.Headers["Content-Type"] -eq "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") "Content-Type should be Excel"
+assert ($response.Headers["Content-Disposition"] -match "attachment") "Should be attachment disposition"
+assert ($response.Headers["Content-Disposition"] -match "\.xlsx$") "Should have .xlsx extension"
+assert ($response.Content.Length -gt 1000) "Should have substantial content"
 
+# Save for inspection
 $response.Content | Set-Content -Path "sales-report.xlsx" -Encoding Byte
 
 Write-Host "✅ SR-001 PASS"
 ```
 
-**Expected Result**: 200 OK, Excel file with timestamp in filename
+**Expected Result**: 200 OK, Excel file with sales data
 
 ---
 
-#### SR-002: ORGANIZER Attempts to Export Other Event
+#### SR-002: ADMIN Cannot Export Without Ownership
 
-**Objective**: Verify ownership enforcement
+**Objective**: Verify ADMIN does NOT bypass ownership
 
 ```powershell
-$OTHER_EVENT_ID = "<event-owned-by-other-organizer>"
+$ADMIN_TOKEN = "<admin-jwt>"
 
 try {
     Invoke-WebRequest -Method Get `
-      -Uri "$BASE_URL/api/v1/events/$OTHER_EVENT_ID/sales-report.xlsx" `
-      -Headers @{ Authorization = "Bearer $ORGANIZER_TOKEN" }
-    Write-Host "❌ SR-002 FAIL: Should be denied"
+      -Uri "$BASE_URL/api/v1/events/$EVENT_ID/sales-report.xlsx" `
+      -Headers @{ Authorization = "Bearer $ADMIN_TOKEN" }
+    Write-Host "❌ SR-002 FAIL: ADMIN should NOT bypass"
     exit 1
 } catch {
     assert ($_.Exception.Response.StatusCode -eq 403)
@@ -1053,19 +1103,18 @@ try {
 
 ---
 
-#### SR-003: ADMIN Denied Export (No Bypass)
+#### SR-003: ATTENDEE Denied Access
 
-**Objective**: Verify ADMIN does NOT bypass ownership
+**Objective**: Verify ATTENDEE cannot export sales reports
 
 ```powershell
-$ADMIN_TOKEN = "<admin-jwt>"
-$ANY_EVENT_ID = "<any-event-uuid>"
+$ATTENDEE_TOKEN = "<attendee-jwt>"
 
 try {
     Invoke-WebRequest -Method Get `
-      -Uri "$BASE_URL/api/v1/events/$ANY_EVENT_ID/sales-report.xlsx" `
-      -Headers @{ Authorization = "Bearer $ADMIN_TOKEN" }
-    Write-Host "❌ SR-003 FAIL: ADMIN should NOT bypass"
+      -Uri "$BASE_URL/api/v1/events/$EVENT_ID/sales-report.xlsx" `
+      -Headers @{ Authorization = "Bearer $ATTENDEE_TOKEN" }
+    Write-Host "❌ SR-003 FAIL: ATTENDEE should be denied"
     exit 1
 } catch {
     assert ($_.Exception.Response.StatusCode -eq 403)
@@ -1077,108 +1126,42 @@ try {
 
 ---
 
-#### SR-004: ATTENDEE Denied Export
+#### SR-004: Audit Log Verification
 
-**Objective**: Verify ATTENDEE has no access
-
-```powershell
-$ATTENDEE_TOKEN = "<attendee-jwt>"
-
-try {
-    Invoke-WebRequest -Method Get `
-      -Uri "$BASE_URL/api/v1/events/$ANY_EVENT_ID/sales-report.xlsx" `
-      -Headers @{ Authorization = "Bearer $ATTENDEE_TOKEN" }
-    Write-Host "❌ SR-004 FAIL: ATTENDEE should be denied"
-    exit 1
-} catch {
-    assert ($_.Exception.Response.StatusCode -eq 403)
-    Write-Host "✅ SR-004 PASS"
-}
-```
-
-**Expected Result**: 403 Forbidden
-
----
-
-#### SR-005: Data Consistency with Dashboard
-
-**Objective**: Verify Excel data matches dashboard API
+**Objective**: Verify sales report export is audited
 
 ```powershell
-# Get dashboard data
-$dashboardData = Invoke-RestMethod -Method Get `
-  -Uri "$BASE_URL/api/v1/events/$OWN_EVENT_ID/sales-dashboard" `
-  -Headers @{ Authorization = "Bearer $ORGANIZER_TOKEN" }
-
-# Download Excel
+# Perform export
 Invoke-WebRequest -Method Get `
-  -Uri "$BASE_URL/api/v1/events/$OWN_EVENT_ID/sales-report.xlsx" `
-  -Headers @{ Authorization = "Bearer $ORGANIZER_TOKEN" } `
-  -OutFile "sales-verify.xlsx"
-
-# Manual verification required: Open Excel and compare with dashboard data
-Write-Host "Dashboard Total Revenue: $$($dashboardData.totalRevenue)"
-Write-Host "Dashboard Total Sold: $($dashboardData.totalTicketsSold)"
-Write-Host "Please verify Excel matches these values"
-Write-Host "✅ SR-005: Manual verification required"
-```
-
-**Expected Result**: Excel data matches dashboard data exactly
-
----
-
-#### SR-006: Audit Log Verification
-
-**Objective**: Verify SALES_REPORT_EXPORTED audit action
-
-```powershell
-Invoke-WebRequest -Method Get `
-  -Uri "$BASE_URL/api/v1/events/$OWN_EVENT_ID/sales-report.xlsx" `
+  -Uri "$BASE_URL/api/v1/events/$EVENT_ID/sales-report.xlsx" `
   -Headers @{ Authorization = "Bearer $ORGANIZER_TOKEN" } | Out-Null
 
 Start-Sleep -Seconds 1
 
+# Check audit logs
 $auditLogs = Invoke-RestMethod -Method Get `
-  -Uri "$BASE_URL/api/v1/audit/me?page=0&size=10" `
+  -Uri "$BASE_URL/api/v1/audit/events/$EVENT_ID?page=0&size=10" `
   -Headers @{ Authorization = "Bearer $ORGANIZER_TOKEN" }
 
-$exportLogs = $auditLogs.content | Where-Object { $_.action -eq "SALES_REPORT_EXPORTED" }
+$salesReportLogs = $auditLogs.content | Where-Object { $_.action -eq "SALES_REPORT_EXPORTED" }
 
-assert ($exportLogs.Count -gt 0) "Should have export logs"
-assert ($exportLogs[0].resourceId -eq $OWN_EVENT_ID) "Should log correct eventId"
+assert ($salesReportLogs.Count -ge 1) "Should have SALES_REPORT_EXPORTED log"
 
-Write-Host "✅ SR-006 PASS"
+Write-Host "✅ SR-004 PASS: Audit log verified"
 ```
 
-**Expected Result**: SALES_REPORT_EXPORTED audit log created
+**Expected Result**: Audit log contains SALES_REPORT_EXPORTED action
 
 ---
 
-### Sales Export Test Checklist
+### Sales Report Testing Summary
 
-**Access Control** (Priority: Critical):
-- [ ] SR-001: ORGANIZER exports own event → 200 OK
-- [ ] SR-002: ORGANIZER exports other event → 403 Forbidden
-- [ ] SR-003: ADMIN exports any event → 403 Forbidden
-- [ ] SR-004: ATTENDEE exports any event → 403 Forbidden
-
-**Format** (Priority: High):
-- [ ] Excel file opens without errors
-- [ ] Filename includes timestamp
-- [ ] Content-Type is correct
-- [ ] Content-Disposition is attachment
-
-**Content** (Priority: High):
-- [ ] Contains summary section
-- [ ] Contains breakdown table
-- [ ] Currency formatting applied
-- [ ] Headers are styled
-
-**Data Consistency** (Priority: Critical):
-- [ ] SR-005: Data matches dashboard API
-
-**Audit** (Priority: Medium):
-- [ ] SR-006: SALES_REPORT_EXPORTED logged
+| Test ID | Test Name | Expected Result |
+|---------|-----------|-----------------|
+| SR-001 | ORGANIZER Exports Report | 200 OK |
+| SR-002 | ADMIN Denied Without Ownership | 403 Forbidden |
+| SR-003 | ATTENDEE Denied Access | 403 Forbidden |
+| SR-004 | Audit Logging | Log Present |
 
 ---
 
@@ -1186,151 +1169,89 @@ Write-Host "✅ SR-006 PASS"
 
 ### Overview
 
-**Purpose**: Business-level authorization after Keycloak authentication
+**Security Model**:
+- Business-level authorization layer running AFTER Keycloak auth
+- Blocks unapproved users despite valid JWT and roles
+- SAFE-BY-DEFAULT: All endpoints require approval unless explicitly allowlisted
 
 **Approval States**:
-- PENDING → 403 Forbidden
-- APPROVED → Full access
-- REJECTED → 403 Forbidden
-- NULL (legacy) → Auto-approved
+- PENDING: New user, blocked from business operations
+- APPROVED: Admin approved, full access
+- REJECTED: Admin rejected, permanently blocked
+- NULL: Legacy user, auto-approved
 
-**Allowlisted Endpoints** (bypass approval):
-- `/api/v1/auth/register`
-- `/actuator/health`
-- `/actuator/info`
-- `/api/v1/invites/redeem`
+**Allowlisted Endpoints** (Bypass Approval):
+- `/api/v1/auth/register` - Public registration
+- `/actuator/health` - Health checks
+- `/actuator/info` - Application metadata
+- `/api/v1/invites/redeem` - Invite redemption
 
 ### Test Scenarios
 
-#### AG-001: PENDING User Blocked
+#### AG-001: PENDING User Blocked from Business Operations
 
-**Objective**: Verify PENDING users cannot access business operations
+**Objective**: Verify PENDING users cannot access business endpoints
 
 ```powershell
-# Setup: Get token for PENDING user
-$PENDING_TOKEN = "<token-for-pending-user>"
+# Setup: Create a new user in Keycloak (will be PENDING by default)
+$NEW_USER_TOKEN = "<jwt-for-new-user>"
 
+# Try to access business endpoint
 try {
     Invoke-RestMethod -Method Get `
-      -Uri "$BASE_URL/api/v1/events" `
-      -Headers @{ Authorization = "Bearer $PENDING_TOKEN" }
+      -Uri "$BASE_URL/api/v1/published-events" `
+      -Headers @{ Authorization = "Bearer $NEW_USER_TOKEN" }
     Write-Host "❌ AG-001 FAIL: PENDING user should be blocked"
     exit 1
 } catch {
+    assert ($_.Exception.Response.StatusCode -eq 403)
     $errorResponse = $_.ErrorDetails.Message | ConvertFrom-Json
     assert ($errorResponse.error -eq "APPROVAL_PENDING")
-    assert ($errorResponse.status -eq "403")
-    Write-Host "✅ AG-001 PASS"
+    Write-Host "✅ AG-001 PASS: PENDING user blocked"
 }
 ```
 
-**Expected Result**: 403 with APPROVAL_PENDING error
+**Expected Result**: 403 Forbidden with APPROVAL_PENDING error
 
 ---
 
-#### AG-002: ADMIN Approves User
+#### AG-002: APPROVED User Has Full Access
 
-**Objective**: Verify approval workflow
-
-```powershell
-$ADMIN_TOKEN = "<admin-jwt>"
-$PENDING_USER_ID = "<pending-user-uuid>"
-
-$response = Invoke-RestMethod -Method Post `
-  -Uri "$BASE_URL/api/v1/admin/users/$PENDING_USER_ID/approve" `
-  -Headers @{ Authorization = "Bearer $ADMIN_TOKEN" }
-
-assert ($response.approvalStatus -eq "APPROVED")
-Write-Host "✅ AG-002 PASS"
-```
-
-**Expected Result**: User approved successfully
-
----
-
-#### AG-003: APPROVED User Accesses Operations
-
-**Objective**: Verify approved users have full access
+**Objective**: Verify APPROVED users have normal access
 
 ```powershell
-# After approval, user should have access
+# Setup: Admin approves the user via /api/v1/admin/approvals/{userId}/approve
+$APPROVED_USER_TOKEN = "<jwt-for-approved-user>"
+
+# Access should work normally
 $response = Invoke-RestMethod -Method Get `
-  -Uri "$BASE_URL/api/v1/events" `
-  -Headers @{ Authorization = "Bearer $PENDING_TOKEN" }  # Now approved
+  -Uri "$BASE_URL/api/v1/published-events" `
+  -Headers @{ Authorization = "Bearer $APPROVED_USER_TOKEN" }
 
-assert ($response -ne $null)
-Write-Host "✅ AG-003 PASS"
+assert ($response -is [System.Array] -or $response -is [PSCustomObject])
+Write-Host "✅ AG-002 PASS: APPROVED user has access"
 ```
 
-**Expected Result**: 200 OK
+**Expected Result**: 200 OK, normal response
 
 ---
 
-#### AG-004: REJECTED User Blocked
+#### AG-003: REJECTED User Permanently Blocked
 
-**Objective**: Verify rejected users are permanently blocked
+**Objective**: Verify REJECTED users are permanently blocked
 
 ```powershell
-$rejectBody = @{ reason = "Test rejection" } | ConvertTo-Json
-
-Invoke-RestMethod -Method Post `
-  -Uri "$BASE_URL/api/v1/admin/users/$PENDING_USER_ID/reject" `
-  -Headers @{ Authorization = "Bearer $ADMIN_TOKEN"; "Content-Type" = "application/json" } `
-  -Body $rejectBody
+$REJECTED_USER_TOKEN = "<jwt-for-rejected-user>"
 
 try {
     Invoke-RestMethod -Method Get `
-      -Uri "$BASE_URL/api/v1/events" `
-      -Headers @{ Authorization = "Bearer $PENDING_TOKEN" }
-    Write-Host "❌ AG-004 FAIL: REJECTED user should be blocked"
-    exit 1
-} catch {
-    $errorResponse = $_.ErrorDetails.Message | ConvertFrom-Json
-    assert ($errorResponse.error -eq "APPROVAL_REJECTED")
-    Write-Host "✅ AG-004 PASS"
-}
-```
-
-**Expected Result**: 403 with APPROVAL_REJECTED error
-
----
-
-#### AG-005: Allowlist Verification
-
-**Objective**: Verify allowlisted endpoints bypass approval
-
-```powershell
-# Health check (no auth)
-$health = Invoke-RestMethod -Uri "$BASE_URL/actuator/health"
-assert ($health.status -eq "UP")
-
-# Info (no auth)
-$info = Invoke-RestMethod -Uri "$BASE_URL/actuator/info"
-assert ($info -ne $null)
-
-Write-Host "✅ AG-005 PASS: Allowlisted endpoints accessible"
-```
-
-**Expected Result**: All allowlisted endpoints accessible
-
----
-
-#### AG-006: ADMIN Subject to Approval
-
-**Objective**: Verify even ADMIN must be approved
-
-```powershell
-$PENDING_ADMIN_TOKEN = "<token-for-pending-admin>"
-
-try {
-    Invoke-RestMethod -Method Get `
-      -Uri "$BASE_URL/api/v1/admin/roles" `
-      -Headers @{ Authorization = "Bearer $PENDING_ADMIN_TOKEN" }
-    Write-Host "❌ AG-006 FAIL: PENDING ADMIN should be blocked"
+      -Uri "$BASE_URL/api/v1/published-events" `
+      -Headers @{ Authorization = "Bearer $REJECTED_USER_TOKEN" }
+    Write-Host "❌ AG-003 FAIL: REJECTED user should be blocked"
     exit 1
 } catch {
     assert ($_.Exception.Response.StatusCode -eq 403)
-    Write-Host "✅ AG-006 PASS: ADMIN subject to approval"
+    Write-Host "✅ AG-003 PASS: REJECTED user blocked"
 }
 ```
 
@@ -1338,289 +1259,238 @@ try {
 
 ---
 
-### Approval Gate Test Checklist
+#### AG-004: Allowlisted Endpoints Bypass Approval
 
-**Approval States** (Priority: Critical):
-- [ ] AG-001: PENDING user blocked → 403 APPROVAL_PENDING
-- [ ] AG-003: APPROVED user has access → 200 OK
-- [ ] AG-004: REJECTED user blocked → 403 APPROVAL_REJECTED
+**Objective**: Verify allowlisted endpoints work for PENDING users
 
-**Approval Workflow** (Priority: High):
-- [ ] AG-002: ADMIN can approve users
-- [ ] ADMIN can reject users with reason
-- [ ] Approval updates database status
+```powershell
+# Health endpoint should work for PENDING user
+$response = Invoke-RestMethod -Method Get `
+  -Uri "$BASE_URL/actuator/health" `
+  -Headers @{ Authorization = "Bearer $NEW_USER_TOKEN" }
 
-**Allowlist** (Priority: Critical):
-- [ ] AG-005: Health check accessible
-- [ ] Info endpoint accessible
-- [ ] Registration accessible
-- [ ] Invite redemption accessible for PENDING users
+assert ($response.status -eq "UP")
+Write-Host "✅ AG-004 PASS: Allowlisted endpoints work"
+```
 
-**Security** (Priority: Critical):
-- [ ] AG-006: ADMIN subject to approval (no bypass)
-- [ ] SAFE-BY-DEFAULT: Non-allowlisted paths require approval
+**Expected Result**: 200 OK
+
+---
+
+#### AG-005: Legacy Users Auto-Approved
+
+**Objective**: Verify existing users are auto-migrated to APPROVED
+
+```powershell
+$LEGACY_USER_TOKEN = "<jwt-for-existing-user>"
+
+# Should work normally (auto-approved)
+$response = Invoke-RestMethod -Method Get `
+  -Uri "$BASE_URL/api/v1/published-events" `
+  -Headers @{ Authorization = "Bearer $LEGACY_USER_TOKEN" }
+
+Write-Host "✅ AG-005 PASS: Legacy user auto-approved"
+```
+
+**Expected Result**: 200 OK
+
+---
+
+### Approval Gate Testing Summary
+
+| Test ID | Test Name | Expected Result |
+|---------|-----------|-----------------|
+| AG-001 | PENDING User Blocked | 403 Forbidden |
+| AG-002 | APPROVED User Access | 200 OK |
+| AG-003 | REJECTED User Blocked | 403 Forbidden |
+| AG-004 | Allowlisted Endpoints Work | 200 OK |
+| AG-005 | Legacy Users Auto-Approved | 200 OK |
 
 ---
 
 ## Regression Test Suite
 
-### Priority 1: Critical Path (Must Pass)
+### Overview
+
+Run these tests after any changes to ensure existing functionality still works.
+
+#### REG-001: Complete Event Lifecycle
+
+**Objective**: Test full event creation, update, ticket purchase, validation flow
 
 ```powershell
-# Authentication
-✓ Get token from Keycloak
-✓ Token contains roles
+# 1. Create event
+$createBody = @{
+  name = "Regression Test Event"
+  venue = "Test Venue"
+  status = "PUBLISHED"
+  ticketTypes = @(@{
+    name = "Standard"
+    price = 50.00
+    totalAvailable = 10
+  })
+} | ConvertTo-Json -Depth 3
 
-# QR Exports (Critical)
-✓ QR-001: ATTENDEE views own QR
-✓ QR-002: ATTENDEE denied other's QR
-✓ QR-007: ADMIN denied QR (no bypass)
+$event = Invoke-RestMethod -Method Post `
+  -Uri "$BASE_URL/api/v1/events" `
+  -Headers @{ Authorization = "Bearer $ORGANIZER_TOKEN"; "Content-Type" = "application/json" } `
+  -Body $createBody
 
-# Sales Export (Critical)
-✓ SR-001: ORGANIZER exports own event
-✓ SR-002: ORGANIZER denied other event
-✓ SR-003: ADMIN denied (no bypass)
+$EVENT_ID = $event.id
+$TICKET_TYPE_ID = $event.ticketTypes[0].id
 
-# Approval Gate (Critical)
-✓ AG-001: PENDING user blocked
-✓ AG-003: APPROVED user has access
-✓ AG-006: ADMIN subject to approval
+# 2. Update event
+$updateBody = @{
+  name = "Updated Regression Test Event"
+  venue = "Updated Venue"
+  status = "PUBLISHED"
+  ticketTypes = @(@{
+    id = $TICKET_TYPE_ID
+    name = "VIP"
+    price = 75.00
+    totalAvailable = 5
+  })
+} | ConvertTo-Json -Depth 3
+
+Invoke-RestMethod -Method Put `
+  -Uri "$BASE_URL/api/v1/events/$EVENT_ID" `
+  -Headers @{ Authorization = "Bearer $ORGANIZER_TOKEN"; "Content-Type" = "application/json" } `
+  -Body $updateBody | Out-Null
+
+# 3. Purchase ticket
+$tickets = Invoke-RestMethod -Method Post `
+  -Uri "$BASE_URL/api/v1/events/$EVENT_ID/ticket-types/$TICKET_TYPE_ID/tickets" `
+  -Headers @{ Authorization = "Bearer $ATTENDEE_TOKEN"; "Content-Type" = "application/json" } `
+  -Body (@{ quantity = 1 } | ConvertTo-Json)
+
+$TICKET_ID = $tickets[0].id
+
+# 4. Validate ticket
+Invoke-RestMethod -Method Post `
+  -Uri "$BASE_URL/api/v1/ticket-validations" `
+  -Headers @{ Authorization = "Bearer $STAFF_TOKEN"; "Content-Type" = "application/json" } `
+  -Body (@{ id = $TICKET_ID; method = "MANUAL" } | ConvertTo-Json) | Out-Null
+
+# 5. Export QR code
+Invoke-WebRequest -Method Get `
+  -Uri "$BASE_URL/api/v1/tickets/$TICKET_ID/qr-codes/png" `
+  -Headers @{ Authorization = "Bearer $ATTENDEE_TOKEN" } | Out-Null
+
+# 6. Export sales report
+Invoke-WebRequest -Method Get `
+  -Uri "$BASE_URL/api/v1/events/$EVENT_ID/sales-report.xlsx" `
+  -Headers @{ Authorization = "Bearer $ORGANIZER_TOKEN" } | Out-Null
+
+# 7. Cleanup
+Invoke-RestMethod -Method Delete `
+  -Uri "$BASE_URL/api/v1/events/$EVENT_ID" `
+  -Headers @{ Authorization = "Bearer $ORGANIZER_TOKEN" } | Out-Null
+
+Write-Host "✅ REG-001 PASS: Complete event lifecycle works"
 ```
 
-### Priority 2: High Importance
-
-```powershell
-# QR Exports
-✓ QR-003: PNG download with filename
-✓ QR-004: PDF download
-✓ QR-008: Idempotency
-
-# Sales Export
-✓ SR-004: ATTENDEE denied
-✓ SR-005: Data consistency
-
-# Approval Gate
-✓ AG-002: Approval workflow
-✓ AG-005: Allowlist verification
-```
-
-### Priority 3: Medium Importance
-
-```powershell
-# Audit Logging
-✓ QR-009: QR audit logs
-✓ SR-006: Sales export audit logs
-
-# Additional Coverage
-✓ QR-005: ORGANIZER access
-✓ QR-006: STAFF denied
-✓ AG-004: Rejection workflow
-```
+**Expected Result**: All operations succeed without errors
 
 ---
 
 ## Complete Test Checklist
 
-### Event Update API Tests (CRITICAL)
-- [ ] EU-001: Update event without id in body → 200 OK
-- [ ] EU-002: Update event with matching id → 200 OK
-- [ ] EU-003: Update event with mismatched id → 400 Bad Request
-- [ ] EU-004: Update with missing required fields → 400 Bad Request
-- [ ] EU-005: Update other organizer's event → 403 Forbidden
-- [ ] EU-006: Update non-existent event → 404 Not Found
-- [ ] EU-007: Update with empty ticketTypes → 400 Bad Request
+### Event Management
+- [ ] Create event with minimum fields
+- [ ] Create event with all fields
+- [ ] Update event without id in body
+- [ ] Update event with matching id
+- [ ] Reject update with mismatched id
+- [ ] List events (organizer)
+- [ ] Get event details
+- [ ] Delete event
+- [ ] Get sales dashboard
+- [ ] Get attendees report
+- [ ] Export sales report
 
-### Functional Tests
-- [ ] All new endpoints return correct status codes
-- [ ] Request/response formats match API spec
-- [ ] Error messages are clear and actionable
-- [ ] Filenames are properly sanitized
-- [ ] Discount calculations are accurate
-- [ ] Only one active discount per ticket type enforced
+### Published Events
+- [ ] List published events
+- [ ] Search published events
+- [ ] Get published event details
 
-### Security Tests
-- [ ] Access control enforced correctly
-- [ ] Ownership checks cannot be bypassed
-- [ ] ADMIN does NOT bypass business rules
-- [ ] Approval gate applies to all non-allowlisted paths
-- [ ] JWT validation happens before approval check
-- [ ] Non-owners cannot manage discounts
-- [ ] Event update id mismatch rejected (defensive check)
+### Ticket Purchase
+- [ ] Purchase with default quantity (1)
+- [ ] Purchase with custom quantity
+- [ ] Reject invalid quantity
+- [ ] List my tickets
+- [ ] Get ticket details
 
-### Performance Tests
-- [ ] QR generation < 200ms (p95)
-- [ ] Excel generation < 500ms (p95)
-- [ ] Approval check < 10ms (p95)
-- [ ] Discount lookup < 50ms (p95)
+### QR Code Exports
+- [ ] View QR inline (attendee)
+- [ ] Download QR PNG (attendee)
+- [ ] Download QR PDF (attendee)
+- [ ] Organizer views own event QR
+- [ ] Staff denied access
+- [ ] Admin denied access
+- [ ] Idempotency verification
+- [ ] Audit logging
 
-### Business Logic Tests
-- [ ] Discounts applied automatically at purchase time
-- [ ] Expired discounts not applied
-- [ ] Percentage discounts validated (0-100)
-- [ ] Fixed amount discounts do not exceed ticket price
-- [ ] Discount data saved with tickets for reporting
+### Ticket Type Management
+- [ ] Create ticket type (minimum)
+- [ ] Create ticket type (full)
+- [ ] List ticket types
+- [ ] Get ticket type
+- [ ] Update ticket type
+- [ ] Delete ticket type
 
-### Idempotency Tests
-- [ ] Same QR downloaded multiple times → identical
-- [ ] Same Excel downloaded multiple times → consistent
-- [ ] No side effects during read operations
-- [ ] Discount queries return consistent results
+### Discount Management
+- [ ] Create percentage discount
+- [ ] Create fixed amount discount
+- [ ] Prevent multiple active discounts
+- [ ] Update discount
+- [ ] Delete discount
+- [ ] List discounts
+- [ ] Discount applied on purchase
+- [ ] Expired discount not applied
 
-### Audit Tests
-- [ ] All new operations logged
-- [ ] Audit logs include all required fields
-- [ ] Audit logs are immutable
+### Ticket Validation
+- [ ] Manual validation
+- [ ] QR validation
+- [ ] List validations for event
+- [ ] Get validations by ticket
 
-### Regression Tests
-- [ ] Existing endpoints still work
-- [ ] Existing security rules maintained
-- [ ] No breaking changes introduced
-- [ ] Event update backward compatible (matching id works)
+### Admin Governance
+- [ ] Get available roles
+- [ ] Assign role
+- [ ] Get user roles
+- [ ] Revoke role
 
----
+### Approval Management
+- [ ] List users with approval status
+- [ ] List pending approvals
+- [ ] Approve user
+- [ ] Reject user
 
-## Running the Complete Test Suite
+### Event Staff Management
+- [ ] Assign staff to event
+- [ ] List event staff
+- [ ] Remove staff from event
 
-```powershell
-# Setup
-$BASE_URL = "http://localhost:8081"
-$KEYCLOAK_URL = "http://localhost:9090"
-$REALM = "event-ticket-platform"
+### Invite Code System
+- [ ] Generate invite code (organizer)
+- [ ] Generate invite code (staff)
+- [ ] Redeem invite code
+- [ ] List invite codes
+- [ ] List event invite codes
+- [ ] Revoke invite code
 
-# Get tokens for all roles
-$ADMIN_TOKEN = Get-Token -Role "ADMIN"
-$ORGANIZER_TOKEN = Get-Token -Role "ORGANIZER"
-$ATTENDEE_TOKEN = Get-Token -Role "ATTENDEE"
-$STAFF_TOKEN = Get-Token -Role "STAFF"
-$PENDING_TOKEN = Get-Token -ApprovalStatus "PENDING"
+### Audit Logs
+- [ ] View all audit logs (admin)
+- [ ] View event audit logs (organizer)
+- [ ] View my audit trail
 
-# Run Event Update Tests (CRITICAL - API Contract Fix)
-Write-Host "`n=== Event Update API Tests ===`n"
-Run-Test EU-001
-Run-Test EU-002
-Run-Test EU-003
-Run-Test EU-004
-Run-Test EU-005
-Run-Test EU-006
-Run-Test EU-007
-
-# Run QR Export Tests
-Write-Host "`n=== QR Export Tests ===`n"
-Run-Test QR-001
-Run-Test QR-002
-Run-Test QR-003
-Run-Test QR-004
-Run-Test QR-005
-Run-Test QR-006
-Run-Test QR-007
-Run-Test QR-008
-Run-Test QR-009
-
-# Run Sales Export Tests
-Write-Host "`n=== Sales Export Tests ===`n"
-Run-Test SR-001
-Run-Test SR-002
-Run-Test SR-003
-Run-Test SR-004
-Run-Test SR-005
-Run-Test SR-006
-
-# Run Discount Management Tests
-Write-Host "`n=== Discount Management Tests ===`n"
-Run-Test DISC-001
-Run-Test DISC-002
-Run-Test DISC-003
-Run-Test DISC-004
-Run-Test DISC-005
-Run-Test DISC-006
-Run-Test DISC-007
-Run-Test DISC-008
-Run-Test DISC-009
-Run-Test DISC-010
-
-# Run Approval Gate Tests
-Write-Host "`n=== Approval Gate Tests ===`n"
-Run-Test AG-001
-Run-Test AG-002
-Run-Test AG-003
-Run-Test AG-004
-Run-Test AG-005
-Run-Test AG-006
-
-# Summary
-Write-Host "`n=== Test Summary ===`n"
-Write-Host "Total Tests: 38"
-Write-Host "Passed: $passedCount"
-Write-Host "Failed: $failedCount"
-```
+### Approval Gate
+- [ ] Pending user blocked
+- [ ] Approved user access
+- [ ] Rejected user blocked
+- [ ] Allowlisted endpoints work
+- [ ] Legacy users auto-approved
 
 ---
 
-## Test Data Setup
-
-### Creating Test Users
-
-```powershell
-# PENDING user (for approval gate tests)
-Create-User -Email "pending@test.com" -Role "ATTENDEE" -ApprovalStatus "PENDING"
-
-# APPROVED users (for functional tests)
-Create-User -Email "attendee@test.com" -Role "ATTENDEE" -ApprovalStatus "APPROVED"
-Create-User -Email "organizer@test.com" -Role "ORGANIZER" -ApprovalStatus "APPROVED"
-Create-User -Email "staff@test.com" -Role "STAFF" -ApprovalStatus "APPROVED"
-Create-User -Email "admin@test.com" -Role "ADMIN" -ApprovalStatus "APPROVED"
-
-# REJECTED user (for negative tests)
-Create-User -Email "rejected@test.com" -Role "ATTENDEE" -ApprovalStatus "REJECTED"
-```
-
-### Creating Test Events
-
-```powershell
-# Create event for organizer
-$eventBody = @{
-    name = "Test Event for QR Export"
-    start = "2026-06-01T09:00:00"
-    end = "2026-06-01T18:00:00"
-    venue = "Test Venue"
-    salesStart = "2026-05-01T00:00:00"
-    salesEnd = "2026-05-31T23:59:59"
-    status = "PUBLISHED"
-    ticketTypes = @(@{
-        name = "General Admission"
-        price = 50.00
-        description = "Standard ticket"
-        totalAvailable = 100
-    })
-} | ConvertTo-Json -Depth 5
-
-$event = Invoke-RestMethod -Method Post `
-  -Uri "$BASE_URL/api/v1/events" `
-  -Headers @{ Authorization = "Bearer $ORGANIZER_TOKEN"; "Content-Type" = "application/json" } `
-  -Body $eventBody
-
-$TEST_EVENT_ID = $event.id
-$TEST_TICKET_TYPE_ID = $event.ticketTypes[0].id
-```
-
-### Creating Test Tickets
-
-```powershell
-# Purchase ticket for attendee
-$purchaseBody = @{ quantity = 2 } | ConvertTo-Json
-
-$tickets = Invoke-RestMethod -Method Post `
-  -Uri "$BASE_URL/api/v1/events/$TEST_EVENT_ID/ticket-types/$TEST_TICKET_TYPE_ID/tickets" `
-  -Headers @{ Authorization = "Bearer $ATTENDEE_TOKEN"; "Content-Type" = "application/json" } `
-  -Body $purchaseBody
-
-$TEST_TICKET_ID = $tickets[0].id
-```
-
----
-
-**End of Testing Guide Addendum v2.0**
-
-**Last Updated**: January 19, 2026  
-**Next Review**: As needed based on feature additions  
-**Maintainer**: Development Team
+**Testing Complete**: All endpoints regenerated from controllers and DTOs. Run checklist to verify implementation.

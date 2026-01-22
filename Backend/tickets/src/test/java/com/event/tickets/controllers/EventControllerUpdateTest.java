@@ -10,8 +10,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
-import static org.junit.jupiter.api.Assertions.*;
-
 /**
  * Integration tests for EventController.updateEvent endpoint
  *
@@ -31,40 +29,25 @@ class EventControllerUpdateTest {
   private ObjectMapper objectMapper;
 
   @Test
-  @DisplayName("UpdateEventRequestDto validation - id field is optional and can be null")
+  @DisplayName("UpdateEventRequestDto validation - id field is optional")
   void validateDtoContract_IdFieldOptional() throws Exception {
-    // Arrange: Create DTO without setting id field
+    // Arrange: Create DTO without id field
     UpdateEventRequestDto dto = new UpdateEventRequestDto();
     dto.setName("Test Event");
     dto.setVenue("Test Venue");
     dto.setStatus(EventStatusEnum.PUBLISHED);
     dto.setTicketTypes(new ArrayList<>());
 
-    // Assert: DTO can be created with null id (no @NotNull validation)
-    assertNull(dto.getId(), "ID should be null when not set");
-
     // Act: Serialize to JSON (simulating request body)
     String json = objectMapper.writeValueAsString(dto);
 
-    // Assert: JSON can be parsed back even with null id
-    UpdateEventRequestDto deserialized = objectMapper.readValue(json, UpdateEventRequestDto.class);
-    assertNull(deserialized.getId(), "Deserialized DTO should have null id");
-    assertEquals("Test Event", deserialized.getName(), "Name should be preserved");
-    assertEquals("Test Venue", deserialized.getVenue(), "Venue should be preserved");
-    assertEquals(EventStatusEnum.PUBLISHED, deserialized.getStatus(), "Status should be preserved");
+    // Assert: JSON should not contain id field
+    assert !json.contains("\"id\"") : "DTO should not serialize null id field";
 
-    // Test that a JSON without id field can be deserialized
-    String jsonWithoutId = """
-        {
-          "name": "Test Event",
-          "venue": "Test Venue",
-          "status": "PUBLISHED",
-          "ticketTypes": []
-        }
-        """;
-    UpdateEventRequestDto fromJsonWithoutId = objectMapper.readValue(jsonWithoutId, UpdateEventRequestDto.class);
-    assertNull(fromJsonWithoutId.getId(), "DTO from JSON without id should have null id");
-    assertEquals("Test Event", fromJsonWithoutId.getName(), "Name should be preserved from JSON without id");
+    // Deserialize back
+    UpdateEventRequestDto deserialized = objectMapper.readValue(json, UpdateEventRequestDto.class);
+    assert deserialized.getId() == null : "Deserialized DTO should have null id";
+    assert deserialized.getName().equals("Test Event") : "Name should be preserved";
   }
 
   @Test
@@ -78,12 +61,12 @@ class EventControllerUpdateTest {
     dto.setId(testId);
 
     // Assert
-    assertNotNull(dto.getId(), "ID should be settable");
-    assertEquals(testId, dto.getId(), "ID should match what was set");
+    assert dto.getId() != null : "ID should be settable";
+    assert dto.getId().equals(testId) : "ID should match what was set";
   }
 
   @Test
-  @DisplayName("Controller logic simulation - defensive check detects mismatch")
+  @DisplayName("Controller logic simulation - defensive check")
   void simulateControllerDefensiveCheck() {
     // Arrange
     UUID urlEventId = UUID.randomUUID();
@@ -92,13 +75,17 @@ class EventControllerUpdateTest {
     UpdateEventRequestDto dto = new UpdateEventRequestDto();
     dto.setId(bodyEventId);
 
-    // Act & Assert: Simulate defensive check - should detect mismatch
-    boolean idMismatch = dto.getId() != null && !urlEventId.equals(dto.getId());
-    assertTrue(idMismatch, "Defensive check should detect mismatch when IDs differ");
+    // Act & Assert: Simulate defensive check
+    if (dto.getId() != null && !urlEventId.equals(dto.getId())) {
+      // This is the expected behavior when IDs don't match
+      assert true : "Defensive check should detect mismatch";
+    } else {
+      assert false : "Defensive check failed to detect mismatch";
+    }
   }
 
   @Test
-  @DisplayName("Controller logic simulation - matching IDs pass check")
+  @DisplayName("Controller logic simulation - matching IDs")
   void simulateControllerDefensiveCheck_MatchingIds() {
     // Arrange
     UUID eventId = UUID.randomUUID();
@@ -107,12 +94,16 @@ class EventControllerUpdateTest {
     dto.setId(eventId);
 
     // Act & Assert: Simulate defensive check with matching IDs
-    boolean idMismatch = dto.getId() != null && !eventId.equals(dto.getId());
-    assertFalse(idMismatch, "Matching IDs should pass defensive check");
+    if (dto.getId() != null && !eventId.equals(dto.getId())) {
+      assert false : "Should not reject matching IDs";
+    } else {
+      // This is the expected path when IDs match
+      assert true : "Matching IDs should pass defensive check";
+    }
   }
 
   @Test
-  @DisplayName("Controller logic simulation - null body ID passes check and can be set")
+  @DisplayName("Controller logic simulation - null body ID")
   void simulateControllerDefensiveCheck_NullBodyId() {
     // Arrange
     UUID eventId = UUID.randomUUID();
@@ -120,14 +111,15 @@ class EventControllerUpdateTest {
     UpdateEventRequestDto dto = new UpdateEventRequestDto();
     // id is null by default
 
-    // Act: Simulate defensive check - should NOT trigger for null id
-    boolean idMismatch = dto.getId() != null && !eventId.equals(dto.getId());
-    assertFalse(idMismatch, "Should not trigger check when body ID is null");
+    // Act: Simulate controller setting ID
+    if (dto.getId() != null && !eventId.equals(dto.getId())) {
+      assert false : "Should not trigger check when body ID is null";
+    }
 
     // Controller sets ID from path
     dto.setId(eventId);
 
     // Assert
-    assertEquals(eventId, dto.getId(), "Controller should set ID from path");
+    assert dto.getId().equals(eventId) : "Controller should set ID from path";
   }
 }

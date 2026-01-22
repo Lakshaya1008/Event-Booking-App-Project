@@ -7,6 +7,11 @@ package com.event.tickets.domain.entities;
  * Immutable - actions are append-only to audit log.
  */
 public enum AuditAction {
+  // Registration Operations
+  REGISTRATION_ATTEMPT,
+  REGISTRATION_SUCCESS,
+  REGISTRATION_FAILED,
+
   // Role Management
   ROLE_ASSIGNED,
   ROLE_REVOKED,
@@ -35,5 +40,12 @@ public enum AuditAction {
   QR_CODE_DOWNLOADED_PDF,
 
   // Report Exports (READ-ONLY)
-  SALES_REPORT_EXPORTED
+  SALES_REPORT_EXPORTED,
+
+  // Approval Gate Operations
+  APPROVAL_GATE_VIOLATION,
+
+  // Validation Failures
+  FAILED_TICKET_VALIDATION,
+  FAILED_INVITE_REDEMPTION
 }

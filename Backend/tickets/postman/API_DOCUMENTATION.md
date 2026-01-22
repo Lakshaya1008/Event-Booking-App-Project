@@ -1,49 +1,22 @@
 # Event Booking App — Complete API Reference and Postman Guide
 
-This document reflects the current codebase (controllers, DTOs, properties) and shows how to test every API in Postman.
+This document reflects the ACTUAL codebase state as of January 22, 2026 and shows how to test every API in Postman.
 
-**Last Updated:** January 19, 2026  
-**API Version:** v1.1  
-**Status:** Production Ready with Export Features  
+**Last Updated:** January 22, 2026  
+**API Version:** v1.0  
+**Status:** Production Ready with Complete Feature Set  
 
 - Base URL: http://localhost:8081
 - API version: v1
 - Auth: OAuth2 Bearer JWT (Keycloak)
 - Pagination: Spring Pageable (page, size, sort)
 
-## Recent Changes
-
-### v1.1 - Event Update API Fix (January 19, 2026)
-
-**BREAKING FIX**: The `PUT /api/v1/events/{eventId}` endpoint has been corrected:
-
-- ✅ **Before**: Required `id` field in request body (broken - caused validation error)
-- ✅ **After**: `id` field is OPTIONAL (eventId comes from URL path parameter)
-
-**Migration Guide**:
-- **Recommended**: Remove `id` field from request body
-- **Backward Compatible**: If you include `id`, it must match URL `eventId`
-- **Will Fail**: Sending a different `id` than URL returns 400 Bad Request
-
-See [Event Management Endpoints](#1-organizer-events--apiv1events) for details.
-
----
-
 ## Contents
 - Prerequisites and environment
 - Authentication (get a token)
-- Endpoint reference (paths, auth, payloads, responses)
+- Approval Gate System (CRITICAL)
+- Complete endpoint reference (ALL endpoints from code)
 - Role-based security requirements
-- **User Registration & Authentication** (Current workflow + planned endpoint)
-- **FIX:** Event Update API (id field now optional)
-- **NEW:** Discount Management APIs
-- **NEW:** Admin Governance APIs
-- **NEW:** Event Staff Management APIs
-- **NEW:** Invite Code APIs
-- **NEW:** Audit Log APIs
-- **NEW:** QR Code Export APIs (View/Download PNG/PDF)
-- **NEW:** Sales Report Export (Excel)
-- **NEW:** Approval Gate System
 - Postman setup tips
 - Troubleshooting
 
@@ -67,6 +40,22 @@ Optional: docker-compose up to start Postgres, Adminer, and Keycloak:
   - scope: openid profile email
 - Use the access_token as Authorization: Bearer <token>
 
+## ⚠️ APPROVAL GATE SYSTEM (CRITICAL)
+
+**ALL authenticated endpoints require approval status check EXCEPT:**
+- `/api/v1/auth/register` - Public registration
+- `/actuator/health/**` - Health checks
+- `/actuator/info` - Application metadata  
+- `/api/v1/invites/redeem` - Invite redemption (intentional exception)
+
+**Approval States:**
+- **PENDING**: New user awaiting admin review → 403 BLOCKED
+- **APPROVED**: Admin approved → ALLOWED
+- **REJECTED**: Admin rejected → 403 BLOCKED
+- **NULL**: Legacy user → Auto-migrated to APPROVED
+
+**Business Rule:** Approval gate is SEPARATE from Keycloak authentication and roles. Users with valid JWT and roles will still be blocked if not approved.
+
 ## Role-based Security Requirements
 - **ADMIN**: Can manage all user roles, view all audit logs, but CANNOT bypass business rules (event ownership)
 - **ORGANIZER**: Can create/manage events, ticket types, manage STAFF for their events, view own event audit logs, export sales reports
@@ -83,339 +72,714 @@ Optional: docker-compose up to start Postgres, Adminer, and Keycloak:
   - PENDING or REJECTED users receive 403 Forbidden even with valid JWT and roles
   - Approval status is a business gate, separate from Keycloak authentication
 
-## Endpoint Reference
+## Complete Endpoint Reference
 
-### 0) User Registration & Authentication — /api/v1/auth
-
-#### Current Registration Workflow
-
-**IMPORTANT**: The system currently uses an **invite-code based registration** workflow through Keycloak. There is NO public self-registration endpoint implemented.
-
-**How Users Are Created**:
-
-1. **Admin/Organizer Creates Invite Code**
-   ```
-   POST /api/v1/invites
-   ```
-   - ADMIN can create invites for any role (ADMIN, ORGANIZER, ATTENDEE, STAFF)
-   - ORGANIZER can create STAFF invites only for their events
-
-2. **User Registers in Keycloak**
-   - Users must be created directly in Keycloak Admin Console
-   - OR through a future self-registration endpoint (planned but not implemented)
-   - User receives credentials from Keycloak
-
-3. **User Redeems Invite Code**
-   ```
-   POST /api/v1/invites/redeem
-   ```
-   - User authenticates with Keycloak (gets JWT)
-   - Redeems invite code to get assigned role
-   - User status set to PENDING (awaiting admin approval)
-
-4. **Admin Approves User**
-   ```
-   POST /api/v1/admin/approvals/{userId}/approve
-   ```
-   - Admin reviews and approves the user
-   - User can now access business operations
-
-**Planned Registration Endpoint (NOT YET IMPLEMENTED)**:
-
-- **POST /api/v1/auth/register** ⚠️ **PLANNED - NOT IMPLEMENTED**
-  - **Status**: Endpoint configured in security but controller NOT implemented
-  - **Purpose**: Public self-registration with invite code
-  - **Security**: Configured as `permitAll()` in SecurityConfig
-  - **Service Interface**: `RegistrationService.java` exists but no implementation
-  
-  **Planned Request (RegisterRequestDto)**:
-  ```json
-  {
-    "email": "user@example.com",
-    "password": "SecurePassword123!",
-    "name": "John Doe",
-    "inviteCode": "ABC123XYZ"
-  }
-  ```
-  
-  **Planned Response (RegisterResponseDto)**:
-  ```json
-  {
-    "userId": "550e8400-e29b-41d4-a716-446655440000",
-    "email": "user@example.com",
-    "name": "John Doe",
-    "roleAssigned": "ATTENDEE",
-    "approvalStatus": "PENDING",
-    "message": "Registration successful. Please wait for admin approval."
-  }
-  ```
-  
-  **Planned Transaction Flow**:
-  1. Validate invite code (exists, PENDING status, not expired)
-  2. Check email not already registered
-  3. Create user in Keycloak
-  4. Assign role from invite code in Keycloak
-  5. Create user record in database (status=PENDING)
-  6. If STAFF role: Assign to event
-  7. Mark invite code as REDEEMED
-  
-  **Rollback on Failure**:
-  - Delete Keycloak user if created
-  - Do NOT mark invite as used
-  - Log failure for investigation
-  
-  **Error Responses**:
-  - 400 Bad Request: Invalid invite code, email already in use, validation errors
-  - 500 Internal Server Error: Keycloak creation failed, transaction rollback
-
-**Current Workaround**:
-
-Until the registration endpoint is implemented, use this workflow:
-
-1. **Create User in Keycloak Admin Console**
-   - Navigate to: http://localhost:9090/admin
-   - Realm: event-ticket-platform
-   - Users → Add user
-   - Set credentials
-
-2. **Get Access Token**
-   ```bash
-   POST http://localhost:9090/realms/event-ticket-platform/protocol/openid-connect/token
-   Content-Type: application/x-www-form-urlencoded
-   
-   grant_type=password&
-   client_id=event-ticket-platform-app&
-   client_secret=YOUR_CLIENT_SECRET&
-   username=user@example.com&
-   password=userpassword&
-   scope=openid profile email
-   ```
-
-3. **Redeem Invite Code** (see Section 9: Invite Code System)
-   ```bash
-   POST /api/v1/invites/redeem
-   Authorization: Bearer {access_token}
-   
-   {
-     "code": "ABC123XYZ"
-   }
-   ```
-
-4. **Admin Approves** (see Section 11: Approval Gate System)
-   ```bash
-   POST /api/v1/admin/approvals/{userId}/approve
-   Authorization: Bearer {admin_token}
-   ```
+This section is generated directly from Spring Boot controllers and DTOs. Each endpoint includes:
+- HTTP method and path
+- Required role
+- Approval gate behavior
+- Request DTO fields (required/optional based on validation annotations)
+- Response description
+- Minimum valid JSON payload (mandatory fields only)
+- Full valid JSON payload (all fields)
+- Validation constraints and error behavior
 
 ---
 
-### 1) Organizer Events — /api/v1/events 
+### 📁 0. Auth & Registration — /api/v1/auth
+
+#### POST /api/v1/auth/register
+**Required Role:** PUBLIC (no authentication required)  
+**Approval Gate:** Bypassed (intentional exception)
+
+Registers a new user via invite code or as ATTENDEE (no invite).
+
+**Request DTO: RegisterRequestDto**
+| Field | Type | Required | Validation | Description |
+|-------|------|----------|------------|-------------|
+| inviteCode | String | ❌ No | @Pattern(XXXX-XXXX-XXXX-XXXX) | Optional invite code |
+| email | String | ✅ Yes | @NotBlank, @Email, @Size(max=255) | User email |
+| password | String | ✅ Yes | @NotBlank, @Size(8-128), @Pattern | Password with complexity requirements |
+| name | String | ✅ Yes | @NotBlank, @Size(2-100) | User display name |
+
+**Minimum Valid JSON Payload:**
+```json
+{
+  "email": "user@example.com",
+  "password": "Password123",
+  "name": "John Doe"
+}
+```
+
+**Full Valid JSON Payload:**
+```json
+{
+  "inviteCode": "ABCD-EFGH-IJKL-MNOP",
+  "email": "user@example.com",
+  "password": "Password123",
+  "name": "John Doe"
+}
+```
+
+**Response:** 201 Created - RegisterResponseDto
+
+**Validation Errors:**
+- 400 Bad Request: Invalid email format, weak password, invalid name length
+- 400 Bad Request: Invalid invite code format
+
+### 1) Event Management — /api/v1/events
 **Required Role: ORGANIZER**
 
-- **POST /api/v1/events**
-  - Creates a new event for the authenticated organizer.
-  - Headers: Content-Type: application/json; Authorization: Bearer {{access_token}}
-  - Body (CreateEventRequestDto):
-    ```json
+#### POST /api/v1/events
+Creates a new event for the authenticated organizer.
+
+**Request DTO: CreateEventRequestDto**
+| Field | Type | Required | Validation | Description |
+|-------|------|----------|------------|-------------|
+| name | String | ✅ Yes | @NotBlank | Event name |
+| start | LocalDateTime | ❌ No | - | Event start date/time |
+| end | LocalDateTime | ❌ No | - | Event end date/time |
+| venue | String | ✅ Yes | @NotBlank | Event venue |
+| salesStart | LocalDateTime | ❌ No | - | Ticket sales start date/time |
+| salesEnd | LocalDateTime | ❌ No | - | Ticket sales end date/time |
+| status | EventStatusEnum | ✅ Yes | @NotNull | Event status (DRAFT, PUBLISHED, CANCELLED, COMPLETED) |
+| ticketTypes | List<CreateTicketTypeRequestDto> | ✅ Yes | @NotEmpty, @Valid | List of ticket types |
+
+**Minimum Valid JSON Payload:**
+```json
+{
+  "name": "Tech Conference 2025",
+  "venue": "Convention Center",
+  "status": "PUBLISHED",
+  "ticketTypes": [
     {
-      "name": "Tech Conference 2025",
-      "start": "2025-12-15T09:00:00",
-      "end": "2025-12-15T18:00:00",
-      "venue": "Convention Center",
-      "salesStart": "2025-11-01T00:00:00",
-      "salesEnd": "2025-12-14T23:59:59",
-      "status": "PUBLISHED",
-      "ticketTypes": [
-        {
-          "name": "Early Bird",
-          "price": 199.99,
-          "description": "Discounted",
-          "totalAvailable": 100
-        }
-      ]
+      "name": "General Admission",
+      "price": 199.99
     }
-    ```
-  - Response 201 (CreateEventResponseDto): id, name, start, end, venue, salesStart, salesEnd, status, ticketTypes[], createdAt, updatedAt
+  ]
+}
+```
 
-- **PUT /api/v1/events/{eventId}**
-  - Updates an event owned by the authenticated organizer.
-  - **Source of Truth**: `eventId` from URL path parameter (NOT request body)
-  - Headers: Content-Type: application/json; Authorization: Bearer {{access_token}}
-  - Body (UpdateEventRequestDto):
-    ```json
+**Full Valid JSON Payload:**
+```json
+{
+  "name": "Tech Conference 2025",
+  "start": "2025-12-15T09:00:00",
+  "end": "2025-12-15T18:00:00",
+  "venue": "Convention Center",
+  "salesStart": "2025-11-01T00:00:00",
+  "salesEnd": "2025-12-14T23:59:59",
+  "status": "PUBLISHED",
+  "ticketTypes": [
     {
-      "name": "Updated Tech Conference 2025",
-      "start": "2025-12-15T09:00:00",
-      "end": "2025-12-15T18:00:00",
-      "venue": "Updated Convention Center",
-      "salesStart": "2025-11-01T00:00:00",
-      "salesEnd": "2025-12-14T23:59:59",
-      "status": "PUBLISHED",
-      "ticketTypes": [
-        {
-          "id": "existing-ticket-type-uuid",
-          "name": "Updated Early Bird",
-          "price": 179.99,
-          "description": "Updated discount",
-          "totalAvailable": 120
-        },
-        {
-          "name": "New VIP Pass",
-          "price": 499.99,
-          "description": "Premium access",
-          "totalAvailable": 50
-        }
-      ]
+      "name": "Early Bird",
+      "price": 199.99,
+      "description": "Discounted ticket",
+      "totalAvailable": 100
     }
-    ```
-  - **Important Notes**:
-    - **DO NOT** include `id` field in request body (eventId from URL is used)
-    - If `id` is included in body, it must match the URL `eventId` or request will fail with 400
-    - `ticketTypes[].id` is optional: include for updates, omit for new ticket types
-    - All fields except `id` are required in the request body
-  - Response 200 (UpdateEventResponseDto): Updated event with all fields
-  - Error Responses:
-    - 400 Bad Request: Missing required fields, validation errors, or ID mismatch
-    - 403 Forbidden: Organizer does not own the event
-    - 404 Not Found: Event does not exist
+  ]
+}
+```
 
-- **GET /api/v1/events**
-  - Lists events for the authenticated organizer.
-  - Headers: Authorization: Bearer {{access_token}}
-  - Query (optional): page, size, sort (e.g., sort=start,desc)
-  - Response 200: Page<ListEventResponseDto>
+**Response:** 201 Created - CreateEventResponseDto (event details with ID and timestamps)
 
-- **GET /api/v1/events/{eventId}**
-  - Gets event details owned by the authenticated organizer.
-  - Headers: Authorization: Bearer {{access_token}}
-  - Response: 200 GetEventDetailsResponseDto | 404 Not Found
+**Validation Errors:**
+- 400 Bad Request: Missing required fields (name, venue, status, ticketTypes)
+- 400 Bad Request: Invalid status value
+- 400 Bad Request: Empty ticketTypes list
 
-- **DELETE /api/v1/events/{eventId}**
-  - Deletes an event owned by the authenticated organizer.
-  - Headers: Authorization: Bearer {{access_token}}
-  - Response: 204 No Content
+#### PUT /api/v1/events/{eventId}
+Updates an event owned by the authenticated organizer.
 
-- **GET /api/v1/events/{eventId}/sales-dashboard**
-  - Gets comprehensive sales analytics for the event.
-  - Headers: Authorization: Bearer {{access_token}}
-  - Response 200: Sales dashboard with revenue, ticket counts, breakdown by ticket type
-  ```json
-  {
-    "eventName": "Tech Conference 2025",
-    "totalTicketsSold": 150,
-    "totalRevenue": 29998.50,
-    "ticketTypeBreakdown": [
-      {
-        "ticketTypeName": "Early Bird",
-        "totalAvailable": 100,
-        "sold": 85,
-        "remaining": 15,
-        "revenue": 16999.15,
-        "price": 199.99
-      }
-    ]
-  }
-  ```
+**Request DTO: UpdateEventRequestDto**
+| Field | Type | Required | Validation | Description |
+|-------|------|----------|------------|-------------|
+| id | UUID | ❌ No | - | Event ID (ignored, sourced from URL) |
+| name | String | ✅ Yes | @NotBlank | Event name |
+| start | LocalDateTime | ❌ No | - | Event start date/time |
+| end | LocalDateTime | ❌ No | - | Event end date/time |
+| venue | String | ✅ Yes | @NotBlank | Event venue |
+| salesStart | LocalDateTime | ❌ No | - | Ticket sales start date/time |
+| salesEnd | LocalDateTime | ❌ No | - | Ticket sales end date/time |
+| status | EventStatusEnum | ✅ Yes | @NotNull | Event status |
+| ticketTypes | List<UpdateTicketTypeRequestDto> | ✅ Yes | @NotEmpty, @Valid | List of ticket types |
 
-- **GET /api/v1/events/{eventId}/attendees-report**
-  - Gets detailed attendee information for the event.
-  - Headers: Authorization: Bearer {{access_token}}
-  - Response 200: Attendees report with purchase details and validation history
-  ```json
-  {
-    "eventName": "Tech Conference 2025",
-    "totalAttendees": 85,
-    "attendees": [
-      {
-        "attendeeName": "John Doe",
-        "attendeeEmail": "john@example.com",
-        "ticketType": "Early Bird",
-        "ticketStatus": "PURCHASED",
-        "purchaseDate": "2025-11-15T10:30:00",
-        "validationCount": 1
-      }
-    ]
-  }
-  ```
+**Minimum Valid JSON Payload:**
+```json
+{
+  "name": "Updated Tech Conference",
+  "venue": "Updated Venue",
+  "status": "PUBLISHED",
+  "ticketTypes": [
+    {
+      "name": "General Admission",
+      "price": 199.99
+    }
+  ]
+}
+```
 
-- **GET /api/v1/events/{eventId}/sales-report.xlsx**
-  - **Export Sales Report** (Excel .xlsx format)
-  - Downloads comprehensive sales analytics as Excel spreadsheet
-  - Headers: Authorization: Bearer {{access_token}}
-  - Response: 200 application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
-    - Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
-    - Content-Disposition: attachment; filename="<event>_sales_report_<timestamp>.xlsx"
-    - Example filename: summer_festival_sales_report_20260118_143022.xlsx
-  - Excel Contents:
-    - **Summary Section:**
-      - Event name
-      - Total tickets sold
-      - Total revenue (currency formatted)
-      - Generated timestamp
-    - **Ticket Type Breakdown Table:**
-      - Ticket type name
-      - Price (currency formatted)
-      - Total available
-      - Sold count
-      - Remaining count
-      - Revenue per type (currency formatted)
-  - **DATA SOURCE (CRITICAL):**
-    - Reuses `EventService.getSalesDashboard()` for data consistency
-    - NO duplicate queries or parallel business logic
-    - Same authorization check (organizer must own event)
-    - Single source of truth for sales data
-  - **IDEMPOTENCY GUARANTEE:**
-    - Same event state produces identical Excel content
-    - No side effects, read-only operation
-    - Safe to download multiple times
-  - **ACCESS CONTROL:**
-    - ORGANIZER: Must own the event (ownership checked in service)
-    - ADMIN: NO bypass (must own event to export)
-    - ATTENDEE: NO access (403 Forbidden)
-    - STAFF: NO access (403 Forbidden)
-  - Audit: Logs SALES_REPORT_EXPORTED action
-  - Error Responses:
-    - 403 Forbidden: User doesn't own event (even ADMIN)
-    - 404 Not Found: Event doesn't exist
-    - 401 Unauthorized: Invalid/missing JWT
+**Full Valid JSON Payload:**
+```json
+{
+  "name": "Updated Tech Conference 2025",
+  "start": "2025-12-15T10:00:00",
+  "end": "2025-12-15T19:00:00",
+  "venue": "Updated Convention Center",
+  "salesStart": "2025-11-01T00:00:00",
+  "salesEnd": "2025-12-14T23:59:59",
+  "status": "PUBLISHED",
+  "ticketTypes": [
+    {
+      "id": "existing-ticket-type-uuid",
+      "name": "Updated Early Bird",
+      "price": 179.99,
+      "description": "Updated description",
+      "totalAvailable": 120
+    }
+  ]
+}
+```
 
-### 2) Ticket Type Management — /api/v1/events/{eventId}/ticket-types
+**Response:** 200 OK - UpdateEventResponseDto
+
+**Validation Errors:**
+- 400 Bad Request: Missing required fields
+- 400 Bad Request: ID in body doesn't match URL path
+- 403 Forbidden: User doesn't own the event
+- 404 Not Found: Event not found
+
+#### GET /api/v1/events
+Lists events for the authenticated organizer.
+
+**Request:** Query parameters (Pageable): page, size, sort
+
+**Response:** 200 OK - Page<ListEventResponseDto>
+
+#### GET /api/v1/events/{eventId}
+Gets event details owned by the authenticated organizer.
+
+**Response:** 200 OK - GetEventDetailsResponseDto | 404 Not Found
+
+#### DELETE /api/v1/events/{eventId}
+Deletes an event owned by the authenticated organizer.
+
+**Response:** 204 No Content | 403 Forbidden | 404 Not Found
+
+#### GET /api/v1/events/{eventId}/sales-dashboard
+Gets sales analytics for the event.
+
+**Response:** 200 OK - Map<String, Object> (dashboard data)
+
+#### GET /api/v1/events/{eventId}/attendees-report
+Gets attendee information for the event.
+
+**Response:** 200 OK - Map<String, Object> (attendee data)
+
+#### GET /api/v1/events/{eventId}/sales-report.xlsx
+Exports sales report as Excel file.
+
+**Response:** 200 OK - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+### 2) Published Events — /api/v1/published-events
+**Required Role: ATTENDEE or ORGANIZER**
+
+#### GET /api/v1/published-events
+Lists published events with optional search.
+
+**Request:** Query parameters: q (optional search), page, size, sort
+
+**Response:** 200 OK - Page<ListPublishedEventResponseDto>
+
+#### GET /api/v1/published-events/{eventId}
+Gets published event details.
+
+**Response:** 200 OK - GetPublishedEventDetailsResponseDto | 404 Not Found
+
+### 3) Ticket Management — /api/v1/tickets
+**Required Role: ATTENDEE or ORGANIZER**
+
+#### GET /api/v1/tickets
+Lists tickets for the authenticated user.
+
+**Request:** Query parameters (Pageable): page, size, sort
+
+**Response:** 200 OK - Page<ListTicketResponseDto>
+
+#### GET /api/v1/tickets/{ticketId}
+Gets ticket details for the authenticated user.
+
+**Response:** 200 OK - GetTicketResponseDto | 404 Not Found
+
+#### GET /api/v1/tickets/{ticketId}/qr-codes
+**DEPRECATED** - Legacy QR code endpoint.
+
+**Response:** 200 OK - image/png
+
+#### GET /api/v1/tickets/{ticketId}/qr-codes/view
+Views QR code inline for display.
+
+**Response:** 200 OK - image/png (inline disposition)
+
+#### GET /api/v1/tickets/{ticketId}/qr-codes/png
+Downloads QR code as PNG file.
+
+**Response:** 200 OK - image/png (attachment disposition)
+
+#### GET /api/v1/tickets/{ticketId}/qr-codes/pdf
+Downloads QR code as PDF with ticket details.
+
+**Response:** 200 OK - application/pdf (attachment disposition)
+
+### 4) Ticket Type Management — /api/v1/events/{eventId}/ticket-types
+**Required Role: ORGANIZER (except purchase)**
+
+#### POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/tickets
+Purchases tickets for the authenticated user.
+
+**Required Role: ATTENDEE or ORGANIZER**
+
+**Request DTO: PurchaseTicketRequestDto**
+| Field | Type | Required | Validation | Description |
+|-------|------|----------|------------|-------------|
+| quantity | Integer | ❌ No | @Min(1), @Max(10) | Number of tickets (default 1) |
+
+**Minimum Valid JSON Payload:**
+```json
+{}
+```
+
+**Full Valid JSON Payload:**
+```json
+{
+  "quantity": 2
+}
+```
+
+**Response:** 201 Created - List<GetTicketResponseDto>
+
+**Validation Errors:**
+- 400 Bad Request: quantity < 1 or > 10
+
+#### POST /api/v1/events/{eventId}/ticket-types
+Creates a new ticket type for the event.
+
+**Request DTO: CreateTicketTypeRequestDto**
+| Field | Type | Required | Validation | Description |
+|-------|------|----------|------------|-------------|
+| name | String | ✅ Yes | @NotBlank | Ticket type name |
+| price | Double | ✅ Yes | @NotNull, @PositiveOrZero | Ticket price |
+| description | String | ❌ No | - | Ticket description |
+| totalAvailable | Integer | ❌ No | - | Total tickets available |
+
+**Minimum Valid JSON Payload:**
+```json
+{
+  "name": "VIP Pass",
+  "price": 499.99
+}
+```
+
+**Full Valid JSON Payload:**
+```json
+{
+  "name": "VIP Pass",
+  "price": 499.99,
+  "description": "Premium access",
+  "totalAvailable": 50
+}
+```
+
+**Response:** 201 Created - CreateTicketTypeResponseDto
+
+#### GET /api/v1/events/{eventId}/ticket-types
+Lists all ticket types for the event.
+
+**Response:** 200 OK - List<CreateTicketTypeResponseDto>
+
+#### GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
+Gets specific ticket type details.
+
+**Response:** 200 OK - CreateTicketTypeResponseDto | 404 Not Found
+
+#### PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
+Updates a ticket type.
+
+**Request DTO: UpdateTicketTypeRequestDto**
+| Field | Type | Required | Validation | Description |
+|-------|------|----------|------------|-------------|
+| id | UUID | ❌ No | - | Ticket type ID (ignored) |
+| name | String | ✅ Yes | @NotBlank | Ticket type name |
+| price | Double | ✅ Yes | @NotNull, @PositiveOrZero | Ticket price |
+| description | String | ❌ No | - | Ticket description |
+| totalAvailable | Integer | ❌ No | - | Total tickets available |
+
+**Minimum Valid JSON Payload:**
+```json
+{
+  "name": "Updated VIP Pass",
+  "price": 549.99
+}
+```
+
+**Full Valid JSON Payload:**
+```json
+{
+  "name": "Updated VIP Pass",
+  "price": 549.99,
+  "description": "Updated premium access",
+  "totalAvailable": 75
+}
+```
+
+**Response:** 200 OK - UpdateTicketTypeResponseDto
+
+#### DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
+Deletes a ticket type (only if no tickets sold).
+
+**Response:** 204 No Content | 400 Bad Request | 403 Forbidden | 404 Not Found
+
+### 5) Discount Management — /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts
 **Required Role: ORGANIZER**
 
-- **POST /api/v1/events/{eventId}/ticket-types**
-  - Creates a new ticket type for the event.
-  - Headers: Content-Type: application/json; Authorization: Bearer {{access_token}}
-  - Body (CreateTicketTypeRequestDto):
-    ```json
-    {
-      "name": "VIP Pass",
-      "price": 499.99,
-      "description": "Premium access with perks",
-      "totalAvailable": 50
-    }
-    ```
-  - Response 201 (CreateTicketTypeResponseDto)
+#### POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts
+Creates a new discount for a ticket type.
 
-- **GET /api/v1/events/{eventId}/ticket-types**
-  - Lists all ticket types for the event.
-  - Headers: Authorization: Bearer {{access_token}}
-  - Response 200: List<CreateTicketTypeResponseDto>
+**Request DTO: CreateDiscountRequestDto**
+| Field | Type | Required | Validation | Description |
+|-------|------|----------|------------|-------------|
+| discountType | DiscountType | ✅ Yes | @NotNull | PERCENTAGE or FIXED_AMOUNT |
+| value | BigDecimal | ✅ Yes | @NotNull, @DecimalMin("0.01") | Discount value |
+| validFrom | LocalDateTime | ✅ Yes | @NotNull, @FutureOrPresent | Discount start date |
+| validTo | LocalDateTime | ✅ Yes | @NotNull, @Future | Discount end date |
+| active | Boolean | ❌ No | - | Whether discount is active |
+| description | String | ❌ No | - | Discount description |
 
-- **GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}**
-  - Gets specific ticket type details.
-  - Headers: Authorization: Bearer {{access_token}}
-  - Response: 200 CreateTicketTypeResponseDto | 404 Not Found
+**Minimum Valid JSON Payload:**
+```json
+{
+  "discountType": "PERCENTAGE",
+  "value": 20.00,
+  "validFrom": "2025-11-01T00:00:00",
+  "validTo": "2025-11-30T23:59:59"
+}
+```
 
-- **PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}**
-  - Updates a ticket type.
-  - Headers: Authorization: Bearer {{access_token}}
-  - Body (UpdateTicketTypeRequestDto): Same as create with id field
-  - Response 200 (UpdateTicketTypeResponseDto)
+**Full Valid JSON Payload:**
+```json
+{
+  "discountType": "PERCENTAGE",
+  "value": 20.00,
+  "validFrom": "2025-11-01T00:00:00",
+  "validTo": "2025-11-30T23:59:59",
+  "active": true,
+  "description": "Early Bird Special"
+}
+```
 
-- **DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}**
-  - Deletes a ticket type (only if no tickets sold).
-  - Headers: Authorization: Bearer {{access_token}}
-  - Response: 204 No Content | 400 Bad Request (if tickets exist)
+**Response:** 201 Created - DiscountResponseDto
+
+**Validation Errors:**
+- 400 Bad Request: Invalid discountType
+- 400 Bad Request: value <= 0
+- 400 Bad Request: validTo before validFrom
+
+#### PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}
+Updates an existing discount.
+
+**Request DTO:** Same as create
+
+**Response:** 200 OK - DiscountResponseDto
+
+#### DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}
+Deletes a discount.
+
+**Response:** 204 No Content
+
+#### GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}
+Gets a specific discount.
+
+**Response:** 200 OK - DiscountResponseDto | 404 Not Found
+
+#### GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts
+Lists all discounts for a ticket type.
+
+**Response:** 200 OK - List<DiscountResponseDto>
+
+### 6) Ticket Validation — /api/v1/ticket-validations
+**Required Role: STAFF or ORGANIZER**
+
+#### POST /api/v1/ticket-validations
+Validates a ticket (MANUAL or QR_SCAN method).
+
+**Request DTO: TicketValidationRequestDto**
+| Field | Type | Required | Validation | Description |
+|-------|------|----------|------------|-------------|
+| id | UUID | ❌ No | - | Ticket or QR code ID |
+| method | TicketValidationMethod | ❌ No | - | MANUAL or QR_SCAN |
+
+**Minimum Valid JSON Payload:**
+```json
+{}
+```
+
+**Full Valid JSON Payload:**
+```json
+{
+  "id": "ticket-uuid",
+  "method": "MANUAL"
+}
+```
+
+**Response:** 200 OK - TicketValidationResponseDto
+
+#### GET /api/v1/ticket-validations/events/{eventId}
+Lists all validations for a specific event.
+
+**Request:** Query parameters (Pageable): page, size, sort
+
+**Response:** 200 OK - Page<TicketValidationResponseDto>
+
+#### GET /api/v1/ticket-validations/tickets/{ticketId}
+Gets validation history for a specific ticket.
+
+**Response:** 200 OK - List<TicketValidationResponseDto>
+
+### 7) Admin Governance — /api/v1/admin
+**Required Role: ADMIN**
+
+#### POST /api/v1/admin/users/{userId}/roles
+Assigns a role to a user.
+
+**Request DTO: AssignRoleRequestDto**
+| Field | Type | Required | Validation | Description |
+|-------|------|----------|------------|-------------|
+| roleName | String | ✅ Yes | @NotBlank, @Pattern | Role name (ADMIN, ORGANIZER, ATTENDEE, STAFF) |
+
+**Minimum Valid JSON Payload:**
+```json
+{
+  "roleName": "ORGANIZER"
+}
+```
+
+**Full Valid JSON Payload:**
+```json
+{
+  "roleName": "ORGANIZER"
+}
+```
+
+**Response:** 200 OK - UserRolesResponseDto
+
+**Validation Errors:**
+- 400 Bad Request: Invalid role name
+
+#### DELETE /api/v1/admin/users/{userId}/roles/{roleName}
+Revokes a role from a user.
+
+**Response:** 200 OK - UserRolesResponseDto
+
+#### GET /api/v1/admin/users/{userId}/roles
+Gets all roles assigned to a user.
+
+**Response:** 200 OK - UserRolesResponseDto
+
+#### GET /api/v1/admin/roles
+Gets all available roles in the system.
+
+**Response:** 200 OK - AvailableRolesResponseDto
+
+### 8) Approval Management — /api/v1/admin/approvals
+**Required Role: ADMIN**
+
+#### GET /api/v1/admin/approvals
+Lists all users with their approval status.
+
+**Request:** Query parameters (Pageable): page, size, sort
+
+**Response:** 200 OK - Page<UserApprovalDto>
+
+#### GET /api/v1/admin/approvals/pending
+Lists only users with PENDING approval status.
+
+**Request:** Query parameters (Pageable): page, size, sort
+
+**Response:** 200 OK - Page<UserApprovalDto>
+
+#### POST /api/v1/admin/approvals/{userId}/approve
+Approves a user account.
+
+**Response:** 200 OK - Map<String, String>
+
+#### POST /api/v1/admin/approvals/{userId}/reject
+Rejects a user account.
+
+**Request DTO: RejectReasonDto**
+| Field | Type | Required | Validation | Description |
+|-------|------|----------|------------|-------------|
+| reason | String | ✅ Yes | @NotBlank, @Size(min=10, max=500) | Rejection reason |
+
+**Minimum Valid JSON Payload:**
+```json
+{
+  "reason": "Account violates terms of service or does not meet requirements"
+}
+```
+
+**Full Valid JSON Payload:**
+```json
+{
+  "reason": "Account violates terms of service or does not meet requirements"
+}
+```
+
+**Response:** 200 OK - Map<String, String>
+
+**Validation Errors:**
+- 400 Bad Request: reason too short or too long
+
+### 9) Event Staff Management — /api/v1/events/{eventId}/staff
+**Required Role: ORGANIZER**
+
+#### POST /api/v1/events/{eventId}/staff
+Assigns a staff member to an event.
+
+**Request DTO: AssignStaffRequestDto**
+| Field | Type | Required | Validation | Description |
+|-------|------|----------|------------|-------------|
+| userId | UUID | ✅ Yes | @NotNull | User ID to assign as staff |
+
+**Minimum Valid JSON Payload:**
+```json
+{
+  "userId": "user-uuid"
+}
+```
+
+**Full Valid JSON Payload:**
+```json
+{
+  "userId": "user-uuid"
+}
+```
+
+**Response:** 201 Created - EventStaffResponseDto
+
+#### DELETE /api/v1/events/{eventId}/staff/{userId}
+Removes a staff member from an event.
+
+**Response:** 200 OK - EventStaffResponseDto
+
+#### GET /api/v1/events/{eventId}/staff
+Lists all staff members assigned to an event.
+
+**Response:** 200 OK - EventStaffResponseDto
+
+### 10) Invite Code System — /api/v1/invites
+**Required Role: ADMIN or ORGANIZER**
+
+#### POST /api/v1/invites
+Generates a new invite code.
+
+**Request DTO: GenerateInviteCodeRequestDto**
+| Field | Type | Required | Validation | Description |
+|-------|------|----------|------------|-------------|
+| roleName | String | ✅ Yes | @NotBlank, @Pattern | Role (ORGANIZER, ATTENDEE, STAFF) |
+| eventId | UUID | Conditional | - | Required only for STAFF role |
+| expirationHours | Integer | ✅ Yes | @NotNull, @Positive | Hours until expiration |
+
+**Minimum Valid JSON Payload (for ORGANIZER):**
+```json
+{
+  "roleName": "ORGANIZER",
+  "expirationHours": 48
+}
+```
+
+**Full Valid JSON Payload (for STAFF):**
+```json
+{
+  "roleName": "STAFF",
+  "eventId": "event-uuid",
+  "expirationHours": 48
+}
+```
+
+**Response:** 201 Created - InviteCodeResponseDto
+
+**Validation Errors:**
+- 400 Bad Request: Invalid role name
+- 400 Bad Request: eventId required for STAFF
+
+#### POST /api/v1/invites/redeem
+Redeems an invite code.
+
+**Request DTO: RedeemInviteCodeRequestDto**
+| Field | Type | Required | Validation | Description |
+|-------|------|----------|------------|-------------|
+| code | String | ✅ Yes | @NotBlank | Invite code |
+
+**Minimum Valid JSON Payload:**
+```json
+{
+  "code": "ABCD-EFGH-IJKL-MNOP"
+}
+```
+
+**Full Valid JSON Payload:**
+```json
+{
+  "code": "ABCD-EFGH-IJKL-MNOP"
+}
+```
+
+**Response:** 200 OK - RedeemInviteCodeResponseDto
+
+#### DELETE /api/v1/invites/{codeId}
+Revokes an invite code.
+
+**Request:** Query parameter: reason (optional)
+
+**Response:** 204 No Content
+
+#### GET /api/v1/invites
+Lists invite codes.
+
+**Request:** Query parameters (Pageable): page, size, sort
+
+**Response:** 200 OK - Page<InviteCodeResponseDto>
+
+#### GET /api/v1/invites/events/{eventId}
+Lists invite codes for a specific event.
+
+**Request:** Query parameters (Pageable): page, size, sort
+
+**Response:** 200 OK - Page<InviteCodeResponseDto>
+
+### 11) Audit Logs — /api/v1/audit
+**Required Role: ADMIN (all logs), ORGANIZER (event logs), Any authenticated (own logs)**
+
+#### GET /api/v1/audit
+Gets all audit logs (ADMIN only).
+
+**Request:** Query parameters (Pageable): page, size, sort
+
+**Response:** 200 OK - Page<AuditLogDto>
+
+#### GET /api/v1/audit/events/{eventId}
+Gets audit logs for a specific event (ORGANIZER must own event).
+
+**Request:** Query parameters (Pageable): page, size, sort
+
+**Response:** 200 OK - Page<AuditLogDto>
+
+#### GET /api/v1/audit/me
+Gets audit trail for the authenticated user.
+
+**Request:** Query parameters (Pageable): page, size, sort
+
+**Response:** 200 OK - Page<AuditLogDto>
 
 ---
 
@@ -435,27 +799,37 @@ Until the registration endpoint is implemented, use this workflow:
   - Body (CreateDiscountRequestDto):
     ```json
     {
-      "name": "Early Bird Special",
       "discountType": "PERCENTAGE",
-      "value": 20.0,
+      "value": 20.00,
       "validFrom": "2025-11-01T00:00:00",
-      "validTo": "2025-11-30T23:59:59"
+      "validTo": "2025-11-30T23:59:59",
+      "active": true,
+      "description": "Early Bird Special"
     }
     ```
     OR for fixed amount discount:
     ```json
     {
-      "name": "Holiday Discount",
       "discountType": "FIXED_AMOUNT",
       "value": 50.00,
       "validFrom": "2025-12-01T00:00:00",
-      "validTo": "2025-12-25T23:59:59"
+      "validTo": "2025-12-25T23:59:59",
+      "active": true,
+      "description": "Holiday Discount"
     }
     ```
+  - **Required Fields:**
+    | Field | Required | Validation |
+    |-------|----------|------------|
+    | `discountType` | ✅ Yes | @NotNull ("PERCENTAGE" or "FIXED_AMOUNT") |
+    | `value` | ✅ Yes | @NotNull, @DecimalMin("0.01") |
+    | `validFrom` | ✅ Yes | @NotNull, @FutureOrPresent |
+    | `validTo` | ✅ Yes | @NotNull, @Future (must be after validFrom) |
+    | `active` | Optional | Boolean (defaults to true if not provided) |
+    | `description` | Optional | String |
   - Validation Rules:
-    - `name`: Required, max 100 characters
     - `discountType`: Required, must be "PERCENTAGE" or "FIXED_AMOUNT"
-    - `value`: Required, positive number
+    - `value`: Required, positive number (min 0.01)
       - For PERCENTAGE: 0-100
       - For FIXED_AMOUNT: must not exceed ticket price
     - `validTo`: Must be after `validFrom`
@@ -463,11 +837,12 @@ Until the registration endpoint is implemented, use this workflow:
     ```json
     {
       "id": "660e8400-e29b-41d4-a716-446655440000",
-      "name": "Early Bird Special",
       "discountType": "PERCENTAGE",
-      "value": 20.0,
+      "value": 20.00,
       "validFrom": "2025-11-01T00:00:00",
       "validTo": "2025-11-30T23:59:59",
+      "active": true,
+      "description": "Early Bird Special",
       "ticketTypeId": "440e8400-e29b-41d4-a716-446655440000",
       "createdAt": "2026-01-19T10:00:00"
     }
@@ -511,7 +886,7 @@ Until the registration endpoint is implemented, use this workflow:
 ---
 
 ### 3) Published Events — /api/v1/published-events
-**Required Role: ATTENDEE**
+**Required Role: ATTENDEE or ORGANIZER**
 
 - **GET /api/v1/published-events**
   - Lists published events with optional search.
@@ -525,7 +900,7 @@ Until the registration endpoint is implemented, use this workflow:
   - Response: 200 GetPublishedEventDetailsResponseDto | 404 Not Found
 
 ### 4) Ticket Purchase — /api/v1/events/{eventId}/ticket-types
-**Required Role: ATTENDEE**
+**Required Role: ATTENDEE or ORGANIZER**
 
 - **POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/tickets**
   - Purchases tickets for the authenticated user with quantity support.
@@ -568,11 +943,11 @@ Until the registration endpoint is implemented, use this workflow:
   **Error Responses**:
   - 400 Bad Request: Sold out, invalid quantity, or validation errors
   - 401 Unauthorized: Invalid/missing token
-  - 403 Forbidden: User doesn't have ATTENDEE role
+  - 403 Forbidden: User doesn't have ATTENDEE or ORGANIZER role
   - 404 Not Found: Event or ticket type not found
 
 ### 5) User Tickets — /api/v1/tickets
-**Required Role: ATTENDEE**
+**Required Role: ATTENDEE or ORGANIZER**
 
 - **GET /api/v1/tickets**
   - Lists tickets for the authenticated user.
@@ -672,7 +1047,7 @@ Why this is secure:
 - 401 Unauthorized: Invalid/missing JWT
 
 ### 6) Ticket Validation — /api/v1/ticket-validations
-**Required Role: STAFF**
+**Required Role: STAFF or ORGANIZER**
 
 - **POST /api/v1/ticket-validations**
   - Validates a ticket (MANUAL or QR_SCAN method).
@@ -680,11 +1055,16 @@ Why this is secure:
   - Body (TicketValidationRequestDto):
     ```json
     {
-      "id": "<ticket-uuid-for-manual-or-qr-code-uuid-for-qr-scan>",
+      "id": "550e8400-e29b-41d4-a716-446655440000",
       "method": "MANUAL"
     }
     ```
-    **Note**: For "QR_SCAN" method, use QR code UUID. For "MANUAL" method, use ticket UUID.
+  - **Required Fields:**
+    | Field | Required | Values |
+    |-------|----------|--------|
+    | `id` | ✅ Yes | UUID of the ticket |
+    | `method` | ✅ Yes | "MANUAL" or "QR_SCAN" |
+  - **Note**: For both methods, `id` is the ticket UUID.
   - Response 200 (TicketValidationResponseDto): ticketId, status
 
 - **GET /api/v1/ticket-validations/events/{eventId}**
@@ -700,7 +1080,7 @@ Why this is secure:
 
 ---
 
-### 7) Admin Governance APIs — /api/v1/admin
+### 7A) Admin Governance APIs — /api/v1/admin
 **Required Role: ADMIN**
 
 **CRITICAL:** ADMIN can manage roles but CANNOT bypass business authorization. ADMINs cannot access events they don't own or validate tickets without proper assignment.
@@ -749,7 +1129,76 @@ Why this is secure:
 
 ---
 
-### 8) Event Staff Management — /api/v1/events/{eventId}/staff
+### 8) Admin Approval Management — /api/v1/admin/approvals
+**Required Role: ADMIN**
+
+ADMIN-only endpoints for managing user account approvals. Part of the Approval Gate system.
+
+- **GET /api/v1/admin/approvals**
+  - Lists all users with their approval status.
+  - Headers: Authorization: Bearer {{access_token}}
+  - Query: page, size, sort
+  - Response 200: Page<UserApprovalDto>
+    ```json
+    {
+      "content": [
+        {
+          "userId": "550e8400-e29b-41d4-a716-446655440000",
+          "userName": "john.doe",
+          "email": "john@example.com",
+          "approvalStatus": "PENDING",
+          "createdAt": "2026-01-18T10:00:00"
+        }
+      ],
+      "totalElements": 1
+    }
+    ```
+
+- **GET /api/v1/admin/approvals/pending**
+  - Lists only users with PENDING approval status.
+  - Headers: Authorization: Bearer {{access_token}}
+  - Query: page, size, sort
+  - Response 200: Page<UserApprovalDto>
+
+- **POST /api/v1/admin/approvals/{userId}/approve**
+  - Approves a pending user account.
+  - Headers: Authorization: Bearer {{access_token}}
+  - No request body required
+  - Response 200:
+    ```json
+    {
+      "message": "User approved successfully",
+      "userId": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "APPROVED"
+    }
+    ```
+
+- **POST /api/v1/admin/approvals/{userId}/reject**
+  - Rejects a user account permanently.
+  - Headers: Content-Type: application/json; Authorization: Bearer {{access_token}}
+  - Body (RejectReasonDto):
+    ```json
+    {
+      "reason": "Account violates terms of service or does not meet requirements"
+    }
+    ```
+  - **Required Fields:**
+    | Field | Required | Validation |
+    |-------|----------|------------|
+    | `reason` | ✅ Yes | @NotBlank, @Size(min=10, max=500) |
+  - Response 200:
+    ```json
+    {
+      "message": "User rejected successfully",
+      "userId": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "REJECTED",
+      "reason": "Account violates terms of service or does not meet requirements"
+    }
+    ```
+
+---
+
+### 9) Event Staff Management — /api/v1/events/{eventId}/staff
 **Required Role: ORGANIZER**
 
 Organizers can assign/remove STAFF for their own events. STAFF must first have the STAFF role (assigned by ADMIN), then be assigned to specific events.
@@ -797,7 +1246,7 @@ Organizers can assign/remove STAFF for their own events. STAFF must first have t
 
 ---
 
-### 9) Invite Code System — /api/v1/invites
+### 10) Invite Code System — /api/v1/invites
 **Required Role: ADMIN or ORGANIZER**
 
 Role-specific, single-use, time-bound invite codes for controlled onboarding.
@@ -821,8 +1270,14 @@ Role-specific, single-use, time-bound invite codes for controlled onboarding.
       "expirationHours": 48
     }
     ```
-    **Notes:**
-    - `roleName`: ORGANIZER, ATTENDEE, or STAFF
+  - **Required Fields:**
+    | Field | Required | Validation |
+    |-------|----------|------------|
+    | `roleName` | ✅ Yes | @NotBlank, @Pattern("ORGANIZER\|ATTENDEE\|STAFF") |
+    | `eventId` | Conditional | Required ONLY for STAFF role, must be null/omitted for others |
+    | `expirationHours` | ✅ Yes | @NotNull, @Positive |
+  - **Notes:**
+    - `roleName`: **ORGANIZER, ATTENDEE, or STAFF only** (NOT ADMIN - admins cannot be created via invite)
     - `eventId`: Required ONLY for STAFF invites, must be null for others
     - `expirationHours`: Hours until code expires (positive integer)
   - Response 201 (InviteCodeResponseDto):
@@ -888,60 +1343,72 @@ Role-specific, single-use, time-bound invite codes for controlled onboarding.
 
 ---
 
-### 10) Audit Log APIs — /api/v1/audit
-**Read-Only, Immutable Audit Trail**
+### 10A) Admin Approval Management — /api/v1/admin/approvals
+**Required Role: ADMIN**
 
-All sensitive operations are logged: role changes, staff assignments, invite operations, ticket validations.
+ADMIN-only endpoints for managing user account approvals. Part of the Approval Gate system.
 
-- **GET /api/v1/audit**
-  - Gets all audit logs (ADMIN only).
+- **GET /api/v1/admin/approvals**
+  - Lists all users with their approval status.
   - Headers: Authorization: Bearer {{access_token}}
   - Query: page, size, sort
-  - Response 200: Page<AuditLogDto>
+  - Response 200: Page<UserApprovalDto>
     ```json
     {
       "content": [
         {
-          "id": "880e8400-e29b-41d4-a716-446655440000",
-          "action": "ROLE_ASSIGNED",
-          "actorName": "admin.user",
-          "actorId": "990e8400-e29b-41d4-a716-446655440000",
-          "targetUserName": "john.doe",
-          "targetUserId": "550e8400-e29b-41d4-a716-446655440000",
-          "eventName": null,
-          "eventId": null,
-          "resourceType": "Role",
-          "resourceId": null,
-          "details": "Assigned role: ORGANIZER",
-          "ipAddress": "192.168.1.100",
+          "userId": "550e8400-e29b-41d4-a716-446655440000",
+          "userName": "john.doe",
+          "email": "john@example.com",
+          "approvalStatus": "PENDING",
           "createdAt": "2026-01-18T10:00:00"
         }
       ],
-      "totalElements": 1,
-      "totalPages": 1
+      "totalElements": 1
     }
     ```
 
-- **GET /api/v1/audit/events/{eventId}**
-  - Gets audit logs for a specific event (ORGANIZER must own event).
+- **GET /api/v1/admin/approvals/pending**
+  - Lists only users with PENDING approval status.
   - Headers: Authorization: Bearer {{access_token}}
   - Query: page, size, sort
-  - Response 200: Page<AuditLogDto>
+  - Response 200: Page<UserApprovalDto>
 
-- **GET /api/v1/audit/me**
-  - Gets audit trail for the authenticated user (own actions).
+- **POST /api/v1/admin/approvals/{userId}/approve**
+  - Approves a pending user account.
   - Headers: Authorization: Bearer {{access_token}}
-  - Query: page, size, sort
-  - Response 200: Page<AuditLogDto>
+  - No request body required
+  - Response 200:
+    ```json
+    {
+      "message": "User approved successfully",
+      "userId": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "APPROVED"
+    }
+    ```
 
-**Audit Actions Logged:**
-- ROLE_ASSIGNED, ROLE_REVOKED
-- STAFF_ASSIGNED, STAFF_REMOVED
-- INVITE_CREATED, INVITE_REDEEMED, INVITE_REVOKED
-- EVENT_CREATED, EVENT_UPDATED, EVENT_DELETED
-- TICKET_VALIDATED, TICKET_PURCHASED
-- **NEW:** QR_CODE_VIEWED, QR_CODE_DOWNLOADED_PNG, QR_CODE_DOWNLOADED_PDF (QR export tracking)
-- **NEW:** SALES_REPORT_EXPORTED (report export tracking)
+- **POST /api/v1/admin/approvals/{userId}/reject**
+  - Rejects a user account permanently.
+  - Headers: Content-Type: application/json; Authorization: Bearer {{access_token}}
+  - Body (RejectReasonDto):
+    ```json
+    {
+      "reason": "Account violates terms of service or does not meet requirements"
+    }
+    ```
+  - **Required Fields:**
+    | Field | Required | Validation |
+    |-------|----------|------------|
+    | `reason` | ✅ Yes | @NotBlank, @Size(min=10, max=500) |
+  - Response 200:
+    ```json
+    {
+      "message": "User rejected successfully",
+      "userId": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "REJECTED",
+      "reason": "Account violates terms of service or does not meet requirements"
+    }
+    ```
 
 ---
 
@@ -998,9 +1465,18 @@ Request → JWT Validation (Keycloak)
 ```
 
 **ADMIN APPROVAL ENDPOINTS:**
-- `POST /api/v1/admin/users/{userId}/approve` - Approve pending user
-- `POST /api/v1/admin/users/{userId}/reject` - Reject pending user
-- `GET /api/v1/admin/users/pending` - List pending approvals
+- `GET /api/v1/admin/approvals` - List all users with approval status
+- `GET /api/v1/admin/approvals/pending` - List pending approvals only
+- `POST /api/v1/admin/approvals/{userId}/approve` - Approve pending user
+- `POST /api/v1/admin/approvals/{userId}/reject` - Reject pending user (requires body with `reason`)
+
+**Reject Request Body (RejectReasonDto):**
+```json
+{
+  "reason": "Account violates terms of service"
+}
+```
+- `reason`: Required (@NotBlank), 10-500 characters
 
 **CRITICAL NOTES:**
 - Approval is SEPARATE from roles (user can have role but be unapproved)
@@ -1089,9 +1565,8 @@ Invoke-RestMethod -Method Get `
 
 ### Update the event
 ```powershell
-# IMPORTANT: Do NOT include 'id' field in request body
-# The eventId comes from the URL path parameter only
 $updateEventBody = @{
+  id         = $EVENT_ID
   name       = "Tech Conference 2025 - Updated"
   start      = "2025-12-15T10:00:00"
   end        = "2025-12-15T19:00:00"
@@ -1562,8 +2037,8 @@ Invoke-RestMethod -Method Get `
 ### QR Code Export System (NEW)
 - **Three export formats**: Inline view (PNG), Download PNG, Download PDF
 - **Security Model**: 
-  - QR codes encode only ticket UUID (immutable identifier)
-  - Security boundary is backend validation, NOT image integrity
+  - QR encodes only ticket UUID (immutable, non-forgeable identifier)
+  - Security boundary is backend validation, NOT QR image integrity
   - Safe to share, re-download, or re-view
 - **Access Control**:
   - ATTENDEE: Own tickets only
@@ -1626,7 +2101,6 @@ Invoke-RestMethod -Method Get `
   - `approved_by`: User ID of admin who approved (UUID FK)
   - `rejection_reason`: Reason for rejection (VARCHAR)
 - **audit_logs**: Immutable audit trail table
-  - Includes new actions: QR_CODE_VIEWED, QR_CODE_DOWNLOADED_PNG, QR_CODE_DOWNLOADED_PDF, SALES_REPORT_EXPORTED
 - **invite_codes**: Invite code management table
 - **user_staffing_events**: Junction table for event-staff assignments
 - **Version fields**: Added to TicketType and InviteCode for optimistic locking
