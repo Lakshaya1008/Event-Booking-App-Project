@@ -643,9 +643,9 @@ scope=openid profile email
 ```javascript
 pm.test("Token received", function () {
     pm.response.to.have.status(200);
-    const jsonData = pm.response.json();
-    pm.environment.set("access_token", jsonData.access_token);
-    pm.environment.set("token_expiry", Date.now() + (jsonData.expires_in * 1000));
+    const jsonResponse = response.json();
+    pm.environment.set("access_token", jsonResponse.access_token);
+    pm.environment.set("token_expiry", Date.now() + (jsonResponse.expires_in * 1000));
 });
 ```
 
@@ -1496,3 +1496,369 @@ Authorization: Bearer {{access_token}}
 ```
 
 **Expected:** 200 OK - Page<AuditLogDto>
+
+---
+
+## 6. QR Code Export Testing
+
+### 6.1 Test QR Code Generation
+
+**Request:**
+```
+GET {{base_url}}/api/v1/tickets/{{ticket_id}}/qr-codes/view
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - image/png
+
+**Tests:**
+```javascript
+pm.test("QR code is generated", function () {
+    pm.response.to.have.status(200);
+    pm.response.to.have.header("Content-Type", "image/png");
+});
+```
+
+### 6.2 Test QR Code Content
+
+**Request:** Same as above
+
+**Tests:**
+```javascript
+pm.test("QR code content is valid", function () {
+    const ticketUuid = pm.environment.get("ticket_id");
+    const expectedContent = `${ticketUuid}`;
+    
+    // Decode QR code image to check content
+    const qrContent = decodeQrCode(pm.response.stream);
+    
+    pm.expect(qrContent).to.eql(expectedContent);
+});
+```
+
+### 6.3 Test QR Code Reusability
+
+**Request:** Download QR code multiple times
+
+**Tests:**
+```javascript
+pm.test("QR code content is consistent", function () {
+    const contents = [];
+    
+    for (let i = 0; i < 3; i++) {
+        const response = pm.sendRequest({
+            url: `${pm.environment.get("base_url")}/api/v1/tickets/${pm.environment.get("ticket_id")}/qr-codes/view`,
+            method: 'GET',
+            header: {
+                'Authorization': `Bearer ${pm.environment.get("access_token")}`
+            }
+        });
+        
+        const qrContent = decodeQrCode(response.stream);
+        contents.push(qrContent);
+    }
+    
+    pm.expect(contents.every(c => c === contents[0])).to.be.true;
+});
+```
+
+### 6.4 Test QR Code Sharing
+
+**Request:** Share QR code with another user
+
+**Tests:**
+```javascript
+pm.test("QR code is not valid for another user", function () {
+    // Assume otherUserToken is a valid token for another user
+    const response = pm.sendRequest({
+        url: `${pm.environment.get("base_url")}/api/v1/tickets/${pm.environment.get("ticket_id")}/qr-codes/view`,
+        method: 'GET',
+        header: {
+            'Authorization': `Bearer ${otherUserToken}`
+        }
+    });
+    
+    pm.expect(response).to.have.status(403);
+});
+```
+
+---
+
+## 7. Sales Report Export Testing
+
+### 7.1 Test Sales Report Generation
+
+**Request:**
+```
+GET {{base_url}}/api/v1/events/{{event_id}}/sales-report.xlsx
+Authorization: Bearer {{access_token}}
+```
+
+**Expected:** 200 OK - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+**Tests:**
+```javascript
+pm.test("Sales report is generated", function () {
+    pm.response.to.have.status(200);
+    pm.response.to.have.header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+});
+```
+
+### 7.2 Test Sales Report Content
+
+**Request:** Download sales report
+
+**Tests:**
+```javascript
+pm.test("Sales report content is valid", function () {
+    const expectedHeaders = ["Ticket Type", "Quantity Sold", "Total Revenue"];
+    
+    // Parse Excel file (use a library like xlsx)
+    const workbook = XLSX.read(pm.response.stream, { type: "binary" });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    
+    // Get header row
+    const headerRow = XLSX.utils.sheet_to_json(sheet, { header: 1 })[0];
+    
+    pm.expect(headerRow).to.eql(expectedHeaders);
+});
+```
+
+---
+
+## 8. Approval Gate Testing
+
+### 8.1 Approval Gate Bypass Tests
+**Test that PENDING users can access bypassed endpoints**
+
+- **POST /api/v1/auth/register**
+  - Create user with PENDING status (no invite)
+  - Verify 201 response (registration succeeds despite PENDING status)
+
+- **POST /api/v1/invites/redeem**
+  - Use PENDING user token
+  - Redeem valid invite code
+  - Verify 200 response (redemption succeeds despite PENDING status)
+
+**Test that PENDING users are blocked from secured endpoints**
+
+- Use PENDING user token for any secured endpoint
+- Verify 403 Forbidden with "APPROVAL_PENDING" error
+
+### 8.2 Role Mismatch vs Approval Gate Distinction
+**Test 403 responses distinguish causes**
+
+- **Role Mismatch (ATTENDEE trying ADMIN endpoint):**
+  - Use ATTENDEE token for `/api/v1/admin/roles`
+  - Expect 403: "Role mismatch (user does not have ADMIN role)"
+
+- **Approval Gate (PENDING user trying secured endpoint):**
+  - Use PENDING user token for `/api/v1/published-events`
+  - Expect 403: "Approval gate violation (user is PENDING)"
+
+- **Ownership Violation (ORGANIZER accessing another organizer's event):**
+  - Use ORGANIZER_A token for ORGANIZER_B's event endpoint
+  - Expect 403: "Ownership violation (user does not own the event)"
+
+---
+
+## 9. Business-Rule Failure Testing
+
+### 9.1 Ticket Purchase Business Rules
+**Test service-enforced business rules beyond DTO validation**
+
+- **Event Not Published:**
+  - Create DRAFT event
+  - Try to purchase tickets
+  - Expect 400 Bad Request: "Event not published"
+
+- **Sales Window Closed (Before salesStart):**
+  - Set event salesStart to future date
+  - Try to purchase tickets
+  - Expect 400 Bad Request: "Sales window not open"
+
+- **Sales Window Closed (After salesEnd):**
+  - Set event salesEnd to past date
+  - Try to purchase tickets
+  - Expect 400 Bad Request: "Sales window closed"
+
+- **Ticket Type Sold Out:**
+  - Set totalAvailable to 0
+  - Try to purchase tickets
+  - Expect 400 Bad Request: "Sold out"
+
+- **Quantity Exceeds Availability:**
+  - Set totalAvailable to 5
+  - Try to purchase 10 tickets
+  - Expect 400 Bad Request: "Quantity exceeds remaining availability"
+
+- **Event Cancelled:**
+  - Set event status to CANCELLED
+  - Try to purchase tickets
+  - Expect 400 Bad Request: "Event cancelled"
+
+- **Event Completed:**
+  - Set event status to COMPLETED
+  - Try to purchase tickets
+  - Expect 400 Bad Request: "Event completed"
+
+### 9.2 Discount Business Rules
+**Test discount-specific business rules**
+
+- **Another Active Discount Exists:**
+  - Create active discount for ticket type
+  - Try to create another active discount
+  - Expect 400 Bad Request: "Only one active discount per ticket type allowed"
+
+- **Discount Expired:**
+  - Create discount with validTo in past
+  - Try to apply during purchase
+  - Verify discount not applied (full price charged)
+
+### 9.3 Ticket Validation Business Rules
+**Test validation-specific rules**
+
+- **Ticket Already Validated:**
+  - Validate ticket once (success)
+  - Try to validate same ticket again
+  - Expect 409 Conflict: "Ticket already validated"
+
+- **Staff Not Assigned to Event:**
+  - Use STAFF token for event they are not assigned to
+  - Try to validate ticket for that event
+  - Expect 403 Forbidden: "Staff not assigned to this event"
+
+---
+
+## 10. QR Code Validation Security Testing
+
+### 10.1 Re-validation Prevention
+**Test that tickets cannot be double-validated**
+
+- **Manual Validation:**
+  - Validate ticket with MANUAL method
+  - Try to validate same ticket again with MANUAL
+  - Expect 409 Conflict: "Ticket already validated"
+
+- **QR Scan Validation:**
+  - Validate ticket with QR_SCAN method
+  - Try to validate same ticket again with QR_SCAN
+  - Expect 409 Conflict: "Ticket already validated"
+
+- **Cross-Method Validation:**
+  - Validate ticket with MANUAL
+  - Try to validate same ticket with QR_SCAN
+  - Expect 409 Conflict: "Ticket already validated"
+
+### 10.2 Event-Scoped Staff Access
+**Test STAFF can only validate assigned events**
+
+- **Staff Assigned to Event A:**
+  - Assign STAFF to Event A
+  - STAFF validates ticket for Event A
+  - Expect 200 OK
+
+- **Staff Not Assigned to Event B:**
+  - STAFF tries to validate ticket for Event B
+  - Expect 403 Forbidden: "Staff not assigned to this event"
+
+- **Staff Removed from Event:**
+  - Remove STAFF from Event A
+  - STAFF tries to validate ticket for Event A
+  - Expect 403 Forbidden: "Staff not assigned to this event"
+
+### 10.3 Organizer Cross-Event Access
+**Test ORGANIZER can only validate own events**
+
+- **Organizer Owns Event:**
+  - ORGANIZER validates ticket for their own event
+  - Expect 200 OK
+
+- **Organizer Does Not Own Event:**
+  - ORGANIZER tries to validate ticket for another organizer's event
+  - Expect 403 Forbidden: "Ownership violation (user does not own the event)"
+
+### 10.4 QR Code Content Security
+**Test QR codes encode only ticket UUID**
+
+- **QR Code Generation:**
+  - Generate QR for ticket
+  - Decode QR content
+  - Verify content is exactly: `<ticket-uuid>` (no extra data)
+
+- **QR Code Reusability:**
+  - Download QR multiple times
+  - Verify identical content each time
+  - Verify no state changes during downloads
+
+- **QR Code Sharing Safety:**
+  - Share QR code with another user
+  - Other user cannot use it (validation fails)
+  - Original owner can still validate
+
+---
+
+## 11. Edge Case and Boundary Testing
+
+### 11.1 Quantity Limits
+**Test ticket purchase quantity boundaries**
+
+- **Minimum Quantity (1):**
+  - Purchase 1 ticket
+  - Expect 201 Created
+
+- **Maximum Quantity (10):**
+  - Purchase 10 tickets
+  - Expect 201 Created
+
+- **Below Minimum (0):**
+  - Try to purchase 0 tickets
+  - Expect 400 Bad Request: "quantity must be at least 1"
+
+- **Above Maximum (11):**
+  - Try to purchase 11 tickets
+  - Expect 400 Bad Request: "quantity must not exceed 10"
+
+### 11.2 Invite Code Expiration
+**Test time-bound invite codes**
+
+- **Valid Invite:**
+  - Use invite within expiration time
+  - Expect successful redemption
+
+- **Expired Invite:**
+  - Wait for invite to expire or set expiration to past
+  - Try to redeem expired invite
+  - Expect 400 Bad Request: "Invite code expired"
+
+### 11.3 Double Redemption Prevention
+**Test single-use invite codes**
+
+- **First Redemption:**
+  - Redeem invite code
+  - Expect 200 OK
+
+- **Second Redemption Attempt:**
+  - Try to redeem same code again
+  - Expect 409 Conflict: "Invite code already redeemed"
+
+### 11.4 Event Status Transitions
+**Test behavior across event status changes**
+
+- **Draft to Published:**
+  - Create DRAFT event
+  - Cannot purchase tickets
+  - Change to PUBLISHED
+  - Can purchase tickets
+
+- **Published to Cancelled:**
+  - Cancel PUBLISHED event
+  - Existing tickets remain valid
+  - New purchases blocked
+
+- **Published to Completed:**
+  - Complete PUBLISHED event
+  - Existing tickets remain valid
+  - New purchases blocked
+

@@ -65,21 +65,27 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
   @Value("${keycloak.admin.realm}")
   private String realm;
 
+  // SYSTEM_USER_ID is used for unauthenticated audit events
+  private static final UUID SYSTEM_USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000000");
+  private static final User SYSTEM_USER = createSystemUser();
+
+  private static User createSystemUser() {
+    User user = new User();
+    user.setId(SYSTEM_USER_ID);
+    user.setName("SYSTEM");
+    user.setEmail("system@system.com");
+    return user;
+  }
+
   @Override
   @Transactional
   public void assignRoleToUser(UUID userId, String roleName) {
     log.info("Assigning role '{}' to user '{}'", roleName, userId);
 
     try {
-      // Verify user exists in our database
-      if (!userRepository.existsById(userId)) {
-        throw new UserNotFoundException(
-            String.format("User with ID '%s' not found", userId)
-        );
-      }
 
-      User targetUser = userRepository.findById(userId)
-          .orElseThrow(() -> new UserNotFoundException("User not found"));
+      // Note: DB existence check removed to allow role assignment during registration
+      // before DB user is persisted. Keycloak API will fail if user does not exist in Keycloak.
 
       RealmResource realmResource = keycloakAdminClient.realm(realm);
       UserResource userResource = realmResource.users().get(userId.toString());
@@ -97,6 +103,14 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
       User actor = getCurrentUser();
       HttpServletRequest request = getCurrentRequest();
       String ipAddress = extractClientIp(request);
+
+      // For unauthenticated actions (e.g. during registration), use SYSTEM_USER
+      if (actor == null) {
+        actor = SYSTEM_USER;
+      }
+
+      // For audit, try to find target user in DB; may be null during registration
+      User targetUser = userRepository.findById(userId).orElse(null);
 
       AuditLog auditLog = AuditLog.builder()
           .action(AuditAction.ROLE_ASSIGNED)

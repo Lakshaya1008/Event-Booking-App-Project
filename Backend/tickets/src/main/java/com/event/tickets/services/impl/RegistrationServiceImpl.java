@@ -68,6 +68,18 @@ public class RegistrationServiceImpl implements RegistrationService {
   private final KeycloakAdminService keycloakAdminService;
   private final EventStaffService eventStaffService;
 
+  // SYSTEM_USER_ID is used for unauthenticated audit events (e.g. registration)
+  private static final UUID SYSTEM_USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000000");
+  private static final User SYSTEM_USER = createSystemUser();
+
+  private static User createSystemUser() {
+    User user = new User();
+    user.setId(SYSTEM_USER_ID);
+    user.setName("SYSTEM");
+    user.setEmail("system@system.com");
+    return user;
+  }
+
   /**
    * Registers a new user via invite code or as ATTENDEE (no invite).
    *
@@ -332,6 +344,11 @@ public class RegistrationServiceImpl implements RegistrationService {
   private void emitAuditEvent(User actor, User targetUser, Event event, AuditAction action, 
       String details, String ipAddress, String userAgent) {
     try {
+      // For unauthenticated actions, use SYSTEM_USER
+      if (actor == null) {
+        actor = SYSTEM_USER;
+      }
+
       AuditLog auditLog = AuditLog.builder()
           .action(action)
           .actor(actor)

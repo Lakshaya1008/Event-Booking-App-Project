@@ -639,6 +639,282 @@
           }
         }
       ]
+    },
+    {
+      "name": "NEGATIVE TESTS",
+      "item": [
+        {
+          "name": "Approval Gate Violation - PENDING User",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{pending_user_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/published-events?page=0&size=20", "host": ["{{base_url}}"], "path": ["api","v1","published-events"], "query": [ {"key":"page","value":"0"},{"key":"size","value":"20"} ] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Approval gate blocks PENDING user', function(){ pm.expect(pm.response.code).to.eql(403); });",
+                  "const jsonData = pm.response.json();",
+                  "pm.expect(jsonData.error).to.eql('APPROVAL_PENDING');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Role Mismatch - ATTENDEE on ADMIN Endpoint",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{attendee_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/admin/roles", "host": ["{{base_url}}"], "path": ["api","v1","admin","roles"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Role mismatch blocks ATTENDEE from ADMIN endpoint', function(){ pm.expect(pm.response.code).to.eql(403); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Ownership Violation - ORGANIZER on Another's Event",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{organizer_a_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{organizer_b_event_id}}", "host": ["{{base_url}}"], "path": ["api","v1","events","{{organizer_b_event_id}}"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Ownership violation blocks ORGANIZER from another organizer\\'s event', function(){ pm.expect(pm.response.code).to.eql(403); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Business Rule - Purchase from DRAFT Event",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{attendee_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{draft_event_id}}/ticket-types/{{ticket_type_id}}/tickets", "host": ["{{base_url}}"], "path": ["api","v1","events","{{draft_event_id}}","ticket-types","{{ticket_type_id}}","tickets"] },
+            "body": { "mode": "raw", "raw": "{\n  \"quantity\": 1\n}" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Business rule blocks purchase from DRAFT event', function(){ pm.expect(pm.response.code).to.eql(400); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Business Rule - Ticket Already Validated",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{staff_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/v1/ticket-validations", "host": ["{{base_url}}"], "path": ["api","v1","ticket-validations"] },
+            "body": { "mode": "raw", "raw": "{\n  \"id\": \"{{validated_ticket_id}}\",\n  \"method\": \"MANUAL\"\n}" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Business rule blocks re-validation of already validated ticket', function(){ pm.expect(pm.response.code).to.eql(409); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Business Rule - Staff Not Assigned to Event",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{unassigned_staff_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/v1/ticket-validations", "host": ["{{base_url}}"], "path": ["api","v1","ticket-validations"] },
+            "body": { "mode": "raw", "raw": "{\n  \"id\": \"{{ticket_id}}\",\n  \"method\": \"MANUAL\"\n}" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Business rule blocks STAFF validation for unassigned event', function(){ pm.expect(pm.response.code).to.eql(403); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "SECURITY TESTS",
+      "item": [
+        {
+          "name": "Unauthorized Access - No Token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/v1/published-events?page=0&size=20", "host": ["{{base_url}}"], "path": ["api","v1","published-events"], "query": [ {"key":"page","value":"0"},{"key":"size","value":"20"} ] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('No token blocks access', function(){ pm.expect(pm.response.code).to.eql(401); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Expired Token",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{expired_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/published-events?page=0&size=20", "host": ["{{base_url}}"], "path": ["api","v1","published-events"], "query": [ {"key":"page","value":"0"},{"key":"size","value":"20"} ] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Expired token blocks access', function(){ pm.expect(pm.response.code).to.eql(401); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cross-Role Access Attempt - ATTENDEE to ORGANIZER Endpoint",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{attendee_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/events?page=0&size=20", "host": ["{{base_url}}"], "path": ["api","v1","events"], "query": [ {"key":"page","value":"0"},{"key":"size","value":"20"} ] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('ATTENDEE blocked from ORGANIZER endpoint', function(){ pm.expect(pm.response.code).to.eql(403); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "QR Code Access Control - STAFF Cannot Export QR",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{staff_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/tickets/{{ticket_id}}/qr-codes/view", "host": ["{{base_url}}"], "path": ["api","v1","tickets","{{ticket_id}}","qr-codes","view"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('STAFF blocked from QR export', function(){ pm.expect(pm.response.code).to.eql(403); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Sales Report Access Control - ATTENDEE Cannot Export",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{attendee_token}}" } ],
+            "url": { "raw": "{{base_url}}/api/v1/events/{{event_id}}/sales-report.xlsx", "host": ["{{base_url}}"], "path": ["api","v1","events","{{event_id}}","sales-report.xlsx"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('ATTENDEE blocked from sales report export', function(){ pm.expect(pm.response.code).to.eql(403); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Approval Gate Bypass Verification - PENDING User Can Register",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "url": { "raw": "{{base_url}}/api/v1/auth/register", "host": ["{{base_url}}"], "path": ["api","v1","auth","register"] },
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"pending@test.com\",\n  \"password\": \"Password123\",\n  \"name\": \"Pending User\"\n}" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('PENDING user can register (bypass works)', function(){ pm.expect(pm.response.code).to.eql(201); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Approval Gate Bypass Verification - PENDING User Can Redeem Invite",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{pending_user_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/v1/invites/redeem", "host": ["{{base_url}}"], "path": ["api","v1","invites","redeem"] },
+            "body": { "mode": "raw", "raw": "{\n  \"code\": \"ABCD-EFGH-IJKL-MNOP\"\n}" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('PENDING user can redeem invite (bypass works)', function(){ pm.expect(pm.response.code).to.eql(200); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
