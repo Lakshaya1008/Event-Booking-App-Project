@@ -268,6 +268,13 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
     try {
       RealmResource realmResource = keycloakAdminClient.realm(realm);
 
+      // Create credential representation
+      org.keycloak.representations.idm.CredentialRepresentation credential =
+          new org.keycloak.representations.idm.CredentialRepresentation();
+      credential.setType(org.keycloak.representations.idm.CredentialRepresentation.PASSWORD);
+      credential.setValue(password);
+      credential.setTemporary(false);
+
       // Create user representation
       org.keycloak.representations.idm.UserRepresentation userRep =
           new org.keycloak.representations.idm.UserRepresentation();
@@ -277,6 +284,7 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
       userRep.setEnabled(false); // Disable until admin approval
       userRep.setEmailVerified(false); // Can be set to true if email verification not required
       userRep.setRequiredActions(java.util.Collections.emptyList()); // Prevent Keycloak from setting default required actions
+      userRep.setCredentials(java.util.List.of(credential)); // Set credentials at creation time
 
       // Create user in Keycloak
       jakarta.ws.rs.core.Response response = realmResource.users().create(userRep);
@@ -301,16 +309,6 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
 
       String userId = locationHeader.substring(locationHeader.lastIndexOf('/') + 1);
       UUID keycloakUserId = UUID.fromString(userId);
-
-      // Set password
-      org.keycloak.representations.idm.CredentialRepresentation credential =
-          new org.keycloak.representations.idm.CredentialRepresentation();
-      credential.setType(org.keycloak.representations.idm.CredentialRepresentation.PASSWORD);
-      credential.setValue(password);
-      credential.setTemporary(false);
-
-      UserResource userResource = realmResource.users().get(keycloakUserId.toString());
-      userResource.resetPassword(credential);
 
       log.info("Successfully created user in Keycloak: userId={}, email={}", keycloakUserId, email);
       return keycloakUserId;
