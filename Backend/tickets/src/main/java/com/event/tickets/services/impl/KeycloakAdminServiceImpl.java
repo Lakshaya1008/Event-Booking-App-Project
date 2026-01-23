@@ -276,6 +276,7 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
       userRep.setFirstName(name);
       userRep.setEnabled(false); // Disable until admin approval
       userRep.setEmailVerified(false); // Can be set to true if email verification not required
+      userRep.setRequiredActions(java.util.Collections.emptyList()); // Prevent Keycloak from setting default required actions
 
       // Create user in Keycloak
       jakarta.ws.rs.core.Response response = realmResource.users().create(userRep);

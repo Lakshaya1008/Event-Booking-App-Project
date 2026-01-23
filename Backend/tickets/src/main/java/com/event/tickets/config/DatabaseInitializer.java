@@ -3,6 +3,7 @@ package com.event.tickets.config;
 import com.event.tickets.domain.entities.ApprovalStatus;
 import com.event.tickets.domain.entities.User;
 import com.event.tickets.repositories.UserRepository;
+import com.event.tickets.services.KeycloakAdminService;
 import jakarta.annotation.PostConstruct;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -18,7 +19,8 @@ import org.springframework.transaction.annotation.Transactional;
  * This component:
  * 1. Auto-approves existing users who were created before the approval system
  * 2. Ensures backward compatibility when adding new required fields
- * 3. Runs once on startup using @PostConstruct
+ * 3. Normalizes Keycloak state for approved users
+ * 4. Runs once on startup using @PostConstruct
  */
 @Component
 @RequiredArgsConstructor
@@ -26,6 +28,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class DatabaseInitializer {
 
   private final UserRepository userRepository;
+  private final KeycloakAdminService keycloakAdminService;
 
   /**
    * Migrates existing users to the approval system.
@@ -114,6 +117,61 @@ public class DatabaseInitializer {
     } catch (Exception e) {
       log.error("❌ Failed to create SYSTEM user: {}", e.getMessage(), e);
       throw new RuntimeException("SYSTEM user creation failed", e);
+    }
+  }
+
+  /**
+   * Normalizes Keycloak state for all APPROVED users.
+   *
+   * WHY: Existing users were auto-approved in DB during migration,
+   * but their Keycloak accounts may still be disabled, have unverified emails,
+   * or have required actions that prevent token issuance.
+   *
+   * This ensures approved users can obtain access tokens.
+   */
+  @PostConstruct
+  public void normalizeKeycloakStateForApprovedUsers() {
+    try {
+      log.info("Starting Keycloak state normalization for approved users...");
+
+      List<User> approvedUsers = userRepository.findAll().stream()
+          .filter(user -> user.getApprovalStatus() == ApprovalStatus.APPROVED)
+          .toList();
+
+      if (approvedUsers.isEmpty()) {
+        log.info("✅ No approved users to normalize.");
+        return;
+      }
+
+      int normalizedCount = 0;
+      for (User user : approvedUsers) {
+        try {
+          // Skip SYSTEM user
+          if (user.getId().equals(UUID.fromString("00000000-0000-0000-0000-000000000000"))) {
+            continue;
+          }
+
+          // Normalize Keycloak state for approved users
+          keycloakAdminService.setUserEnabled(user.getId(), true);
+          keycloakAdminService.setEmailVerified(user.getId(), true);
+          keycloakAdminService.clearRequiredActions(user.getId());
+
+          normalizedCount++;
+          log.debug("Normalized Keycloak state for approved user: {} ({})", user.getEmail(), user.getId());
+
+        } catch (Exception e) {
+          log.warn("Failed to normalize Keycloak state for user {}: {}", user.getEmail(), e.getMessage());
+          // Continue with other users - don't fail the entire process
+        }
+      }
+
+      log.info("✅ Successfully normalized Keycloak state for {} approved users", normalizedCount);
+      log.info("These users can now obtain access tokens via password grant.");
+
+    } catch (Exception e) {
+      log.error("❌ Error during Keycloak state normalization: {}", e.getMessage(), e);
+      log.warn("Application will continue, but some approved users may not be able to login.");
+      log.warn("Manual Keycloak fixes may be required for affected users.");
     }
   }
 
