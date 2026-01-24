@@ -16,8 +16,10 @@ import com.event.tickets.repositories.AuditLogRepository;
 import com.event.tickets.repositories.EventRepository;
 import com.event.tickets.repositories.InviteCodeRepository;
 import com.event.tickets.repositories.UserRepository;
+import com.event.tickets.services.AuditLogService;
 import com.event.tickets.services.InviteCodeService;
 import com.event.tickets.services.KeycloakAdminService;
+import com.event.tickets.services.SystemUserProvider;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.transaction.Transactional;
 import java.security.SecureRandom;
@@ -59,7 +61,8 @@ public class InviteCodeServiceImpl implements InviteCodeService {
   private final UserRepository userRepository;
   private final EventRepository eventRepository;
   private final KeycloakAdminService keycloakAdminService;
-  private final AuditLogRepository auditLogRepository;
+  private final AuditLogService auditLogService;
+  private final SystemUserProvider systemUserProvider;
 
   private static final String CODE_CHARACTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   private static final int CODE_LENGTH = 16;
@@ -418,7 +421,7 @@ public class InviteCodeServiceImpl implements InviteCodeService {
           .ipAddress(extractClientIp(getCurrentRequest()))
           .userAgent(extractUserAgent(getCurrentRequest()))
           .build();
-      auditLogRepository.save(auditLog);
+      auditLogService.saveAuditLog(auditLog);
     } catch (Exception e) {
       log.error("Failed to emit failed invite redemption audit event: userId={}, error={}", 
           user != null ? user.getId() : "null", e.getMessage());

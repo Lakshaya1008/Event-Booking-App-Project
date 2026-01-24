@@ -3,8 +3,8 @@ package com.event.tickets.services.impl;
 import com.event.tickets.domain.entities.AuditAction;
 import com.event.tickets.domain.entities.AuditLog;
 import com.event.tickets.domain.entities.User;
-import com.event.tickets.repositories.AuditLogRepository;
 import com.event.tickets.repositories.UserRepository;
+import com.event.tickets.services.AuditLogService;
 import com.event.tickets.services.EventService;
 import com.event.tickets.services.ExportService;
 import com.event.tickets.services.SystemUserProvider;
@@ -48,9 +48,9 @@ import static com.event.tickets.util.RequestUtil.extractUserAgent;
 public class ExportServiceImpl implements ExportService {
 
   private final EventService eventService;
-  private final AuditLogRepository auditLogRepository;
   private final UserRepository userRepository;
   private final SystemUserProvider systemUserProvider;
+  private final AuditLogService auditLogService;
 
   private static final DateTimeFormatter FILENAME_DATE_FORMAT =
       DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
@@ -293,7 +293,7 @@ public class ExportServiceImpl implements ExportService {
           .ipAddress(ipAddress)
           .userAgent(userAgent)
           .build();
-      auditLogRepository.save(auditLog);
+      auditLogService.saveAuditLog(auditLog);
       log.info("Audited sales report export: organizerId={}, eventId={}", organizerId, eventId);
     } catch (Exception ex) {
       log.error("Failed to audit sales report export: organizerId={}, eventId={}",

@@ -14,10 +14,10 @@ import com.event.tickets.exceptions.InvalidInviteCodeException;
 import com.event.tickets.exceptions.InviteCodeNotFoundException;
 import com.event.tickets.exceptions.KeycloakUserCreationException;
 import com.event.tickets.exceptions.RegistrationException;
-import com.event.tickets.repositories.AuditLogRepository;
 import com.event.tickets.repositories.EventRepository;
 import com.event.tickets.repositories.InviteCodeRepository;
 import com.event.tickets.repositories.UserRepository;
+import com.event.tickets.services.AuditLogService;
 import com.event.tickets.services.EventStaffService;
 import com.event.tickets.services.KeycloakAdminService;
 import com.event.tickets.services.RegistrationService;
@@ -65,10 +65,10 @@ public class RegistrationServiceImpl implements RegistrationService {
   private final UserRepository userRepository;
   private final InviteCodeRepository inviteCodeRepository;
   private final EventRepository eventRepository;
-  private final AuditLogRepository auditLogRepository;
   private final KeycloakAdminService keycloakAdminService;
   private final EventStaffService eventStaffService;
   private final SystemUserProvider systemUserProvider;
+  private final AuditLogService auditLogService;
 
   /**
    * Registers a new user via invite code or as ATTENDEE (no invite).
@@ -345,29 +345,23 @@ public class RegistrationServiceImpl implements RegistrationService {
    * @param ipAddress Client IP address
    * @param userAgent Client user agent
    */
-  private void emitAuditEvent(User actor, User targetUser, Event event, AuditAction action, 
-      String details, String ipAddress, String userAgent) {
+  private void emitAuditEvent(User actor, User targetUser, Event event, AuditAction action, String details, String ipAddress, String userAgent) {
     try {
-      // For unauthenticated actions, use SYSTEM_USER
       if (actor == null) {
         actor = systemUserProvider.getSystemUser();
       }
-
       AuditLog auditLog = AuditLog.builder()
           .action(action)
           .actor(actor)
           .targetUser(targetUser)
           .event(event)
-          .resourceType("USER_REGISTRATION")
           .details(details)
           .ipAddress(ipAddress)
           .userAgent(userAgent)
           .build();
-
-      auditLogRepository.save(auditLog);
+      auditLogService.saveAuditLog(auditLog);
     } catch (Exception e) {
-      log.error("Failed to emit audit event: action={}, details={}, error={}", 
-          action, details, e.getMessage());
+      log.error("Failed to emit audit event: action={}, error={}", action, e.getMessage());
       // Audit failures should not break the main flow
     }
   }

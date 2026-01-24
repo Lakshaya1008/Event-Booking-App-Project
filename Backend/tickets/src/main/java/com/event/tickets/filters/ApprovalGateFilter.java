@@ -4,8 +4,8 @@ import com.event.tickets.domain.entities.AuditAction;
 import com.event.tickets.domain.entities.AuditLog;
 import com.event.tickets.domain.entities.ApprovalStatus;
 import com.event.tickets.domain.entities.User;
-import com.event.tickets.repositories.AuditLogRepository;
 import com.event.tickets.repositories.UserRepository;
+import com.event.tickets.services.AuditLogService;
 import com.event.tickets.services.SystemUserProvider;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
@@ -109,7 +109,7 @@ import static com.event.tickets.util.RequestUtil.extractUserAgent;
 public class ApprovalGateFilter extends OncePerRequestFilter {
 
   private final UserRepository userRepository;
-  private final AuditLogRepository auditLogRepository;
+  private final AuditLogService auditLogService;
   private final SystemUserProvider systemUserProvider;
   private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -296,7 +296,7 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
           .ipAddress(extractClientIp(null))
           .userAgent(extractUserAgent(null))
           .build();
-      auditLogRepository.save(auditLog);
+      auditLogService.saveAuditLog(auditLog);
     } catch (Exception e) {
       log.error("Failed to emit approval gate violation audit event: userId={}, error={}", 
           user != null ? user.getId() : "null", e.getMessage());

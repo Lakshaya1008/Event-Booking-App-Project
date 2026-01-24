@@ -8,8 +8,8 @@ import com.event.tickets.exceptions.KeycloakUserCreationException;
 import com.event.tickets.exceptions.KeycloakUserDeletionException;
 import com.event.tickets.exceptions.KeycloakUserUpdateException;
 import com.event.tickets.exceptions.UserNotFoundException;
-import com.event.tickets.repositories.AuditLogRepository;
 import com.event.tickets.repositories.UserRepository;
+import com.event.tickets.services.AuditLogService;
 import com.event.tickets.services.KeycloakAdminService;
 import com.event.tickets.services.SystemUserProvider;
 import jakarta.servlet.http.HttpServletRequest;
@@ -61,7 +61,7 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
 
   private final Keycloak keycloakAdminClient;
   private final UserRepository userRepository;
-  private final AuditLogRepository auditLogRepository;
+  private final AuditLogService auditLogService;
   private final SystemUserProvider systemUserProvider;
 
   @Value("${keycloak.admin.realm}")
@@ -110,7 +110,7 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
           .userAgent(extractUserAgent(request))
           .build();
 
-      auditLogRepository.save(auditLog);
+      auditLogService.saveAuditLog(auditLog);
 
     } catch (NotFoundException e) {
       log.error("Keycloak resource not found: userId={}, roleName={}", userId, roleName, e);
@@ -173,7 +173,7 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
           .userAgent(extractUserAgent(request))
           .build();
 
-      auditLogRepository.save(auditLog);
+      auditLogService.saveAuditLog(auditLog);
 
     } catch (NotFoundException e) {
       log.error("Keycloak resource not found: userId={}, roleName={}", userId, roleName, e);

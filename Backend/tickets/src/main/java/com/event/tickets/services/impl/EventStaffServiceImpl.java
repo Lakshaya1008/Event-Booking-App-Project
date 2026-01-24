@@ -7,13 +7,13 @@ import com.event.tickets.domain.entities.Event;
 import com.event.tickets.domain.entities.User;
 import com.event.tickets.exceptions.EventNotFoundException;
 import com.event.tickets.exceptions.UserNotFoundException;
-import com.event.tickets.repositories.AuditLogRepository;
 import com.event.tickets.repositories.EventRepository;
 import com.event.tickets.repositories.UserRepository;
 import com.event.tickets.services.AuthorizationService;
 import com.event.tickets.services.EventStaffService;
 import com.event.tickets.services.KeycloakAdminService;
 import com.event.tickets.services.SystemUserProvider;
+import com.event.tickets.services.AuditLogService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.transaction.Transactional;
 import java.util.List;
@@ -53,8 +53,8 @@ public class EventStaffServiceImpl implements EventStaffService {
   private final UserRepository userRepository;
   private final AuthorizationService authorizationService;
   private final KeycloakAdminService keycloakAdminService;
-  private final AuditLogRepository auditLogRepository;
   private final SystemUserProvider systemUserProvider;
+  private final AuditLogService auditLogService;
 
   @Override
   @Transactional
@@ -126,7 +126,7 @@ public class EventStaffServiceImpl implements EventStaffService {
         .userAgent(extractUserAgent(request))
         .build();
 
-    auditLogRepository.save(auditLog);
+    auditLogService.saveAuditLog(auditLog);
   }
 
   @Override
@@ -179,7 +179,7 @@ public class EventStaffServiceImpl implements EventStaffService {
           .userAgent(extractUserAgent(request))
           .build();
 
-      auditLogRepository.save(auditLog);
+      auditLogService.saveAuditLog(auditLog);
     } else {
       log.warn("User '{}' was not assigned as staff to event '{}'",
           user.getName(), event.getName());

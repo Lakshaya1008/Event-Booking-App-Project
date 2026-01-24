@@ -10,11 +10,11 @@ import com.event.tickets.services.SystemUserProvider;
 import com.event.tickets.exceptions.QrCodeGenerationException;
 import com.event.tickets.exceptions.QrCodeNotFoundException;
 import com.event.tickets.exceptions.TicketNotFoundException;
-import com.event.tickets.repositories.AuditLogRepository;
 import com.event.tickets.repositories.QrCodeRepository;
 import com.event.tickets.repositories.TicketRepository;
 import com.event.tickets.repositories.UserRepository;
 import com.event.tickets.services.AuthorizationService;
+import com.event.tickets.services.AuditLogService;
 import com.event.tickets.services.QrCodeService;
 import com.google.zxing.BarcodeFormat;
 import com.google.zxing.WriterException;
@@ -71,7 +71,7 @@ public class QrCodeServiceImpl implements QrCodeService {
   private final TicketRepository ticketRepository;
   private final UserRepository userRepository;
   private final AuthorizationService authorizationService;
-  private final AuditLogRepository auditLogRepository;
+  private final AuditLogService auditLogService;
   private final SystemUserProvider systemUserProvider;
 
   @Override
@@ -304,7 +304,7 @@ public class QrCodeServiceImpl implements QrCodeService {
           .ipAddress(ipAddress)
           .userAgent(userAgent)
           .build();
-      auditLogRepository.save(auditLog);
+      auditLogService.saveAuditLog(auditLog);
       log.info("Audited QR code access: action={}, userId={}, ticketId={}",
           action, userId, ticketId);
     } catch (Exception ex) {

@@ -23,6 +23,7 @@ import com.event.tickets.repositories.TicketValidationRepository;
 import com.event.tickets.repositories.UserRepository;
 import com.event.tickets.services.AuthorizationService;
 import com.event.tickets.services.TicketValidationService;
+import com.event.tickets.services.AuditLogService;
 import jakarta.transaction.Transactional;
 import java.util.List;
 import java.util.UUID;
@@ -58,6 +59,7 @@ public class TicketValidationServiceImpl implements TicketValidationService {
   private final UserRepository userRepository;
   private final AuditLogRepository auditLogRepository;
   private final SystemUserProvider systemUserProvider;
+  private final AuditLogService auditLogService;
 
   @Override
   public TicketValidation validateTicketByQrCode(UUID userId, UUID qrCodeId) {
@@ -176,7 +178,7 @@ public class TicketValidationServiceImpl implements TicketValidationService {
           .ipAddress(extractClientIp(getCurrentRequest()))
           .userAgent(extractUserAgent(getCurrentRequest()))
           .build();
-      auditLogRepository.save(auditLog);
+      auditLogService.saveAuditLog(auditLog);
     } catch (Exception e) {
       log.error("Failed to emit failed ticket validation audit event: userId={}, error={}", 
           user != null ? user.getId() : "null", e.getMessage());
