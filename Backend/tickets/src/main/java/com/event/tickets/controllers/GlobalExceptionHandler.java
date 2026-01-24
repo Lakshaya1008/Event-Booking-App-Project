@@ -15,6 +15,9 @@ import com.event.tickets.exceptions.TicketTypeNotFoundException;
 import com.event.tickets.exceptions.TicketsSoldOutException;
 import com.event.tickets.exceptions.UserNotFoundException;
 import com.event.tickets.exceptions.EmailAlreadyInUseException;
+import com.event.tickets.exceptions.InvalidBusinessStateException;
+import com.event.tickets.exceptions.InvalidInputException;
+import com.event.tickets.exceptions.SystemUserNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import java.time.LocalDateTime;
@@ -384,7 +387,8 @@ public class GlobalExceptionHandler {
   // ============= 500 INTERNAL SERVER ERROR =============
 
   @ExceptionHandler({QrCodeGenerationException.class, QrCodeNotFoundException.class,
-                    DataIntegrityViolationException.class, KeycloakOperationException.class})
+                    DataIntegrityViolationException.class, KeycloakOperationException.class,
+                    SystemUserNotFoundException.class})
   public ResponseEntity<ErrorDto> handleInternalServerError(
       Exception ex, HttpServletRequest request) {
     log.error("Internal server error", ex);
@@ -570,5 +574,47 @@ public class GlobalExceptionHandler {
     }
 
     return sanitized;
+  }
+
+  @ExceptionHandler(InvalidInputException.class)
+  public ResponseEntity<ErrorDto> handleInvalidInputException(
+      InvalidInputException ex, HttpServletRequest request) {
+    log.error("Invalid input error", ex);
+    ErrorDto errorDto = new ErrorDto();
+    errorDto.setError("INVALID_INPUT");
+    errorDto.setMessage(ex.getMessage());
+    errorDto.setStatusCode(400);
+    errorDto.setStatusDescription("BAD REQUEST - Invalid input");
+    errorDto.setTimestamp(LocalDateTime.now().toString());
+    errorDto.setPath(request.getRequestURI());
+    return new ResponseEntity<>(errorDto, HttpStatus.BAD_REQUEST);
+  }
+
+  @ExceptionHandler(InvalidBusinessStateException.class)
+  public ResponseEntity<ErrorDto> handleInvalidBusinessStateException(
+      InvalidBusinessStateException ex, HttpServletRequest request) {
+    log.error("Invalid business state", ex);
+    ErrorDto errorDto = new ErrorDto();
+    errorDto.setError("INVALID_BUSINESS_STATE");
+    errorDto.setMessage(ex.getMessage());
+    errorDto.setStatusCode(409);
+    errorDto.setStatusDescription("CONFLICT - Invalid business state");
+    errorDto.setTimestamp(LocalDateTime.now().toString());
+    errorDto.setPath(request.getRequestURI());
+    return new ResponseEntity<>(errorDto, HttpStatus.CONFLICT);
+  }
+
+  @ExceptionHandler(SystemUserNotFoundException.class)
+  public ResponseEntity<ErrorDto> handleSystemUserNotFoundException(
+      SystemUserNotFoundException ex, HttpServletRequest request) {
+    log.error("System user not found", ex);
+    ErrorDto errorDto = new ErrorDto();
+    errorDto.setError("SYSTEM_USER_NOT_FOUND");
+    errorDto.setMessage(ex.getMessage());
+    errorDto.setStatusCode(500);
+    errorDto.setStatusDescription("INTERNAL SERVER ERROR - System user missing");
+    errorDto.setTimestamp(LocalDateTime.now().toString());
+    errorDto.setPath(request.getRequestURI());
+    return new ResponseEntity<>(errorDto, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 }

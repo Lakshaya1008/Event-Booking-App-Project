@@ -1,6 +1,7 @@
 package com.event.tickets.services;
 
 import com.event.tickets.domain.entities.User;
+import com.event.tickets.exceptions.SystemUserNotFoundException;
 import com.event.tickets.repositories.UserRepository;
 import jakarta.annotation.PostConstruct;
 import java.util.UUID;
@@ -32,7 +33,7 @@ public class SystemUserProvider {
   @PostConstruct
   public void loadSystemUser() {
     systemUser = userRepository.findById(SYSTEM_USER_ID)
-        .orElseThrow(() -> new RuntimeException("SYSTEM user not found. Database initialization may have failed."));
+        .orElseThrow(() -> new SystemUserNotFoundException("SYSTEM user not found. Database initialization may have failed."));
     log.info("SYSTEM user loaded: {}", systemUser.getId());
   }
 

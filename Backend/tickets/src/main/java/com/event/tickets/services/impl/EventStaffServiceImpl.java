@@ -6,6 +6,7 @@ import com.event.tickets.domain.entities.AuditLog;
 import com.event.tickets.domain.entities.Event;
 import com.event.tickets.domain.entities.User;
 import com.event.tickets.exceptions.EventNotFoundException;
+import com.event.tickets.exceptions.InvalidBusinessStateException;
 import com.event.tickets.exceptions.UserNotFoundException;
 import com.event.tickets.repositories.EventRepository;
 import com.event.tickets.repositories.UserRepository;
@@ -79,7 +80,7 @@ public class EventStaffServiceImpl implements EventStaffService {
 
     // Verify user has STAFF role in Keycloak
     if (!keycloakAdminService.userHasRole(userId, "STAFF")) {
-      throw new IllegalStateException(
+      throw new InvalidBusinessStateException(
           String.format(
               "User '%s' (%s) does not have STAFF role. " +
               "STAFF role must be assigned by ADMIN before event assignment.",
@@ -90,7 +91,7 @@ public class EventStaffServiceImpl implements EventStaffService {
 
     // Check if already assigned
     if (event.getStaff().contains(user)) {
-      throw new IllegalStateException(
+      throw new InvalidBusinessStateException(
           String.format(
               "User '%s' is already assigned as staff to event '%s'",
               user.getName(), event.getName()

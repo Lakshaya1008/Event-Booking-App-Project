@@ -247,7 +247,9 @@ public class RegistrationServiceImpl implements RegistrationService {
         eventForAudit = new Event();
         eventForAudit.setId(eventId);
       }
-      emitAuditEvent(user, user, eventForAudit, 
+      // Ensure user is flushed to DB before audit log (prevents TransientPropertyValueException)
+      userRepository.saveAndFlush(user);
+      emitAuditEvent(user, user, eventForAudit,
           AuditAction.REGISTRATION_SUCCESS,
           "email=" + request.getEmail() + ",role=" + assignedRole + ",inviteCode=" + 
           (request.getInviteCode() != null ? request.getInviteCode() : "NONE"),

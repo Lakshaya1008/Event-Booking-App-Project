@@ -3,6 +3,7 @@ package com.event.tickets.services.impl;
 import com.event.tickets.domain.entities.AuditAction;
 import com.event.tickets.domain.entities.AuditLog;
 import com.event.tickets.domain.entities.User;
+import com.event.tickets.exceptions.ReportGenerationException;
 import com.event.tickets.repositories.UserRepository;
 import com.event.tickets.services.AuditLogService;
 import com.event.tickets.services.EventService;
@@ -224,7 +225,7 @@ public class ExportServiceImpl implements ExportService {
 
     } catch (IOException ex) {
       log.error("Failed to generate Excel workbook for sales report", ex);
-      throw new RuntimeException("Failed to generate sales report Excel", ex);
+      throw new ReportGenerationException("Failed to generate sales report Excel", ex);
     }
   }
 

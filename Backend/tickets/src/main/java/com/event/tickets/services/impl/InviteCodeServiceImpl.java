@@ -9,6 +9,8 @@ import com.event.tickets.domain.entities.InviteCode;
 import com.event.tickets.domain.entities.InviteCodeStatus;
 import com.event.tickets.domain.entities.User;
 import com.event.tickets.exceptions.EventNotFoundException;
+import com.event.tickets.exceptions.InvalidBusinessStateException;
+import com.event.tickets.exceptions.InvalidInputException;
 import com.event.tickets.exceptions.InvalidInviteCodeException;
 import com.event.tickets.exceptions.InviteCodeNotFoundException;
 import com.event.tickets.exceptions.UserNotFoundException;
@@ -95,7 +97,7 @@ public class InviteCodeServiceImpl implements InviteCodeService {
 
       // STAFF role requires event
       if ("STAFF".equals(roleName) && event == null) {
-        throw new IllegalArgumentException("Event ID is required for STAFF role invites");
+        throw new InvalidInputException("Event ID is required for STAFF role invites");
       }
     }
 
@@ -159,7 +161,7 @@ public class InviteCodeServiceImpl implements InviteCodeService {
         // Emit failed invite redemption audit event
         emitFailedInviteRedemption(user, inviteCode, "ROLE_ASSIGNMENT_FAILED: " + e.getMessage());
         
-        throw new IllegalStateException(
+        throw new InvalidBusinessStateException(
             String.format(
                 "Failed to assign role '%s' in Keycloak: %s",
                 inviteCode.getRoleName(), e.getMessage()
@@ -300,7 +302,7 @@ public class InviteCodeServiceImpl implements InviteCodeService {
       attempts++;
 
       if (attempts > maxAttempts) {
-        throw new IllegalStateException(
+        throw new InvalidBusinessStateException(
             "Failed to generate unique invite code after " + maxAttempts + " attempts"
         );
       }

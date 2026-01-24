@@ -6,6 +6,7 @@ import com.event.tickets.domain.entities.DiscountType;
 import com.event.tickets.domain.entities.TicketType;
 import com.event.tickets.exceptions.DiscountAlreadyExistsException;
 import com.event.tickets.exceptions.DiscountNotFoundException;
+import com.event.tickets.exceptions.InvalidInputException;
 import com.event.tickets.exceptions.TicketTypeNotFoundException;
 import com.event.tickets.repositories.DiscountRepository;
 import com.event.tickets.repositories.TicketTypeRepository;
@@ -229,7 +230,7 @@ public class DiscountServiceImpl implements DiscountService {
   @Override
   public BigDecimal calculateFinalPrice(BigDecimal basePrice, Discount discount) {
     if (basePrice == null || basePrice.compareTo(BigDecimal.ZERO) <= 0) {
-      throw new IllegalArgumentException("Base price must be positive");
+      throw new InvalidInputException("Base price must be positive");
     }
 
     if (discount == null) {
@@ -248,7 +249,7 @@ public class DiscountServiceImpl implements DiscountService {
   private void validateDiscountRequest(CreateDiscountRequestDto request) {
     // Validate date range
     if (!request.getValidTo().isAfter(request.getValidFrom())) {
-      throw new IllegalArgumentException(
+      throw new InvalidInputException(
           "Valid to date must be after valid from date"
       );
     }
@@ -257,7 +258,7 @@ public class DiscountServiceImpl implements DiscountService {
     if (request.getDiscountType() == DiscountType.PERCENTAGE) {
       if (request.getValue().compareTo(BigDecimal.ZERO) <= 0 ||
           request.getValue().compareTo(BigDecimal.valueOf(100)) > 0) {
-        throw new IllegalArgumentException(
+        throw new InvalidInputException(
             "Percentage discount must be between 0 and 100"
         );
       }
@@ -266,7 +267,7 @@ public class DiscountServiceImpl implements DiscountService {
     // Validate fixed amount is positive
     if (request.getDiscountType() == DiscountType.FIXED_AMOUNT) {
       if (request.getValue().compareTo(BigDecimal.ZERO) <= 0) {
-        throw new IllegalArgumentException(
+        throw new InvalidInputException(
             "Fixed amount discount must be positive"
         );
       }

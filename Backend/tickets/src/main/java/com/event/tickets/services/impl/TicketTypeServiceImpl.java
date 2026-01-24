@@ -9,6 +9,7 @@ import com.event.tickets.domain.entities.TicketStatusEnum;
 import com.event.tickets.domain.entities.TicketType;
 import com.event.tickets.domain.entities.User;
 import com.event.tickets.exceptions.EventNotFoundException;
+import com.event.tickets.exceptions.TicketTypeDeleteNotAllowedException;
 import com.event.tickets.exceptions.TicketTypeNotFoundException;
 import com.event.tickets.exceptions.TicketsSoldOutException;
 import com.event.tickets.exceptions.UserNotFoundException;
@@ -179,7 +180,7 @@ public class TicketTypeServiceImpl implements TicketTypeService {
 
     // Check if there are any sold tickets - prevent deletion if tickets are sold
     if (!ticketType.getTickets().isEmpty()) {
-      throw new IllegalStateException("Cannot delete ticket type with sold tickets");
+      throw new TicketTypeDeleteNotAllowedException("Cannot delete ticket type with sold tickets");
     }
 
     ticketTypeRepository.delete(ticketType);
