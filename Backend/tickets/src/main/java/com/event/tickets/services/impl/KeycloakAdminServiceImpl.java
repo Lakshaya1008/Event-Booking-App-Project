@@ -62,6 +62,7 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
   private final Keycloak keycloakAdminClient;
   private final UserRepository userRepository;
   private final AuditLogRepository auditLogRepository;
+  private final SystemUserProvider systemUserProvider;
 
   @Value("${keycloak.admin.realm}")
   private String realm;
@@ -90,6 +91,9 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
 
       // Audit log - get current user (ADMIN who performed action)
       User actor = getCurrentUser();
+      if (actor == null) {
+        actor = systemUserProvider.getSystemUser();
+      }
       HttpServletRequest request = getCurrentRequest();
       String ipAddress = extractClientIp(request);
 
@@ -153,6 +157,9 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
 
       // Audit log
       User actor = getCurrentUser();
+      if (actor == null) {
+        actor = systemUserProvider.getSystemUser();
+      }
       HttpServletRequest request = getCurrentRequest();
       String ipAddress = extractClientIp(request);
 
