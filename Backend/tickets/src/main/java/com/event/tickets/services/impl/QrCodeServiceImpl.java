@@ -5,6 +5,8 @@ import com.event.tickets.domain.entities.AuditLog;
 import com.event.tickets.domain.entities.QrCode;
 import com.event.tickets.domain.entities.QrCodeStatusEnum;
 import com.event.tickets.domain.entities.Ticket;
+import com.event.tickets.domain.entities.User;
+import com.event.tickets.services.SystemUserProvider;
 import com.event.tickets.exceptions.QrCodeGenerationException;
 import com.event.tickets.exceptions.QrCodeNotFoundException;
 import com.event.tickets.exceptions.TicketNotFoundException;
@@ -70,6 +72,7 @@ public class QrCodeServiceImpl implements QrCodeService {
   private final UserRepository userRepository;
   private final AuthorizationService authorizationService;
   private final AuditLogRepository auditLogRepository;
+  private final SystemUserProvider systemUserProvider;
 
   @Override
   public QrCode generateQrCode(Ticket ticket) {
@@ -288,19 +291,20 @@ public class QrCodeServiceImpl implements QrCodeService {
       HttpServletRequest request = getCurrentRequest();
       String ipAddress = request != null ? extractClientIp(request) : "unknown";
       String userAgent = request != null ? extractUserAgent(request) : "unknown";
-
+      User actor = userRepository.findById(userId).orElse(null);
+      if (actor == null) {
+        actor = systemUserProvider.getSystemUser();
+      }
       AuditLog auditLog = AuditLog.builder()
           .action(action)
-          .actor(userRepository.findById(userId).orElse(null))
+          .actor(actor)
           .resourceType("QRCode")
           .resourceId(ticketId)
           .details(String.format("QR code access for ticket: %s", ticketId))
           .ipAddress(ipAddress)
           .userAgent(userAgent)
           .build();
-
       auditLogRepository.save(auditLog);
-
       log.info("Audited QR code access: action={}, userId={}, ticketId={}",
           action, userId, ticketId);
     } catch (Exception ex) {

@@ -10,6 +10,7 @@ import com.event.tickets.domain.entities.TicketValidation;
 import com.event.tickets.domain.entities.TicketValidationMethod;
 import com.event.tickets.domain.entities.TicketValidationStatusEnum;
 import com.event.tickets.domain.entities.User;
+import com.event.tickets.services.SystemUserProvider;
 import com.event.tickets.exceptions.EventNotFoundException;
 import com.event.tickets.exceptions.QrCodeNotFoundException;
 import com.event.tickets.exceptions.TicketNotFoundException;
@@ -56,6 +57,7 @@ public class TicketValidationServiceImpl implements TicketValidationService {
   private final AuthorizationService authorizationService;
   private final UserRepository userRepository;
   private final AuditLogRepository auditLogRepository;
+  private final SystemUserProvider systemUserProvider;
 
   @Override
   public TicketValidation validateTicketByQrCode(UUID userId, UUID qrCodeId) {
@@ -160,6 +162,9 @@ public class TicketValidationServiceImpl implements TicketValidationService {
    */
   private void emitFailedTicketValidation(User user, Ticket ticket, String reason, String method) {
     try {
+      if (user == null) {
+        user = systemUserProvider.getSystemUser();
+      }
       AuditLog auditLog = AuditLog.builder()
           .action(AuditAction.FAILED_TICKET_VALIDATION)
           .actor(user)
@@ -171,11 +176,10 @@ public class TicketValidationServiceImpl implements TicketValidationService {
           .ipAddress(extractClientIp(getCurrentRequest()))
           .userAgent(extractUserAgent(getCurrentRequest()))
           .build();
-
       auditLogRepository.save(auditLog);
     } catch (Exception e) {
       log.error("Failed to emit failed ticket validation audit event: userId={}, error={}", 
-          user.getId(), e.getMessage());
+          user != null ? user.getId() : "null", e.getMessage());
       // Audit failures should not break the main flow
     }
   }

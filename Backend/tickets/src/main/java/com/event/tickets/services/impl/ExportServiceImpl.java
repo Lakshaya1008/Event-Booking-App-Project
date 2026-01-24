@@ -2,10 +2,12 @@ package com.event.tickets.services.impl;
 
 import com.event.tickets.domain.entities.AuditAction;
 import com.event.tickets.domain.entities.AuditLog;
+import com.event.tickets.domain.entities.User;
 import com.event.tickets.repositories.AuditLogRepository;
 import com.event.tickets.repositories.UserRepository;
 import com.event.tickets.services.EventService;
 import com.event.tickets.services.ExportService;
+import com.event.tickets.services.SystemUserProvider;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -48,6 +50,7 @@ public class ExportServiceImpl implements ExportService {
   private final EventService eventService;
   private final AuditLogRepository auditLogRepository;
   private final UserRepository userRepository;
+  private final SystemUserProvider systemUserProvider;
 
   private static final DateTimeFormatter FILENAME_DATE_FORMAT =
       DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
@@ -277,19 +280,20 @@ public class ExportServiceImpl implements ExportService {
       HttpServletRequest request = getCurrentRequest();
       String ipAddress = request != null ? extractClientIp(request) : "unknown";
       String userAgent = request != null ? extractUserAgent(request) : "unknown";
-
+      User actor = userRepository.findById(organizerId).orElse(null);
+      if (actor == null) {
+        actor = systemUserProvider.getSystemUser();
+      }
       AuditLog auditLog = AuditLog.builder()
           .action(AuditAction.SALES_REPORT_EXPORTED)
-          .actor(userRepository.findById(organizerId).orElse(null))
+          .actor(actor)
           .resourceType("Event")
           .resourceId(eventId)
           .details(String.format("Sales report exported for event: %s", eventId))
           .ipAddress(ipAddress)
           .userAgent(userAgent)
           .build();
-
       auditLogRepository.save(auditLog);
-
       log.info("Audited sales report export: organizerId={}, eventId={}", organizerId, eventId);
     } catch (Exception ex) {
       log.error("Failed to audit sales report export: organizerId={}, eventId={}",

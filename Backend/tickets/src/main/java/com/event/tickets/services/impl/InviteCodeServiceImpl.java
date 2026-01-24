@@ -404,6 +404,9 @@ public class InviteCodeServiceImpl implements InviteCodeService {
    */
   private void emitFailedInviteRedemption(User user, InviteCode inviteCode, String reason) {
     try {
+      if (user == null) {
+        user = systemUserProvider.getSystemUser();
+      }
       AuditLog auditLog = AuditLog.builder()
           .action(AuditAction.FAILED_INVITE_REDEMPTION)
           .actor(user)
@@ -415,11 +418,10 @@ public class InviteCodeServiceImpl implements InviteCodeService {
           .ipAddress(extractClientIp(getCurrentRequest()))
           .userAgent(extractUserAgent(getCurrentRequest()))
           .build();
-
       auditLogRepository.save(auditLog);
     } catch (Exception e) {
       log.error("Failed to emit failed invite redemption audit event: userId={}, error={}", 
-          user.getId(), e.getMessage());
+          user != null ? user.getId() : "null", e.getMessage());
       // Audit failures should not break the main flow
     }
   }

@@ -6,6 +6,7 @@ import com.event.tickets.domain.entities.ApprovalStatus;
 import com.event.tickets.domain.entities.User;
 import com.event.tickets.repositories.AuditLogRepository;
 import com.event.tickets.repositories.UserRepository;
+import com.event.tickets.services.SystemUserProvider;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -109,6 +110,7 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
 
   private final UserRepository userRepository;
   private final AuditLogRepository auditLogRepository;
+  private final SystemUserProvider systemUserProvider;
   private final ObjectMapper objectMapper = new ObjectMapper();
 
   /**
@@ -281,6 +283,9 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
    */
   private void emitApprovalGateViolation(User user, String path, String method, String reason) {
     try {
+      if (user == null) {
+        user = systemUserProvider.getSystemUser();
+      }
       AuditLog auditLog = AuditLog.builder()
           .action(AuditAction.APPROVAL_GATE_VIOLATION)
           .actor(user)
@@ -291,11 +296,10 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
           .ipAddress(extractClientIp(null))
           .userAgent(extractUserAgent(null))
           .build();
-
       auditLogRepository.save(auditLog);
     } catch (Exception e) {
       log.error("Failed to emit approval gate violation audit event: userId={}, error={}", 
-          user.getId(), e.getMessage());
+          user != null ? user.getId() : "null", e.getMessage());
       // Audit failures should not break the main flow
     }
   }

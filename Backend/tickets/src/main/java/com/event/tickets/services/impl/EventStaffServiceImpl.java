@@ -13,6 +13,7 @@ import com.event.tickets.repositories.UserRepository;
 import com.event.tickets.services.AuthorizationService;
 import com.event.tickets.services.EventStaffService;
 import com.event.tickets.services.KeycloakAdminService;
+import com.event.tickets.services.SystemUserProvider;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.transaction.Transactional;
 import java.util.List;
@@ -53,6 +54,7 @@ public class EventStaffServiceImpl implements EventStaffService {
   private final AuthorizationService authorizationService;
   private final KeycloakAdminService keycloakAdminService;
   private final AuditLogRepository auditLogRepository;
+  private final SystemUserProvider systemUserProvider;
 
   @Override
   @Transactional
@@ -104,8 +106,10 @@ public class EventStaffServiceImpl implements EventStaffService {
         user.getName(), event.getName());
 
     // Audit log
-    User organizer = userRepository.findById(organizerId)
-        .orElseThrow(() -> new UserNotFoundException("Organizer not found"));
+    User organizer = userRepository.findById(organizerId).orElse(null);
+    if (organizer == null) {
+      organizer = systemUserProvider.getSystemUser();
+    }
     HttpServletRequest request = getCurrentRequest();
     String ipAddress = extractClientIp(request);
 
@@ -155,8 +159,10 @@ public class EventStaffServiceImpl implements EventStaffService {
           user.getName(), event.getName());
 
       // Audit log - get organizer (already validated by authorization)
-      User organizer = userRepository.findById(organizerId)
-          .orElseThrow(() -> new UserNotFoundException("Organizer not found"));
+      User organizer = userRepository.findById(organizerId).orElse(null);
+      if (organizer == null) {
+        organizer = systemUserProvider.getSystemUser();
+      }
       HttpServletRequest request = getCurrentRequest();
       String ipAddress = extractClientIp(request);
 
