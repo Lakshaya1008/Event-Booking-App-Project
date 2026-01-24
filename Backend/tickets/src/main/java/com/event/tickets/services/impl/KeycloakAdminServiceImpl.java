@@ -310,6 +310,16 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
       String userId = locationHeader.substring(locationHeader.lastIndexOf('/') + 1);
       UUID keycloakUserId = UUID.fromString(userId);
 
+      // --- FIX: Explicitly set password after user creation ---
+      UserResource userResource = realmResource.users().get(userId);
+      org.keycloak.representations.idm.CredentialRepresentation cred =
+          new org.keycloak.representations.idm.CredentialRepresentation();
+      cred.setType(org.keycloak.representations.idm.CredentialRepresentation.PASSWORD);
+      cred.setValue(password);
+      cred.setTemporary(false);
+      userResource.resetPassword(cred);
+      // --- END FIX ---
+
       log.info("Successfully created user in Keycloak: userId={}, email={}", keycloakUserId, email);
       return keycloakUserId;
 
