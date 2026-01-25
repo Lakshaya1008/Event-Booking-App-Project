@@ -387,8 +387,7 @@ public class GlobalExceptionHandler {
   // ============= 500 INTERNAL SERVER ERROR =============
 
   @ExceptionHandler({QrCodeGenerationException.class, QrCodeNotFoundException.class,
-                    DataIntegrityViolationException.class, KeycloakOperationException.class,
-                    SystemUserNotFoundException.class})
+                    DataIntegrityViolationException.class, KeycloakOperationException.class})
   public ResponseEntity<ErrorDto> handleInternalServerError(
       Exception ex, HttpServletRequest request) {
     log.error("Internal server error", ex);
