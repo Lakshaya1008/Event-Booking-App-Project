@@ -35,86 +35,96 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping(path = "/api/v1/events/{eventId}/ticket-types")
 public class TicketTypeController {
 
-  private final TicketTypeService ticketTypeService;
-  private final TicketTypeMapper ticketTypeMapper;
-  private final TicketMapper ticketMapper;
+    private final TicketTypeService ticketTypeService;
+    private final TicketTypeMapper ticketTypeMapper;
+    private final TicketMapper ticketMapper;
 
-  // Updated attendee endpoint - purchase tickets with quantity support
-  @PostMapping(path = "/{ticketTypeId}/tickets")
-  @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
-  public ResponseEntity<List<GetTicketResponseDto>> purchaseTicket(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID ticketTypeId,
-      @Valid @RequestBody PurchaseTicketRequestDto request
-  ) {
-    List<Ticket> createdTickets = ticketTypeService.purchaseTickets(
-        parseUserId(jwt),
-        ticketTypeId,
-        request.getQuantity()
-    );
-    List<GetTicketResponseDto> response = createdTickets.stream()
-        .map(ticketMapper::toGetTicketResponseDto)
-        .toList();
-    return new ResponseEntity<>(response, HttpStatus.CREATED);
-  }
+    /**
+     * Purchase tickets.
+     *
+     * FIX: now passes eventId from the URL path into purchaseTickets().
+     * The service validates that the ticketTypeId actually belongs to that event,
+     * preventing a crafted request from buying tickets across unrelated events.
+     * The service also enforces PUBLISHED status and the sales window.
+     */
+    @PostMapping(path = "/{ticketTypeId}/tickets")
+    @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
+    public ResponseEntity<List<GetTicketResponseDto>> purchaseTicket(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID eventId,
+            @PathVariable UUID ticketTypeId,
+            @Valid @RequestBody PurchaseTicketRequestDto request
+    ) {
+        List<Ticket> createdTickets = ticketTypeService.purchaseTickets(
+                parseUserId(jwt),
+                eventId,          // now forwarded — was silently ignored before
+                ticketTypeId,
+                request.getQuantity()
+        );
+        List<GetTicketResponseDto> response = createdTickets.stream()
+                .map(ticketMapper::toGetTicketResponseDto)
+                .toList();
+        return new ResponseEntity<>(response, HttpStatus.CREATED);
+    }
 
-  // Organizer endpoints - CRUD operations
-  @PostMapping
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<CreateTicketTypeResponseDto> createTicketType(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID eventId,
-      @Valid @RequestBody CreateTicketTypeRequestDto requestDto) {
-    var request = ticketTypeMapper.fromDto(requestDto);
-    var ticketType = ticketTypeService.createTicketType(parseUserId(jwt), eventId, request);
-    var responseDto = ticketTypeMapper.toCreateResponseDto(ticketType);
-    return new ResponseEntity<>(responseDto, HttpStatus.CREATED);
-  }
+    // ─── Organizer CRUD (unchanged logic) ──────────────────────────────────────
 
-  @GetMapping
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<List<CreateTicketTypeResponseDto>> listTicketTypes(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID eventId) {
-    var ticketTypes = ticketTypeService.listTicketTypesForEvent(parseUserId(jwt), eventId);
-    var responseDtos = ticketTypes.stream()
-        .map(ticketTypeMapper::toCreateResponseDto)
-        .toList();
-    return ResponseEntity.ok(responseDtos);
-  }
+    @PostMapping
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<CreateTicketTypeResponseDto> createTicketType(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID eventId,
+            @Valid @RequestBody CreateTicketTypeRequestDto requestDto) {
+        var request = ticketTypeMapper.fromDto(requestDto);
+        var ticketType = ticketTypeService.createTicketType(parseUserId(jwt), eventId, request);
+        var responseDto = ticketTypeMapper.toCreateResponseDto(ticketType);
+        return new ResponseEntity<>(responseDto, HttpStatus.CREATED);
+    }
 
-  @GetMapping("/{ticketTypeId}")
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<CreateTicketTypeResponseDto> getTicketType(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID eventId,
-      @PathVariable UUID ticketTypeId) {
-    return ticketTypeService.getTicketType(parseUserId(jwt), eventId, ticketTypeId)
-        .map(ticketTypeMapper::toCreateResponseDto)
-        .map(ResponseEntity::ok)
-        .orElse(ResponseEntity.notFound().build());
-  }
+    @GetMapping
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<List<CreateTicketTypeResponseDto>> listTicketTypes(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID eventId) {
+        var ticketTypes = ticketTypeService.listTicketTypesForEvent(parseUserId(jwt), eventId);
+        var responseDtos = ticketTypes.stream()
+                .map(ticketTypeMapper::toCreateResponseDto)
+                .toList();
+        return ResponseEntity.ok(responseDtos);
+    }
 
-  @PutMapping("/{ticketTypeId}")
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<UpdateTicketTypeResponseDto> updateTicketType(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID eventId,
-      @PathVariable UUID ticketTypeId,
-      @Valid @RequestBody UpdateTicketTypeRequestDto requestDto) {
-    var request = ticketTypeMapper.fromUpdateDto(requestDto);
-    var ticketType = ticketTypeService.updateTicketType(parseUserId(jwt), eventId, ticketTypeId, request);
-    var responseDto = ticketTypeMapper.toUpdateResponseDto(ticketType);
-    return ResponseEntity.ok(responseDto);
-  }
+    @GetMapping("/{ticketTypeId}")
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<CreateTicketTypeResponseDto> getTicketType(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID eventId,
+            @PathVariable UUID ticketTypeId) {
+        return ticketTypeService.getTicketType(parseUserId(jwt), eventId, ticketTypeId)
+                .map(ticketTypeMapper::toCreateResponseDto)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
 
-  @DeleteMapping("/{ticketTypeId}")
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<Void> deleteTicketType(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID eventId,
-      @PathVariable UUID ticketTypeId) {
-    ticketTypeService.deleteTicketType(parseUserId(jwt), eventId, ticketTypeId);
-    return ResponseEntity.noContent().build();
-  }
+    @PutMapping("/{ticketTypeId}")
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<UpdateTicketTypeResponseDto> updateTicketType(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID eventId,
+            @PathVariable UUID ticketTypeId,
+            @Valid @RequestBody UpdateTicketTypeRequestDto requestDto) {
+        var request = ticketTypeMapper.fromUpdateDto(requestDto);
+        var ticketType = ticketTypeService.updateTicketType(parseUserId(jwt), eventId, ticketTypeId, request);
+        var responseDto = ticketTypeMapper.toUpdateResponseDto(ticketType);
+        return ResponseEntity.ok(responseDto);
+    }
+
+    @DeleteMapping("/{ticketTypeId}")
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<Void> deleteTicketType(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID eventId,
+            @PathVariable UUID ticketTypeId) {
+        ticketTypeService.deleteTicketType(parseUserId(jwt), eventId, ticketTypeId);
+        return ResponseEntity.noContent().build();
+    }
 }

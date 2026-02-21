@@ -17,40 +17,49 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+/**
+ * Published Event Controller
+ *
+ * Fix applied: added hasRole('STAFF') to both endpoints.
+ *
+ * STAFF members validate tickets at the door — they need to see the event
+ * they are assigned to. Without this fix, STAFF could not browse events at all,
+ * making it impossible to look up event details before or during a shift.
+ */
 @RestController
 @RequestMapping(path = "/api/v1/published-events")
 @RequiredArgsConstructor
 public class PublishedEventController {
 
-  private final EventService eventService;
-  private final EventMapper eventMapper;
+    private final EventService eventService;
+    private final EventMapper eventMapper;
 
-  @GetMapping
-  @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
-  public ResponseEntity<Page<ListPublishedEventResponseDto>> listPublishedEvents(
-      @RequestParam(required = false) String q,
-      Pageable pageable) {
+    @GetMapping
+    @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER') or hasRole('STAFF')")
+    public ResponseEntity<Page<ListPublishedEventResponseDto>> listPublishedEvents(
+            @RequestParam(required = false) String q,
+            Pageable pageable) {
 
-    Page<Event> events;
-    if (null != q && !q.trim().isEmpty()) {
-      events = eventService.searchPublishedEvents(q, pageable);
-    } else {
-      events = eventService.listPublishedEvents(pageable);
+        Page<Event> events;
+        if (null != q && !q.trim().isEmpty()) {
+            events = eventService.searchPublishedEvents(q, pageable);
+        } else {
+            events = eventService.listPublishedEvents(pageable);
+        }
+
+        return ResponseEntity.ok(
+                events.map(eventMapper::toListPublishedEventResponseDto)
+        );
     }
 
-    return ResponseEntity.ok(
-        events.map(eventMapper::toListPublishedEventResponseDto)
-    );
-  }
-
-  @GetMapping(path = "/{eventId}")
-  @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
-  public ResponseEntity<GetPublishedEventDetailsResponseDto> getPublishedEventDetails(
-      @PathVariable UUID eventId
-  ) {
-    return eventService.getPublishedEvent(eventId)
-        .map(eventMapper::toGetPublishedEventDetailsResponseDto)
-        .map(ResponseEntity::ok)
-        .orElse(ResponseEntity.notFound().build());
-  }
+    @GetMapping(path = "/{eventId}")
+    @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER') or hasRole('STAFF')")
+    public ResponseEntity<GetPublishedEventDetailsResponseDto> getPublishedEventDetails(
+            @PathVariable UUID eventId
+    ) {
+        return eventService.getPublishedEvent(eventId)
+                .map(eventMapper::toGetPublishedEventDetailsResponseDto)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
 }
