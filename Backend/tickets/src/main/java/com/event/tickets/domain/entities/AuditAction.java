@@ -7,45 +7,50 @@ package com.event.tickets.domain.entities;
  * Immutable - actions are append-only to audit log.
  */
 public enum AuditAction {
-  // Registration Operations
-  REGISTRATION_ATTEMPT,
-  REGISTRATION_SUCCESS,
-  REGISTRATION_FAILED,
+    // Registration Operations
+    REGISTRATION_ATTEMPT,
+    REGISTRATION_SUCCESS,
+    REGISTRATION_FAILED,
 
-  // Role Management
-  ROLE_ASSIGNED,
-  ROLE_REVOKED,
+    // Approval Operations
+    USER_APPROVED,       // Admin approved a pending user
+    USER_REJECTED,       // Admin rejected a pending user
 
-  // Event Staff Management
-  STAFF_ASSIGNED,
-  STAFF_REMOVED,
+    // Role Management
+    ROLE_ASSIGNED,
+    ROLE_REVOKED,
 
-  // Invite Code Operations
-  INVITE_CREATED,
-  INVITE_REDEEMED,
-  INVITE_REVOKED,
+    // Event Staff Management
+    STAFF_ASSIGNED,
+    STAFF_REMOVED,
 
-  // Event Operations
-  EVENT_CREATED,
-  EVENT_UPDATED,
-  EVENT_DELETED,
+    // Invite Code Operations
+    INVITE_CREATED,
+    INVITE_REDEEMED,
+    INVITE_REVOKED,
 
-  // Ticket Operations
-  TICKET_VALIDATED,
-  TICKET_PURCHASED,
+    // Event Operations
+    EVENT_CREATED,
+    EVENT_UPDATED,
+    EVENT_DELETED,
 
-  // QR Code Operations (READ-ONLY EXPORTS)
-  QR_CODE_VIEWED,
-  QR_CODE_DOWNLOADED_PNG,
-  QR_CODE_DOWNLOADED_PDF,
+    // Ticket Operations
+    TICKET_VALIDATED,
+    TICKET_PURCHASED,
+    TICKET_PURCHASE_BLOCKED,  // Attempted purchase outside sales window or wrong event status
 
-  // Report Exports (READ-ONLY)
-  SALES_REPORT_EXPORTED,
+    // QR Code Operations (READ-ONLY EXPORTS)
+    QR_CODE_VIEWED,
+    QR_CODE_DOWNLOADED_PNG,
+    QR_CODE_DOWNLOADED_PDF,
 
-  // Approval Gate Operations
-  APPROVAL_GATE_VIOLATION,
+    // Report Exports (READ-ONLY)
+    SALES_REPORT_EXPORTED,
 
-  // Validation Failures
-  FAILED_TICKET_VALIDATION,
-  FAILED_INVITE_REDEMPTION
+    // Approval Gate Operations
+    APPROVAL_GATE_VIOLATION,
+
+    // Validation Failures
+    FAILED_TICKET_VALIDATION,
+    FAILED_INVITE_REDEMPTION
 }

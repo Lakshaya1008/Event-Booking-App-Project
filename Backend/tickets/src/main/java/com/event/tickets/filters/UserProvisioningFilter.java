@@ -50,6 +50,8 @@ public class UserProvisioningFilter extends OncePerRequestFilter {
       HttpServletResponse response,
       FilterChain filterChain) throws ServletException, IOException {
 
+    // REMOVE ALL DB WRITES: JWT validation must be read-only
+    // Only check if user exists, do not provision or update
     Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
 
     if (authentication != null
@@ -57,24 +59,12 @@ public class UserProvisioningFilter extends OncePerRequestFilter {
         && authentication.getPrincipal() instanceof Jwt jwt) {
 
       UUID keycloakId = UUID.fromString(jwt.getSubject());
-
+      // Only log if user is missing, do not provision
       if (!userRepository.existsById(keycloakId)) {
-        log.info("Provisioning new user from JWT: userId={}, email={}",
+        log.warn("User not found in DB during JWT validation: userId={}, email={}",
             keycloakId, jwt.getClaimAsString("email"));
-
-        User user = new User();
-        user.setId(keycloakId);
-        user.setName(jwt.getClaimAsString("preferred_username"));
-        user.setEmail(jwt.getClaimAsString("email"));
-
-        // Set APPROVED status for backward compatibility with existing Keycloak users
-        // New registrations via invite code will set PENDING status explicitly
-        user.setApprovalStatus(ApprovalStatus.APPROVED);
-
-        userRepository.save(user);
-        log.info("User provisioned successfully: userId={}", keycloakId);
+        // Do NOT create or update user here
       }
-
     }
 
     filterChain.doFilter(request, response);

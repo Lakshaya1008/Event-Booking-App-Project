@@ -159,14 +159,11 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
 
       ApprovalStatus status = user.getApprovalStatus();
 
-      // Handle NULL status for legacy users (existed before approval system was added)
-      // Auto-migrate them to APPROVED for backward compatibility
+      // REMOVE: Auto-migrate legacy users to APPROVED
+      // Approval status must only be set by admin action, not on JWT validation
       if (status == null) {
-        log.info("Auto-migrating legacy user to APPROVED status: userId={}, email={}",
-            userId, user.getEmail());
-        user.setApprovalStatus(ApprovalStatus.APPROVED);
-        userRepository.save(user);
-        status = ApprovalStatus.APPROVED;
+        log.warn("Legacy user with null approval status detected: userId={}, email={}", userId, user.getEmail());
+        // Do NOT update DB here
       }
 
       // FAIL-CLOSED: Block PENDING users
