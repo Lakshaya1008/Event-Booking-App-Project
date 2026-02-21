@@ -34,43 +34,52 @@ import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 @Builder
 public class TicketValidation {
 
-  @Id
-  @Column(name = "id", nullable = false, updatable = false)
-  @GeneratedValue(strategy = GenerationType.UUID)
-  private UUID id;
+    @Id
+    @Column(name = "id", nullable = false, updatable = false)
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
 
-  @Column(name = "status", nullable = false)
-  @Enumerated(EnumType.STRING)
-  private TicketValidationStatusEnum status;
+    @Column(name = "status", nullable = false)
+    @Enumerated(EnumType.STRING)
+    private TicketValidationStatusEnum status;
 
-  @Column(name = "validation_method", nullable = false)
-  @Enumerated(EnumType.STRING)
-  private TicketValidationMethod validationMethod;
+    @Column(name = "validation_method", nullable = false)
+    @Enumerated(EnumType.STRING)
+    private TicketValidationMethod validationMethod;
 
-  @ManyToOne(fetch = FetchType.LAZY)
-  @JoinColumn(name = "ticket_id")
-  private Ticket ticket;
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "ticket_id")
+    private Ticket ticket;
 
-  @CreatedDate
-  @Column(name = "created_at", updatable = false, nullable = false)
-  private LocalDateTime createdAt;
+    /**
+     * The staff member or organizer who performed this validation.
+     * Nullable for backward compatibility with existing records (legacy rows have no validator).
+     * ALL new validations must set this field — enforced in TicketValidationServiceImpl.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "validated_by_id", nullable = true)
+    private User validatedBy;
 
-  @LastModifiedDate
-  @Column(name = "updated_at", nullable = false)
-  private LocalDateTime updatedAt;
+    @CreatedDate
+    @Column(name = "created_at", updatable = false, nullable = false)
+    private LocalDateTime createdAt;
 
-  @Override
-  public boolean equals(Object o) {
-    if (o == null || getClass() != o.getClass()) {
-      return false;
+    @LastModifiedDate
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
+
+    @Override
+    public boolean equals(Object o) {
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        TicketValidation that = (TicketValidation) o;
+        return Objects.equals(id, that.id) && status == that.status && Objects.equals(createdAt,
+                that.createdAt) && Objects.equals(updatedAt, that.updatedAt);
     }
-    TicketValidation that = (TicketValidation) o;
-    return Objects.equals(id, that.id) && status == that.status && Objects.equals(createdAt,
-        that.createdAt) && Objects.equals(updatedAt, that.updatedAt);
-  }
 
-  @Override
-  public int hashCode() {
-    return Objects.hash(id, status, createdAt, updatedAt);
-  }
+    @Override
+    public int hashCode() {
+        return Objects.hash(id, status, createdAt, updatedAt);
+    }
 }
