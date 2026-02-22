@@ -39,73 +39,86 @@ import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 @Builder
 public class Event {
 
-  @Id
-  @Column(name = "id", updatable = false, nullable = false)
-  @GeneratedValue(strategy = GenerationType.UUID)
-  private UUID id;
+    @Id
+    @Column(name = "id", updatable = false, nullable = false)
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
 
-  @Column(name = "name", nullable = false)
-  private String name;
+    @Column(name = "name", nullable = false)
+    private String name;
 
-  @Column(name = "event_start")
-  private LocalDateTime start;
+    @Column(name = "event_start")
+    private LocalDateTime start;
 
-  @Column(name = "event_end")
-  private LocalDateTime end;
+    @Column(name = "event_end")
+    private LocalDateTime end;
 
-  @Column(name = "venue", nullable = false)
-  private String venue;
+    @Column(name = "venue", nullable = false)
+    private String venue;
 
-  @Column(name = "sales_start")
-  private LocalDateTime salesStart;
+    @Column(name = "sales_start")
+    private LocalDateTime salesStart;
 
-  @Column(name = "sales_end")
-  private LocalDateTime salesEnd;
+    @Column(name = "sales_end")
+    private LocalDateTime salesEnd;
 
-  @Column(name = "status", nullable = false)
-  @Enumerated(EnumType.STRING)
-  private EventStatusEnum status;
+    @Column(name = "status", nullable = false)
+    @Enumerated(EnumType.STRING)
+    private EventStatusEnum status;
 
-  @ManyToOne(fetch = FetchType.LAZY)
-  @JoinColumn(name = "organizer_id")
-  private User organizer;
+    /**
+     * Optional venue capacity limit enforced at ticket purchase time.
+     * When set, total tickets sold across ALL ticket types for this event
+     * cannot exceed this number. Null means no event-level cap
+     * (capacity is managed per ticket type via totalAvailable).
+     *
+     * Nullable — existing events without this field are unaffected.
+     * Hibernate adds the column automatically via ddl-auto=update.
+     */
+    @Column(name = "max_capacity")
+    private Integer maxCapacity;
 
-  @ManyToMany(mappedBy = "attendingEvents")
-  @Builder.Default
-  private List<User> attendees = new ArrayList<>();
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "organizer_id")
+    private User organizer;
 
-  @ManyToMany(mappedBy = "staffingEvents")
-  @Builder.Default
-  private List<User> staff = new ArrayList<>();
+    @ManyToMany(mappedBy = "attendingEvents")
+    @Builder.Default
+    private List<User> attendees = new ArrayList<>();
 
-  @OneToMany(mappedBy = "event", cascade = CascadeType.ALL, orphanRemoval = true)
-  @Builder.Default
-  private List<TicketType> ticketTypes = new ArrayList<>();
+    @ManyToMany(mappedBy = "staffingEvents")
+    @Builder.Default
+    private List<User> staff = new ArrayList<>();
 
-  @CreatedDate
-  @Column(name = "created_at", updatable = false, nullable = false)
-  private LocalDateTime createdAt;
+    @OneToMany(mappedBy = "event", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
+    private List<TicketType> ticketTypes = new ArrayList<>();
 
-  @LastModifiedDate
-  @Column(name = "updated_at", nullable = false)
-  private LocalDateTime updatedAt;
+    @CreatedDate
+    @Column(name = "created_at", updatable = false, nullable = false)
+    private LocalDateTime createdAt;
 
-  @Override
-  public boolean equals(Object o) {
-    if (o == null || getClass() != o.getClass()) {
-      return false;
+    @LastModifiedDate
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
+
+    @Override
+    public boolean equals(Object o) {
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        Event event = (Event) o;
+        return Objects.equals(id, event.id) && Objects.equals(name, event.name)
+                && Objects.equals(start, event.start) && Objects.equals(end, event.end)
+                && Objects.equals(venue, event.venue) && Objects.equals(salesStart, event.salesStart)
+                && Objects.equals(salesEnd, event.salesEnd) && status == event.status
+                && Objects.equals(maxCapacity, event.maxCapacity)
+                && Objects.equals(createdAt, event.createdAt) && Objects.equals(updatedAt, event.updatedAt);
     }
-    Event event = (Event) o;
-    return Objects.equals(id, event.id) && Objects.equals(name, event.name) && Objects.equals(start,
-        event.start) && Objects.equals(end, event.end) && Objects.equals(venue, event.venue)
-        && Objects.equals(salesStart, event.salesStart) && Objects.equals(salesEnd, event.salesEnd)
-        && status == event.status && Objects.equals(createdAt, event.createdAt) && Objects.equals(
-        updatedAt, event.updatedAt);
-  }
 
-  @Override
-  public int hashCode() {
-    return Objects.hash(id, name, start, end, venue, salesStart, salesEnd, status, createdAt,
-        updatedAt);
-  }
+    @Override
+    public int hashCode() {
+        return Objects.hash(id, name, start, end, venue, salesStart, salesEnd, status, maxCapacity,
+                createdAt, updatedAt);
+    }
 }

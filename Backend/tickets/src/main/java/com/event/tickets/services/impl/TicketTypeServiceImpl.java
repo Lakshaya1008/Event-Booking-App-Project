@@ -2,6 +2,8 @@ package com.event.tickets.services.impl;
 
 import com.event.tickets.domain.CreateTicketTypeRequest;
 import com.event.tickets.domain.UpdateTicketTypeRequest;
+import com.event.tickets.domain.entities.AuditAction;
+import com.event.tickets.domain.entities.AuditLog;
 import com.event.tickets.domain.entities.Discount;
 import com.event.tickets.domain.entities.Event;
 import com.event.tickets.domain.entities.EventStatusEnum;
@@ -19,10 +21,12 @@ import com.event.tickets.repositories.EventRepository;
 import com.event.tickets.repositories.TicketRepository;
 import com.event.tickets.repositories.TicketTypeRepository;
 import com.event.tickets.repositories.UserRepository;
+import com.event.tickets.services.AuditLogService;
 import com.event.tickets.services.AuthorizationService;
 import com.event.tickets.services.DiscountService;
 import com.event.tickets.services.QrCodeService;
 import com.event.tickets.services.TicketTypeService;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.transaction.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -33,15 +37,23 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+import static com.event.tickets.util.RequestUtil.extractClientIp;
+import static com.event.tickets.util.RequestUtil.extractUserAgent;
 
 /**
  * Ticket Type Service Implementation
  *
- * Fixes applied to purchaseTickets():
- * 1. Validates that the ticketTypeId belongs to the eventId in the URL (was never checked).
- * 2. Enforces event status = PUBLISHED before allowing purchase.
- * 3. Enforces salesStart / salesEnd window before allowing purchase.
- * 4. Fixed NPE risk in getAttendeesReport (purchaser null-checked in EventServiceImpl separately).
+ * Handles ticket type CRUD operations and ticket purchases.
+ * All authorization is delegated to AuthorizationService.
+ *
+ * Business Logic Applied:
+ * 1. Purchase blocked if event is not PUBLISHED (covers CANCELLED, DRAFT, COMPLETED)
+ * 2. Purchase blocked if outside the salesStart–salesEnd window
+ * 3. Event-level maxCapacity enforced across all ticket types (if set)
+ * 4. Organizer self-purchase flagged with ORGANIZER_SELF_PURCHASE audit event (not blocked)
  */
 @Service
 @RequiredArgsConstructor
@@ -55,28 +67,17 @@ public class TicketTypeServiceImpl implements TicketTypeService {
     private final QrCodeService qrCodeService;
     private final AuthorizationService authorizationService;
     private final DiscountService discountService;
+    private final AuditLogService auditLogService;
 
     @Override
     @Transactional
     public List<Ticket> purchaseTickets(UUID userId, UUID ticketTypeId, int quantity) {
-        return purchaseTickets(userId, null, ticketTypeId, quantity);
-    }
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new UserNotFoundException(
+                        String.format("User with ID %s was not found", userId)
+                ));
 
-    /**
-     * Purchase tickets with full validation.
-     *
-     * @param userId       buyer
-     * @param eventId      event ID from URL path — if provided, validated against ticketType.event
-     * @param ticketTypeId the ticket type to purchase
-     * @param quantity     how many tickets
-     */
-    @Override
-    @Transactional
-    public List<Ticket> purchaseTickets(UUID userId, UUID eventId, UUID ticketTypeId, int quantity) {
-        User user = userRepository.findById(userId).orElseThrow(() -> new UserNotFoundException(
-                String.format("User with ID %s was not found", userId)
-        ));
-
+        // Pessimistic lock — prevents concurrent overselling
         TicketType ticketType = ticketTypeRepository.findByIdWithLock(ticketTypeId)
                 .orElseThrow(() -> new TicketTypeNotFoundException(
                         String.format("Ticket type with ID %s was not found", ticketTypeId)
@@ -84,51 +85,55 @@ public class TicketTypeServiceImpl implements TicketTypeService {
 
         Event event = ticketType.getEvent();
 
-        // FIX #13: Validate that the ticketTypeId actually belongs to the eventId in the URL.
-        // Without this check, an attacker could supply any eventId in the path and still
-        // purchase tickets for an unrelated ticket type — bypassing any URL-level filtering.
-        if (eventId != null && !event.getId().equals(eventId)) {
-            throw new InvalidBusinessStateException(
-                    String.format("Ticket type '%s' does not belong to event '%s'", ticketTypeId, eventId)
-            );
+        // ── Business Rule 1: Event must be PUBLISHED ──────────────────────────────
+        if (!EventStatusEnum.PUBLISHED.equals(event.getStatus())) {
+            String reason = EventStatusEnum.CANCELLED.equals(event.getStatus())
+                    ? "This event has been cancelled. No further tickets can be purchased."
+                    : "Tickets are not available for purchase — the event is not open for sales.";
+            throw new InvalidBusinessStateException(reason);
         }
 
-        // FIX #9: Only PUBLISHED events can sell tickets.
-        // Without this, tickets could be sold for DRAFT or CANCELLED events.
-        if (event.getStatus() != EventStatusEnum.PUBLISHED) {
-            throw new InvalidBusinessStateException(
-                    String.format("Event '%s' is not available for ticket purchase (status: %s)",
-                            event.getName(), event.getStatus())
-            );
-        }
-
-        // FIX #8: Enforce sales window.
-        // salesStart and salesEnd are stored but were never checked.
+        // ── Business Rule 2: Sales window enforcement ─────────────────────────────
         LocalDateTime now = LocalDateTime.now();
-
         if (event.getSalesStart() != null && now.isBefore(event.getSalesStart())) {
             throw new InvalidBusinessStateException(
-                    String.format("Ticket sales for '%s' have not started yet. Sales open: %s",
-                            event.getName(), event.getSalesStart())
+                    String.format("Ticket sales have not started yet. Sales open at %s.", event.getSalesStart())
             );
         }
-
         if (event.getSalesEnd() != null && now.isAfter(event.getSalesEnd())) {
             throw new InvalidBusinessStateException(
-                    String.format("Ticket sales for '%s' have closed. Sales ended: %s",
-                            event.getName(), event.getSalesEnd())
+                    String.format("Ticket sales have closed. Sales ended at %s.", event.getSalesEnd())
             );
         }
 
-        // Capacity check (pessimistic lock already held on ticketType)
-        int purchasedTickets = ticketRepository.countByTicketTypeId(ticketType.getId());
-        Integer totalAvailable = ticketType.getTotalAvailable();
-
-        if (purchasedTickets + quantity > totalAvailable) {
+        // ── Business Rule 3: Per-ticket-type sold-out check ──────────────────────
+        int purchasedForType = ticketRepository.countByTicketTypeId(ticketType.getId());
+        if (purchasedForType + quantity > ticketType.getTotalAvailable()) {
             throw new TicketsSoldOutException();
         }
 
-        // Calculate pricing
+        // ── Business Rule 4: Event-level capacity cap (optional field) ────────────
+        if (event.getMaxCapacity() != null) {
+            int totalSoldForEvent = ticketRepository.countByTicketTypeEventId(event.getId());
+            if (totalSoldForEvent + quantity > event.getMaxCapacity()) {
+                throw new TicketsSoldOutException(
+                        String.format(
+                                "This event has reached its venue capacity of %d. Only %d ticket(s) remaining across all ticket types.",
+                                event.getMaxCapacity(), event.getMaxCapacity() - totalSoldForEvent
+                        )
+                );
+            }
+        }
+
+        // ── Business Rule 5: Organizer self-purchase — allow but audit ────────────
+        boolean isOrganizerPurchasing = authorizationService.isOrganizer(userId, event);
+        if (isOrganizerPurchasing) {
+            log.warn("Organizer '{}' is purchasing {} ticket(s) to their own event '{}'",
+                    userId, quantity, event.getId());
+            emitOrganizerSelfPurchaseAudit(user, event, quantity);
+        }
+
+        // ── Calculate pricing ─────────────────────────────────────────────────────
         BigDecimal basePrice = BigDecimal.valueOf(ticketType.getPrice());
         Optional<Discount> activeDiscount = discountService.findActiveDiscount(ticketTypeId);
 
@@ -144,6 +149,7 @@ public class TicketTypeServiceImpl implements TicketTypeService {
             discountAmount = BigDecimal.ZERO;
         }
 
+        // ── Create tickets ────────────────────────────────────────────────────────
         List<Ticket> createdTickets = new ArrayList<>();
         for (int i = 0; i < quantity; i++) {
             Ticket ticket = new Ticket();
@@ -162,7 +168,29 @@ public class TicketTypeServiceImpl implements TicketTypeService {
         return createdTickets;
     }
 
-    // ─── Organizer CRUD operations (unchanged logic, just cleaned up) ──────────
+    @Override
+    @Transactional
+    public List<Ticket> purchaseTickets(UUID userId, UUID eventId, UUID ticketTypeId, int quantity) {
+        // Validate eventId matches ticketType's event
+        Event event = eventRepository.findById(eventId)
+                .orElseThrow(() -> new EventNotFoundException(
+                        String.format("Event with ID '%s' not found", eventId)
+                ));
+
+        TicketType ticketType = ticketTypeRepository.findById(ticketTypeId)
+                .orElseThrow(() -> new TicketTypeNotFoundException(
+                        String.format("Ticket type with ID '%s' not found", ticketTypeId)
+                ));
+
+        if (!ticketType.getEvent().getId().equals(eventId)) {
+            throw new InvalidBusinessStateException("Ticket type does not belong to the specified event.");
+        }
+
+        // Delegate to existing purchase logic
+        return purchaseTickets(userId, ticketTypeId, quantity);
+    }
+
+    // ── Organizer CRUD operations ─────────────────────────────────────────────
 
     @Override
     @Transactional
@@ -236,5 +264,34 @@ public class TicketTypeServiceImpl implements TicketTypeService {
         }
 
         ticketTypeRepository.delete(ticketType);
+    }
+
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    private void emitOrganizerSelfPurchaseAudit(User organizer, Event event, int quantity) {
+        try {
+            AuditLog auditLog = AuditLog.builder()
+                    .action(AuditAction.ORGANIZER_SELF_PURCHASE)
+                    .actor(organizer)
+                    .targetUser(organizer)
+                    .event(event)
+                    .resourceType("TICKET")
+                    .details(String.format("organizerId=%s,eventId=%s,quantity=%d,eventName=%s",
+                            organizer.getId(), event.getId(), quantity, event.getName()))
+                    .ipAddress(extractClientIp(getCurrentRequest()))
+                    .userAgent(extractUserAgent(getCurrentRequest()))
+                    .build();
+
+            auditLogService.saveAuditLog(auditLog);
+        } catch (Exception e) {
+            // Audit failure must never block the purchase
+            log.error("Failed to emit ORGANIZER_SELF_PURCHASE audit: {}", e.getMessage());
+        }
+    }
+
+    private HttpServletRequest getCurrentRequest() {
+        ServletRequestAttributes attributes =
+                (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        return attributes != null ? attributes.getRequest() : null;
     }
 }

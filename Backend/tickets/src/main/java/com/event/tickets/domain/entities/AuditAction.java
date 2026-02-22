@@ -12,13 +12,17 @@ public enum AuditAction {
     REGISTRATION_SUCCESS,
     REGISTRATION_FAILED,
 
-    // Approval Operations
-    USER_APPROVED,       // Admin approved a pending user
-    USER_REJECTED,       // Admin rejected a pending user
+    // Approval Gate Operations
+    USER_APPROVED,
+    USER_REJECTED,
+    APPROVAL_GATE_VIOLATION,
 
     // Role Management
     ROLE_ASSIGNED,
     ROLE_REVOKED,
+
+    // Admin Promotion (high-severity — ADMIN granted via invite code)
+    ADMIN_ROLE_GRANTED_VIA_INVITE,
 
     // Event Staff Management
     STAFF_ASSIGNED,
@@ -33,11 +37,15 @@ public enum AuditAction {
     EVENT_CREATED,
     EVENT_UPDATED,
     EVENT_DELETED,
+    EVENT_CANCELLED,
 
     // Ticket Operations
     TICKET_VALIDATED,
     TICKET_PURCHASED,
-    TICKET_PURCHASE_BLOCKED,  // Attempted purchase outside sales window or wrong event status
+    TICKET_CANCELLED_BY_EVENT,
+
+    // Organizer self-purchase (flagged for audit visibility)
+    ORGANIZER_SELF_PURCHASE,
 
     // QR Code Operations (READ-ONLY EXPORTS)
     QR_CODE_VIEWED,
@@ -46,9 +54,6 @@ public enum AuditAction {
 
     // Report Exports (READ-ONLY)
     SALES_REPORT_EXPORTED,
-
-    // Approval Gate Operations
-    APPROVAL_GATE_VIOLATION,
 
     // Validation Failures
     FAILED_TICKET_VALIDATION,

@@ -23,124 +23,138 @@ import java.util.UUID;
  */
 public interface KeycloakAdminService {
 
-  /**
-   * Assigns a role to a user in Keycloak.
-   *
-   * @param userId The UUID of the user (Keycloak user ID)
-   * @param roleName The name of the role to assign (ORGANIZER, ATTENDEE, STAFF, ADMIN)
-   * @throws com.event.tickets.exceptions.UserNotFoundException if user doesn't exist
-   * @throws com.event.tickets.exceptions.KeycloakOperationException if Keycloak operation fails
-   */
-  void assignRoleToUser(UUID userId, String roleName);
+    /**
+     * Assigns a role to a user in Keycloak.
+     *
+     * @param userId The UUID of the user (Keycloak user ID)
+     * @param roleName The name of the role to assign (ORGANIZER, ATTENDEE, STAFF, ADMIN)
+     * @throws com.event.tickets.exceptions.UserNotFoundException if user doesn't exist
+     * @throws com.event.tickets.exceptions.KeycloakOperationException if Keycloak operation fails
+     */
+    void assignRoleToUser(UUID userId, String roleName);
 
-  /**
-   * Revokes a role from a user in Keycloak.
-   *
-   * @param userId The UUID of the user (Keycloak user ID)
-   * @param roleName The name of the role to revoke
-   * @throws com.event.tickets.exceptions.UserNotFoundException if user doesn't exist
-   * @throws com.event.tickets.exceptions.KeycloakOperationException if Keycloak operation fails
-   */
-  void revokeRoleFromUser(UUID userId, String roleName);
+    /**
+     * Revokes a role from a user in Keycloak.
+     *
+     * @param userId The UUID of the user (Keycloak user ID)
+     * @param roleName The name of the role to revoke
+     * @throws com.event.tickets.exceptions.UserNotFoundException if user doesn't exist
+     * @throws com.event.tickets.exceptions.KeycloakOperationException if Keycloak operation fails
+     */
+    void revokeRoleFromUser(UUID userId, String roleName);
 
-  /**
-   * Gets all roles assigned to a user in Keycloak.
-   *
-   * @param userId The UUID of the user (Keycloak user ID)
-   * @return List of role names assigned to the user
-   * @throws com.event.tickets.exceptions.UserNotFoundException if user doesn't exist
-   * @throws com.event.tickets.exceptions.KeycloakOperationException if Keycloak operation fails
-   */
-  List<String> getUserRoles(UUID userId);
+    /**
+     * Gets all roles assigned to a user in Keycloak.
+     *
+     * @param userId The UUID of the user (Keycloak user ID)
+     * @return List of role names assigned to the user
+     * @throws com.event.tickets.exceptions.UserNotFoundException if user doesn't exist
+     * @throws com.event.tickets.exceptions.KeycloakOperationException if Keycloak operation fails
+     */
+    List<String> getUserRoles(UUID userId);
 
-  /**
-   * Gets all available roles in the realm.
-   *
-   * @return List of all available role names
-   * @throws com.event.tickets.exceptions.KeycloakOperationException if Keycloak operation fails
-   */
-  List<String> getAvailableRoles();
+    /**
+     * Gets all available roles in the realm.
+     *
+     * @return List of all available role names
+     * @throws com.event.tickets.exceptions.KeycloakOperationException if Keycloak operation fails
+     */
+    List<String> getAvailableRoles();
 
-  /**
-   * Checks if a user has a specific role.
-   *
-   * @param userId The UUID of the user (Keycloak user ID)
-   * @param roleName The name of the role to check
-   * @return true if user has the role, false otherwise
-   */
-  boolean userHasRole(UUID userId, String roleName);
+    /**
+     * Checks if a user has a specific role.
+     *
+     * @param userId The UUID of the user (Keycloak user ID)
+     * @param roleName The name of the role to check
+     * @return true if user has the role, false otherwise
+     */
+    boolean userHasRole(UUID userId, String roleName);
 
-  /**
-   * Creates a new user in Keycloak.
-   * Used for invite-based registration where backend creates users.
-   *
-   * @param email User's email (also used as username)
-   * @param password User's password (will be hashed by Keycloak)
-   * @param name User's display name
-   * @return The Keycloak user ID (UUID) of the created user
-   * @throws com.event.tickets.exceptions.KeycloakUserCreationException if creation fails
-   */
-  UUID createUser(String email, String password, String name);
+    /**
+     * Creates a new user in Keycloak.
+     * Used for invite-based registration where backend creates users.
+     *
+     * @param email User's email (also used as username)
+     * @param password User's password (will be hashed by Keycloak)
+     * @param name User's display name
+     * @return The Keycloak user ID (UUID) of the created user
+     * @throws com.event.tickets.exceptions.KeycloakUserCreationException if creation fails
+     */
+    UUID createUser(String email, String password, String name);
 
-  /**
-   * Deletes a user from Keycloak.
-   * Used for rollback when registration fails after user creation.
-   *
-   * @param userId The Keycloak user ID
-   * @throws com.event.tickets.exceptions.KeycloakUserDeletionException if deletion fails
-   */
-  void deleteUser(UUID userId);
+    /**
+     * Deletes a user from Keycloak.
+     * Used for rollback when registration fails after user creation.
+     *
+     * @param userId The Keycloak user ID
+     * @throws com.event.tickets.exceptions.KeycloakUserDeletionException if deletion fails
+     */
+    void deleteUser(UUID userId);
 
-  /**
-   * Checks if a user exists in Keycloak.
-   *
-   * @param userId The Keycloak user ID
-   * @return true if user exists, false otherwise
-   */
-  boolean userExists(UUID userId);
+    /**
+     * Checks if a user exists in Keycloak.
+     *
+     * @param userId The Keycloak user ID
+     * @return true if user exists, false otherwise
+     */
+    boolean userExists(UUID userId);
 
-  /**
-   * Enables or disables a user account in Keycloak.
-   * Can be used to lock rejected accounts.
-   *
-   * @param userId The Keycloak user ID
-   * @param enabled true to enable, false to disable
-   * @throws com.event.tickets.exceptions.KeycloakUserUpdateException if update fails
-   */
-  void setUserEnabled(UUID userId, boolean enabled);
+    /**
+     * Enables or disables a user account in Keycloak.
+     * Can be used to lock rejected accounts.
+     *
+     * @param userId The Keycloak user ID
+     * @param enabled true to enable, false to disable
+     * @throws com.event.tickets.exceptions.KeycloakUserUpdateException if update fails
+     */
+    void setUserEnabled(UUID userId, boolean enabled);
 
-  /**
-   * Sets the email verification status for a user in Keycloak.
-   * Used during approval to mark email as verified without requiring verification.
-   *
-   * @param userId The Keycloak user ID
-   * @param verified true to mark email as verified, false otherwise
-   * @throws com.event.tickets.exceptions.KeycloakUserUpdateException if update fails
-   */
-  void setEmailVerified(UUID userId, boolean verified);
+    /**
+     * Sets the email verification status for a user in Keycloak.
+     * Used during approval to mark email as verified without requiring verification.
+     *
+     * @param userId The Keycloak user ID
+     * @param verified true to mark email as verified, false otherwise
+     * @throws com.event.tickets.exceptions.KeycloakUserUpdateException if update fails
+     */
+    void setEmailVerified(UUID userId, boolean verified);
 
-  /**
-   * Clears all required actions for a user in Keycloak.
-   * Used during approval to remove VERIFY_EMAIL, UPDATE_PASSWORD, etc.
-   *
-   * @param userId The Keycloak user ID
-   * @throws com.event.tickets.exceptions.KeycloakUserUpdateException if update fails
-   */
-  void clearRequiredActions(UUID userId);
+    /**
+     * Clears all required actions for a user in Keycloak.
+     * Used during approval to remove VERIFY_EMAIL, UPDATE_PASSWORD, etc.
+     *
+     * @param userId The Keycloak user ID
+     * @throws com.event.tickets.exceptions.KeycloakUserUpdateException if update fails
+     */
+    void clearRequiredActions(UUID userId);
 
-  /**
-   * Checks if a user exists in Keycloak by email.
-   *
-   * @param email The user's email address
-   * @return true if user exists, false otherwise
-   */
-  boolean userExistsByEmail(String email);
+    /**
+     * Checks if a user exists in Keycloak by email.
+     *
+     * @param email The user's email address
+     * @return true if user exists, false otherwise
+     */
+    boolean userExistsByEmail(String email);
 
-  /**
-   * Gets the Keycloak user ID by email.
-   *
-   * @param email The user's email address
-   * @return The Keycloak user ID if found, null otherwise
-   */
-  UUID getUserIdByEmail(String email);
+    /**
+     * Gets the Keycloak user ID by email.
+     *
+     * @param email The user's email address
+     * @return The Keycloak user ID if found, null otherwise
+     */
+    UUID getUserIdByEmail(String email);
+
+    /**
+     * Activates a user account in Keycloak in a SINGLE atomic update.
+     *
+     * Sets enabled=true, emailVerified=true, and clears all required actions
+     * in one API call to avoid race conditions where sequential separate calls
+     * overwrite each other's state (each call does its own GET then PUT).
+     *
+     * This is the correct method to call on user approval.
+     *
+     * @param userId The Keycloak user ID
+     * @throws com.event.tickets.exceptions.KeycloakUserUpdateException if update fails
+     */
+    void activateUser(UUID userId);
 }
