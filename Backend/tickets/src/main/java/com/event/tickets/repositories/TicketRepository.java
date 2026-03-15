@@ -16,28 +16,41 @@ import org.springframework.stereotype.Repository;
 @Repository
 public interface TicketRepository extends JpaRepository<Ticket, UUID> {
 
-    // Count tickets sold for a specific ticket type (used for sold-out check)
     int countByTicketTypeId(UUID ticketTypeId);
 
-    // Count ALL tickets sold across all ticket types for an event (used for event-level cap + delete guard)
     int countByTicketTypeEventId(UUID eventId);
 
-    // List tickets for a purchaser (attendee "my tickets" view)
+    /**
+     * FIX #8: Count only non-CANCELLED tickets for an event.
+     *
+     * The original countByTicketTypeEventId() counted ALL tickets including CANCELLED.
+     * This meant:
+     * - deleteEventForOrganizer() was blocked even after all tickets had been
+     *   bulk-cancelled (which is the required flow before deletion).
+     * - maxCapacity checks after cancellations were overly restrictive.
+     *
+     * This query excludes tickets with the given status (pass TicketStatusEnum.CANCELLED).
+     * Used for both the event-delete guard and maxCapacity enforcement.
+     */
+    @Query("SELECT COUNT(t) FROM Ticket t " +
+            "WHERE t.ticketType.event.id = :eventId " +
+            "AND t.status != :excludedStatus")
+    int countActiveTicketsByEventId(
+            @Param("eventId") UUID eventId,
+            @Param("excludedStatus") TicketStatusEnum excludedStatus
+    );
+
+    int countByTicketTypeIdAndPurchaserId(UUID ticketTypeId, UUID purchaserId);
+
     Page<Ticket> findByPurchaserId(UUID purchaserId, Pageable pageable);
 
-    // Fetch a single ticket owned by a specific purchaser (ownership check)
     Optional<Ticket> findByIdAndPurchaserId(UUID id, UUID purchaserId);
 
-    // Fetch all tickets for an event across all ticket types (used for event cancellation cascade)
     List<Ticket> findByTicketTypeEventId(UUID eventId);
 
-    /**
-     * Bulk-cancel all PURCHASED tickets for an event when the event is cancelled.
-     * Uses JPQL UPDATE to avoid loading all ticket entities into memory.
-     * Only cancels tickets that are currently PURCHASED — already-cancelled tickets are left alone.
-     */
     @Modifying
-    @Query("UPDATE Ticket t SET t.status = :newStatus WHERE t.ticketType.event.id = :eventId AND t.status = :currentStatus")
+    @Query("UPDATE Ticket t SET t.status = :newStatus " +
+            "WHERE t.ticketType.event.id = :eventId AND t.status = :currentStatus")
     int bulkUpdateStatusByEventId(
             @Param("eventId") UUID eventId,
             @Param("currentStatus") TicketStatusEnum currentStatus,

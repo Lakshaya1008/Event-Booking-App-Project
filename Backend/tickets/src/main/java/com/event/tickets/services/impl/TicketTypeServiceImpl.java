@@ -24,6 +24,7 @@ import com.event.tickets.repositories.UserRepository;
 import com.event.tickets.services.AuditLogService;
 import com.event.tickets.services.AuthorizationService;
 import com.event.tickets.services.DiscountService;
+import com.event.tickets.services.EmailService;
 import com.event.tickets.services.QrCodeService;
 import com.event.tickets.services.TicketTypeService;
 import jakarta.servlet.http.HttpServletRequest;
@@ -46,14 +47,17 @@ import static com.event.tickets.util.RequestUtil.extractUserAgent;
 /**
  * Ticket Type Service Implementation
  *
- * Handles ticket type CRUD operations and ticket purchases.
- * All authorization is delegated to AuthorizationService.
+ * FIX #9: updateTicketType() now blocks setting totalAvailable below
+ * the number of tickets already sold.
  *
- * Business Logic Applied:
- * 1. Purchase blocked if event is not PUBLISHED (covers CANCELLED, DRAFT, COMPLETED)
- * 2. Purchase blocked if outside the salesStart–salesEnd window
- * 3. Event-level maxCapacity enforced across all ticket types (if set)
- * 4. Organizer self-purchase flagged with ORGANIZER_SELF_PURCHASE audit event (not blocked)
+ * FIX #11: Removed redundant second ticketRepository.save(savedTicket) inside
+ * the purchase loop. generateQrCode() does not modify the ticket, so the
+ * re-save was a no-op UPDATE statement on every ticket purchased.
+ *
+ * FIX #15: Price is now BigDecimal throughout — the old BigDecimal.valueOf(ticketType.getPrice())
+ * conversion from Double is gone since TicketType.price is now BigDecimal directly.
+ *
+ * EMAIL: sends ticket confirmation email after successful purchase.
  */
 @Service
 @RequiredArgsConstructor
@@ -68,73 +72,64 @@ public class TicketTypeServiceImpl implements TicketTypeService {
     private final AuthorizationService authorizationService;
     private final DiscountService discountService;
     private final AuditLogService auditLogService;
+    private final EmailService emailService;
 
     @Override
     @Transactional
     public List<Ticket> purchaseTickets(UUID userId, UUID ticketTypeId, int quantity) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new UserNotFoundException(
-                        String.format("User with ID %s was not found", userId)
-                ));
+                        String.format("User with ID %s was not found", userId)));
 
         // Pessimistic lock — prevents concurrent overselling
         TicketType ticketType = ticketTypeRepository.findByIdWithLock(ticketTypeId)
                 .orElseThrow(() -> new TicketTypeNotFoundException(
-                        String.format("Ticket type with ID %s was not found", ticketTypeId)
-                ));
+                        String.format("Ticket type with ID %s was not found", ticketTypeId)));
 
         Event event = ticketType.getEvent();
 
-        // ── Business Rule 1: Event must be PUBLISHED ──────────────────────────────
         if (!EventStatusEnum.PUBLISHED.equals(event.getStatus())) {
             String reason = EventStatusEnum.CANCELLED.equals(event.getStatus())
-                    ? "This event has been cancelled. No further tickets can be purchased."
-                    : "Tickets are not available for purchase — the event is not open for sales.";
+                    ? "This event has been cancelled."
+                    : "Tickets are not available — the event is not open for sales.";
             throw new InvalidBusinessStateException(reason);
         }
 
-        // ── Business Rule 2: Sales window enforcement ─────────────────────────────
         LocalDateTime now = LocalDateTime.now();
         if (event.getSalesStart() != null && now.isBefore(event.getSalesStart())) {
             throw new InvalidBusinessStateException(
-                    String.format("Ticket sales have not started yet. Sales open at %s.", event.getSalesStart())
-            );
+                    String.format("Sales have not started yet. Sales open at %s.", event.getSalesStart()));
         }
         if (event.getSalesEnd() != null && now.isAfter(event.getSalesEnd())) {
             throw new InvalidBusinessStateException(
-                    String.format("Ticket sales have closed. Sales ended at %s.", event.getSalesEnd())
-            );
+                    String.format("Sales have closed. Sales ended at %s.", event.getSalesEnd()));
         }
 
-        // ── Business Rule 3: Per-ticket-type sold-out check ──────────────────────
         int purchasedForType = ticketRepository.countByTicketTypeId(ticketType.getId());
         if (purchasedForType + quantity > ticketType.getTotalAvailable()) {
             throw new TicketsSoldOutException();
         }
 
-        // ── Business Rule 4: Event-level capacity cap (optional field) ────────────
+        // FIX #8 (also in EventServiceImpl): use countActiveTicketsByEventId for capacity cap
         if (event.getMaxCapacity() != null) {
-            int totalSoldForEvent = ticketRepository.countByTicketTypeEventId(event.getId());
-            if (totalSoldForEvent + quantity > event.getMaxCapacity()) {
-                throw new TicketsSoldOutException(
-                        String.format(
-                                "This event has reached its venue capacity of %d. Only %d ticket(s) remaining across all ticket types.",
-                                event.getMaxCapacity(), event.getMaxCapacity() - totalSoldForEvent
-                        )
-                );
+            int totalSold = ticketRepository.countActiveTicketsByEventId(
+                    event.getId(), TicketStatusEnum.CANCELLED);
+            if (totalSold + quantity > event.getMaxCapacity()) {
+                throw new TicketsSoldOutException(String.format(
+                        "Event venue capacity of %d reached. Only %d ticket(s) remaining.",
+                        event.getMaxCapacity(), event.getMaxCapacity() - totalSold));
             }
         }
 
-        // ── Business Rule 5: Organizer self-purchase — allow but audit ────────────
         boolean isOrganizerPurchasing = authorizationService.isOrganizer(userId, event);
         if (isOrganizerPurchasing) {
-            log.warn("Organizer '{}' is purchasing {} ticket(s) to their own event '{}'",
+            log.warn("Organizer '{}' purchasing {} ticket(s) to own event '{}'",
                     userId, quantity, event.getId());
             emitOrganizerSelfPurchaseAudit(user, event, quantity);
         }
 
-        // ── Calculate pricing ─────────────────────────────────────────────────────
-        BigDecimal basePrice = BigDecimal.valueOf(ticketType.getPrice());
+        // FIX #15: ticketType.getPrice() is now BigDecimal — no valueOf() conversion needed
+        BigDecimal basePrice = ticketType.getPrice();
         Optional<Discount> activeDiscount = discountService.findActiveDiscount(ticketTypeId);
 
         BigDecimal finalPrice;
@@ -149,7 +144,6 @@ public class TicketTypeServiceImpl implements TicketTypeService {
             discountAmount = BigDecimal.ZERO;
         }
 
-        // ── Create tickets ────────────────────────────────────────────────────────
         List<Ticket> createdTickets = new ArrayList<>();
         for (int i = 0; i < quantity; i++) {
             Ticket ticket = new Ticket();
@@ -162,8 +156,19 @@ public class TicketTypeServiceImpl implements TicketTypeService {
 
             Ticket savedTicket = ticketRepository.save(ticket);
             qrCodeService.generateQrCode(savedTicket);
-            createdTickets.add(ticketRepository.save(savedTicket));
+            // FIX #11: removed second redundant save() — generateQrCode does not modify
+            // the ticket object, so re-saving produced a no-op UPDATE on every ticket
+            createdTickets.add(savedTicket);
         }
+
+        // Send confirmation email to purchaser
+        emailService.sendTicketConfirmationEmail(
+                user.getEmail(),
+                user.getName(),
+                event.getName(),
+                ticketType.getName(),
+                quantity,
+                createdTickets.get(0).getId());
 
         return createdTickets;
     }
@@ -171,56 +176,43 @@ public class TicketTypeServiceImpl implements TicketTypeService {
     @Override
     @Transactional
     public List<Ticket> purchaseTickets(UUID userId, UUID eventId, UUID ticketTypeId, int quantity) {
-        // Validate eventId matches ticketType's event
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new EventNotFoundException(
-                        String.format("Event with ID '%s' not found", eventId)
-                ));
+                        String.format("Event with ID '%s' not found", eventId)));
 
         TicketType ticketType = ticketTypeRepository.findById(ticketTypeId)
                 .orElseThrow(() -> new TicketTypeNotFoundException(
-                        String.format("Ticket type with ID '%s' not found", ticketTypeId)
-                ));
+                        String.format("Ticket type with ID '%s' not found", ticketTypeId)));
 
         if (!ticketType.getEvent().getId().equals(eventId)) {
             throw new InvalidBusinessStateException("Ticket type does not belong to the specified event.");
         }
 
-        // Delegate to existing purchase logic
         return purchaseTickets(userId, ticketTypeId, quantity);
     }
-
-    // ── Organizer CRUD operations ─────────────────────────────────────────────
 
     @Override
     @Transactional
     public TicketType createTicketType(UUID organizerId, UUID eventId, CreateTicketTypeRequest request) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
-
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new EventNotFoundException(
-                        String.format("Event with ID '%s' not found", eventId)
-                ));
-
+                        String.format("Event with ID '%s' not found", eventId)));
         TicketType ticketType = new TicketType();
         ticketType.setName(request.getName());
         ticketType.setPrice(request.getPrice());
         ticketType.setDescription(request.getDescription());
         ticketType.setTotalAvailable(request.getTotalAvailable());
         ticketType.setEvent(event);
-
         return ticketTypeRepository.save(ticketType);
     }
 
     @Override
     public List<TicketType> listTicketTypesForEvent(UUID organizerId, UUID eventId) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
-
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new EventNotFoundException(
-                        String.format("Event with ID '%s' not found", eventId)
-                ));
-
+                        String.format("Event with ID '%s' not found", eventId)));
         return event.getTicketTypes();
     }
 
@@ -238,8 +230,17 @@ public class TicketTypeServiceImpl implements TicketTypeService {
 
         TicketType ticketType = ticketTypeRepository.findByIdAndEventId(ticketTypeId, eventId)
                 .orElseThrow(() -> new TicketTypeNotFoundException(
-                        String.format("Ticket type with ID '%s' not found for event '%s'", ticketTypeId, eventId)
-                ));
+                        String.format("Ticket type '%s' not found for event '%s'", ticketTypeId, eventId)));
+
+        // FIX #9: Block reducing totalAvailable below already-sold count
+        if (request.getTotalAvailable() != null) {
+            int alreadySold = ticketRepository.countByTicketTypeId(ticketTypeId);
+            if (request.getTotalAvailable() < alreadySold) {
+                throw new InvalidBusinessStateException(String.format(
+                        "Cannot set totalAvailable to %d — %d ticket(s) already sold.",
+                        request.getTotalAvailable(), alreadySold));
+            }
+        }
 
         ticketType.setName(request.getName());
         ticketType.setPrice(request.getPrice());
@@ -253,38 +254,28 @@ public class TicketTypeServiceImpl implements TicketTypeService {
     @Transactional
     public void deleteTicketType(UUID organizerId, UUID eventId, UUID ticketTypeId) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
-
         TicketType ticketType = ticketTypeRepository.findByIdAndEventId(ticketTypeId, eventId)
                 .orElseThrow(() -> new TicketTypeNotFoundException(
-                        String.format("Ticket type with ID '%s' not found for event '%s'", ticketTypeId, eventId)
-                ));
-
+                        String.format("Ticket type '%s' not found for event '%s'", ticketTypeId, eventId)));
         if (!ticketType.getTickets().isEmpty()) {
             throw new TicketTypeDeleteNotAllowedException("Cannot delete ticket type with sold tickets");
         }
-
         ticketTypeRepository.delete(ticketType);
     }
-
-    // ── Private helpers ───────────────────────────────────────────────────────
 
     private void emitOrganizerSelfPurchaseAudit(User organizer, Event event, int quantity) {
         try {
             AuditLog auditLog = AuditLog.builder()
                     .action(AuditAction.ORGANIZER_SELF_PURCHASE)
-                    .actor(organizer)
-                    .targetUser(organizer)
-                    .event(event)
+                    .actor(organizer).targetUser(organizer).event(event)
                     .resourceType("TICKET")
-                    .details(String.format("organizerId=%s,eventId=%s,quantity=%d,eventName=%s",
-                            organizer.getId(), event.getId(), quantity, event.getName()))
+                    .details(String.format("organizerId=%s,eventId=%s,quantity=%d",
+                            organizer.getId(), event.getId(), quantity))
                     .ipAddress(extractClientIp(getCurrentRequest()))
                     .userAgent(extractUserAgent(getCurrentRequest()))
                     .build();
-
             auditLogService.saveAuditLog(auditLog);
         } catch (Exception e) {
-            // Audit failure must never block the purchase
             log.error("Failed to emit ORGANIZER_SELF_PURCHASE audit: {}", e.getMessage());
         }
     }

@@ -30,20 +30,18 @@ import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
 
 /**
- * Event Staff Management Service Implementation
+ * Event Staff Management Service
  *
- * Manages event-scoped staff assignments with proper authorization.
+ * FIX #14: Replaced event.getStaff().contains(user) with an explicit ID-based check.
  *
- * Key Principles:
- * - Organizers can only manage staff for events they own
- * - Authorization enforced via AuthorizationService
- * - STAFF role must exist in Keycloak (assigned by ADMIN)
- * - Event-staff relationship persisted in database
- * - STAFF role alone provides no access without event assignment
+ * ROOT CAUSE:
+ * User.equals() previously compared id + name + email + createdAt + updatedAt.
+ * Two references to the same user loaded at different points in a transaction
+ * could have different updatedAt values (due to JPA flush), making contains()
+ * return false — allowing the same user to be added to staff multiple times.
  *
- * Database:
- * - Uses user_staffing_events junction table
- * - Maintains event.staff Many-to-Many relationship
+ * The fix uses anyMatch(s -> s.getId().equals(userId)) which is independent of
+ * any mutable fields and always correctly identifies the same user.
  */
 @Service
 @RequiredArgsConstructor
@@ -60,164 +58,116 @@ public class EventStaffServiceImpl implements EventStaffService {
     @Override
     @Transactional
     public void assignStaffToEvent(UUID organizerId, UUID eventId, UUID userId) {
-        log.info("Organizer '{}' assigning user '{}' as staff to event '{}'",
-                organizerId, userId, eventId);
+        log.info("Assigning user '{}' as staff to event '{}' by organizer '{}'",
+                userId, eventId, organizerId);
 
-        // Authorization: Verify organizer owns the event
         authorizationService.requireOrganizerAccess(organizerId, eventId);
 
-        // Fetch event
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new EventNotFoundException(
-                        String.format("Event with ID '%s' not found", eventId)
-                ));
+                        String.format("Event with ID '%s' not found", eventId)));
 
-        // Fetch user
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new UserNotFoundException(
-                        String.format("User with ID '%s' not found", userId)
-                ));
+                        String.format("User with ID '%s' not found", userId)));
 
-        // Verify user has STAFF role in Keycloak
         if (!keycloakAdminService.userHasRole(userId, "STAFF")) {
-            throw new InvalidBusinessStateException(
-                    String.format(
-                            "User '%s' (%s) does not have STAFF role. " +
-                                    "STAFF role must be assigned by ADMIN before event assignment.",
-                            user.getName(), userId
-                    )
-            );
+            throw new InvalidBusinessStateException(String.format(
+                    "User '%s' (%s) does not have STAFF role. " +
+                            "STAFF role must be assigned by ADMIN before event assignment.",
+                    user.getName(), userId));
         }
 
-        // Check if already assigned
-        if (event.getStaff().contains(user)) {
-            throw new InvalidBusinessStateException(
-                    String.format(
-                            "User '%s' is already assigned as staff to event '%s'",
-                            user.getName(), event.getName()
-                    )
-            );
+        // FIX #14: ID-based check instead of contains(user) which uses broken equals()
+        boolean alreadyAssigned = event.getStaff().stream()
+                .anyMatch(s -> s.getId().equals(userId));
+
+        if (alreadyAssigned) {
+            throw new InvalidBusinessStateException(String.format(
+                    "User '%s' is already assigned as staff to event '%s'",
+                    user.getName(), event.getName()));
         }
 
-        // Assign staff to event (persists in user_staffing_events table)
         event.getStaff().add(user);
         eventRepository.save(event);
 
         log.info("Successfully assigned user '{}' as staff to event '{}'",
                 user.getName(), event.getName());
 
-        // Audit log
-        User organizer = userRepository.findById(organizerId).orElse(null);
-        if (organizer == null) {
-            organizer = systemUserProvider.getSystemUser();
-        }
+        User organizer = userRepository.findById(organizerId)
+                .orElseGet(systemUserProvider::getSystemUser);
         HttpServletRequest request = getCurrentRequest();
-        String ipAddress = extractClientIp(request);
 
         AuditLog auditLog = AuditLog.builder()
                 .action(AuditAction.STAFF_ASSIGNED)
-                .actor(organizer)
-                .targetUser(user)
-                .event(event)
-                .resourceType("EventStaff")
-                .resourceId(event.getId())
+                .actor(organizer).targetUser(user).event(event)
+                .resourceType("EventStaff").resourceId(event.getId())
                 .details(String.format("Assigned %s as staff to event: %s",
                         user.getName(), event.getName()))
-                .ipAddress(ipAddress)
+                .ipAddress(extractClientIp(request))
                 .userAgent(extractUserAgent(request))
                 .build();
-
         auditLogService.saveAuditLog(auditLog);
     }
 
     @Override
     @Transactional
     public void removeStaffFromEvent(UUID organizerId, UUID eventId, UUID userId) {
-        log.info("Organizer '{}' removing user '{}' from staff of event '{}'",
-                organizerId, userId, eventId);
+        log.info("Removing user '{}' from staff of event '{}' by organizer '{}'",
+                userId, eventId, organizerId);
 
-        // Authorization: Verify organizer owns the event
         authorizationService.requireOrganizerAccess(organizerId, eventId);
 
-        // Fetch event
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new EventNotFoundException(
-                        String.format("Event with ID '%s' not found", eventId)
-                ));
+                        String.format("Event with ID '%s' not found", eventId)));
 
-        // Fetch user
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new UserNotFoundException(
-                        String.format("User with ID '%s' not found", userId)
-                ));
+                        String.format("User with ID '%s' not found", userId)));
 
-        // Remove staff from event (removes from user_staffing_events table)
-        boolean removed = event.getStaff().remove(user);
+        // FIX #14: ID-based removal
+        boolean removed = event.getStaff().removeIf(s -> s.getId().equals(userId));
 
         if (removed) {
             eventRepository.save(event);
-            log.info("Successfully removed user '{}' from staff of event '{}'",
-                    user.getName(), event.getName());
+            log.info("Removed user '{}' from staff of event '{}'", user.getName(), event.getName());
 
-            // Audit log - get organizer (already validated by authorization)
-            User organizer = userRepository.findById(organizerId).orElse(null);
-            if (organizer == null) {
-                organizer = systemUserProvider.getSystemUser();
-            }
+            User organizer = userRepository.findById(organizerId)
+                    .orElseGet(systemUserProvider::getSystemUser);
             HttpServletRequest request = getCurrentRequest();
-            String ipAddress = extractClientIp(request);
 
             AuditLog auditLog = AuditLog.builder()
                     .action(AuditAction.STAFF_REMOVED)
-                    .actor(organizer)
-                    .targetUser(user)
-                    .event(event)
-                    .resourceType("EventStaff")
-                    .resourceId(event.getId())
+                    .actor(organizer).targetUser(user).event(event)
+                    .resourceType("EventStaff").resourceId(event.getId())
                     .details(String.format("Removed %s from staff of event: %s",
                             user.getName(), event.getName()))
-                    .ipAddress(ipAddress)
+                    .ipAddress(extractClientIp(request))
                     .userAgent(extractUserAgent(request))
                     .build();
-
             auditLogService.saveAuditLog(auditLog);
         } else {
-            log.warn("User '{}' was not assigned as staff to event '{}'",
-                    user.getName(), event.getName());
+            log.warn("User '{}' was not staff of event '{}'", user.getName(), event.getName());
         }
     }
 
     @Override
     public List<StaffMemberDto> listEventStaff(UUID organizerId, UUID eventId) {
-        log.debug("Organizer '{}' listing staff for event '{}'", organizerId, eventId);
-
-        // Authorization: Verify organizer owns the event
         authorizationService.requireOrganizerAccess(organizerId, eventId);
-
-        // Fetch event
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new EventNotFoundException(
-                        String.format("Event with ID '%s' not found", eventId)
-                ));
-
-        // Map staff to DTOs
-        List<StaffMemberDto> staffList = event.getStaff().stream()
-                .map(user -> new StaffMemberDto(
-                        user.getId(),
-                        user.getName(),
-                        user.getEmail()
-                ))
+                        String.format("Event with ID '%s' not found", eventId)));
+        return event.getStaff().stream()
+                .map(u -> new StaffMemberDto(u.getId(), u.getName(), u.getEmail()))
                 .collect(Collectors.toList());
-
-        log.debug("Event '{}' has {} staff members", event.getName(), staffList.size());
-        return staffList;
     }
 
     @Override
     public boolean isStaffAssignedToEvent(UUID eventId, UUID userId) {
         return eventRepository.findById(eventId)
                 .map(event -> event.getStaff().stream()
-                        .anyMatch(staff -> staff.getId().equals(userId)))
+                        .anyMatch(s -> s.getId().equals(userId))) // FIX #14
                 .orElse(false);
     }
 
@@ -225,14 +175,10 @@ public class EventStaffServiceImpl implements EventStaffService {
     public String getEventName(UUID eventId) {
         return eventRepository.findById(eventId)
                 .orElseThrow(() -> new EventNotFoundException(
-                        String.format("Event with ID '%s' not found", eventId)
-                ))
+                        String.format("Event with ID '%s' not found", eventId)))
                 .getName();
     }
 
-    /**
-     * Gets current HTTP request for audit logging.
-     */
     private HttpServletRequest getCurrentRequest() {
         ServletRequestAttributes attributes =
                 (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();

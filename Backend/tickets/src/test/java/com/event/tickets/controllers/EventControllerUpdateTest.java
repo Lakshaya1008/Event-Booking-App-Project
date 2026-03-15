@@ -10,6 +10,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
+import static org.junit.jupiter.api.Assertions.*;
+
 /**
  * Integration tests for EventController.updateEvent endpoint
  *
@@ -42,12 +44,12 @@ class EventControllerUpdateTest {
     String json = objectMapper.writeValueAsString(dto);
 
     // Assert: JSON should not contain id field
-    assert !json.contains("\"id\"") : "DTO should not serialize null id field";
+    assertFalse(json.contains("\"id\""), "DTO should not serialize null id field");
 
     // Deserialize back
     UpdateEventRequestDto deserialized = objectMapper.readValue(json, UpdateEventRequestDto.class);
-    assert deserialized.getId() == null : "Deserialized DTO should have null id";
-    assert deserialized.getName().equals("Test Event") : "Name should be preserved";
+    assertNull(deserialized.getId(), "Deserialized DTO should have null id");
+    assertEquals("Test Event", deserialized.getName(), "Name should be preserved");
   }
 
   @Test
@@ -61,8 +63,8 @@ class EventControllerUpdateTest {
     dto.setId(testId);
 
     // Assert
-    assert dto.getId() != null : "ID should be settable";
-    assert dto.getId().equals(testId) : "ID should match what was set";
+    assertNotNull(dto.getId(), "ID should be settable");
+    assertEquals(testId, dto.getId(), "ID should match what was set");
   }
 
   @Test
@@ -78,9 +80,9 @@ class EventControllerUpdateTest {
     // Act & Assert: Simulate defensive check
     if (dto.getId() != null && !urlEventId.equals(dto.getId())) {
       // This is the expected behavior when IDs don't match
-      assert true : "Defensive check should detect mismatch";
+      assertTrue(true, "Defensive check should detect mismatch");
     } else {
-      assert false : "Defensive check failed to detect mismatch";
+      fail("Defensive check failed to detect mismatch");
     }
   }
 
@@ -95,10 +97,10 @@ class EventControllerUpdateTest {
 
     // Act & Assert: Simulate defensive check with matching IDs
     if (dto.getId() != null && !eventId.equals(dto.getId())) {
-      assert false : "Should not reject matching IDs";
+      fail("Should not reject matching IDs");
     } else {
       // This is the expected path when IDs match
-      assert true : "Matching IDs should pass defensive check";
+      assertTrue(true, "Matching IDs should pass defensive check");
     }
   }
 
@@ -113,13 +115,13 @@ class EventControllerUpdateTest {
 
     // Act: Simulate controller setting ID
     if (dto.getId() != null && !eventId.equals(dto.getId())) {
-      assert false : "Should not trigger check when body ID is null";
+      fail("Should not trigger check when body ID is null");
     }
 
     // Controller sets ID from path
     dto.setId(eventId);
 
     // Assert
-    assert dto.getId().equals(eventId) : "Controller should set ID from path";
+    assertEquals(eventId, dto.getId(), "Controller should set ID from path");
   }
 }

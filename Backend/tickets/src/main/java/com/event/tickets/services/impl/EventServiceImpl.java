@@ -21,13 +21,16 @@ import com.event.tickets.repositories.TicketRepository;
 import com.event.tickets.repositories.UserRepository;
 import com.event.tickets.services.AuditLogService;
 import com.event.tickets.services.AuthorizationService;
+import com.event.tickets.services.EmailService;
 import com.event.tickets.services.EventService;
 import com.event.tickets.services.SystemUserProvider;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.transaction.Transactional;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -50,14 +53,22 @@ import static com.event.tickets.util.RequestUtil.extractUserAgent;
 /**
  * Event Service Implementation
  *
- * Handles event CRUD operations and reporting.
- * All authorization is delegated to AuthorizationService.
+ * FIX #3: Ticket type removal in updateEventForOrganizer now checks for sold
+ * tickets before allowing the removal. Previously, omitting a ticket type from
+ * the update request silently cascade-deleted all its sold ticket records.
  *
- * Business Logic Applied:
- * 1. Event cancellation cascades to bulk-cancel all PURCHASED tickets + emits EVENT_CANCELLED audit
- * 2. maxCapacity field enforced at purchase time (see TicketTypeServiceImpl)
- * 3. salesEnd cannot be set to a past date if tickets have already been sold
- * 4. Delete is blocked if any tickets have been sold
+ * FIX #5: getSalesDashboard revenue calculation uses BigDecimal instead of
+ * double — prevents floating-point precision errors in financial totals.
+ *
+ * FIX #8: deleteEventForOrganizer and maxCapacity checks now use
+ * countActiveTicketsByEventId (excludes CANCELLED) instead of countByTicketTypeEventId
+ * (counts all). Previously blocked deletion even after all tickets were cancelled.
+ *
+ * FIX #16: updateEventForOrganizer now blocks setting maxCapacity below
+ * the currently sold (non-cancelled) ticket count.
+ *
+ * EMAIL: sends cancellation notice to each unique ticket holder when an event
+ * is cancelled. Uses a Set to avoid duplicate emails for multi-ticket buyers.
  */
 @Service
 @RequiredArgsConstructor
@@ -70,27 +81,26 @@ public class EventServiceImpl implements EventService {
     private final TicketRepository ticketRepository;
     private final AuditLogService auditLogService;
     private final SystemUserProvider systemUserProvider;
+    private final EmailService emailService;
 
     @Override
     @Transactional
     public Event createEvent(UUID organizerId, CreateEventRequest event) {
         User organizer = userRepository.findById(organizerId)
                 .orElseThrow(() -> new UserNotFoundException(
-                        String.format("User with ID '%s' not found", organizerId))
-                );
+                        String.format("User with ID '%s' not found", organizerId)));
 
         Event eventToCreate = new Event();
 
-        List<TicketType> ticketTypesToCreate = event.getTicketTypes().stream().map(
-                ticketType -> {
-                    TicketType ticketTypeToCreate = new TicketType();
-                    ticketTypeToCreate.setName(ticketType.getName());
-                    ticketTypeToCreate.setPrice(ticketType.getPrice());
-                    ticketTypeToCreate.setDescription(ticketType.getDescription());
-                    ticketTypeToCreate.setTotalAvailable(ticketType.getTotalAvailable());
-                    ticketTypeToCreate.setEvent(eventToCreate);
-                    return ticketTypeToCreate;
-                }).toList();
+        List<TicketType> ticketTypes = event.getTicketTypes().stream().map(tt -> {
+            TicketType t = new TicketType();
+            t.setName(tt.getName());
+            t.setPrice(tt.getPrice());
+            t.setDescription(tt.getDescription());
+            t.setTotalAvailable(tt.getTotalAvailable());
+            t.setEvent(eventToCreate);
+            return t;
+        }).toList();
 
         eventToCreate.setName(event.getName());
         eventToCreate.setStart(event.getStart());
@@ -101,7 +111,7 @@ public class EventServiceImpl implements EventService {
         eventToCreate.setStatus(event.getStatus());
         eventToCreate.setMaxCapacity(event.getMaxCapacity());
         eventToCreate.setOrganizer(organizer);
-        eventToCreate.setTicketTypes(ticketTypesToCreate);
+        eventToCreate.setTicketTypes(ticketTypes);
 
         return eventRepository.save(eventToCreate);
     }
@@ -120,38 +130,32 @@ public class EventServiceImpl implements EventService {
     @Override
     @Transactional
     public Event updateEventForOrganizer(UUID organizerId, UUID id, UpdateEventRequest event) {
-        if (null == event.getId()) {
-            throw new EventUpdateException("Event ID cannot be null");
-        }
-
-        if (!id.equals(event.getId())) {
-            throw new EventUpdateException("Cannot update the ID of an event");
-        }
+        if (event.getId() == null) throw new EventUpdateException("Event ID cannot be null");
+        if (!id.equals(event.getId())) throw new EventUpdateException("Cannot update the ID of an event");
 
         authorizationService.requireOrganizerAccess(organizerId, id);
 
         Event existingEvent = eventRepository.findById(id)
                 .orElseThrow(() -> new EventNotFoundException(
-                        String.format("Event with ID '%s' does not exist", id))
-                );
+                        String.format("Event with ID '%s' does not exist", id)));
 
-        // ── Business Rule: salesEnd past-date guard ───────────────────────────────
-        // If the organizer is setting salesEnd to a past timestamp AND tickets have
-        // already been sold, block it — silent past-dating would make existing
-        // ticket holders unable to understand what happened.
-        // Before any sales, the organizer can freely adjust dates (e.g. closing early).
         if (event.getSalesEnd() != null
                 && event.getSalesEnd().isBefore(LocalDateTime.now())
                 && ticketRepository.countByTicketTypeEventId(id) > 0) {
             throw new InvalidBusinessStateException(
-                    "Cannot set salesEnd to a past date when tickets have already been sold. "
-                            + "To stop sales immediately, set status to CANCELLED instead."
-            );
+                    "Cannot set salesEnd to a past date when tickets have already been sold.");
         }
 
-        // ── Business Rule: Event cancellation cascade ─────────────────────────────
-        // When an event transitions to CANCELLED, bulk-cancel all PURCHASED tickets
-        // and emit an EVENT_CANCELLED audit event so there is a full trail.
+        // FIX #16: maxCapacity cannot go below currently sold (non-cancelled) count
+        if (event.getMaxCapacity() != null) {
+            int activeSold = ticketRepository.countActiveTicketsByEventId(id, TicketStatusEnum.CANCELLED);
+            if (event.getMaxCapacity() < activeSold) {
+                throw new InvalidBusinessStateException(String.format(
+                        "Cannot set maxCapacity to %d — %d non-cancelled ticket(s) already sold.",
+                        event.getMaxCapacity(), activeSold));
+            }
+        }
+
         boolean becomingCancelled = EventStatusEnum.CANCELLED.equals(event.getStatus())
                 && !EventStatusEnum.CANCELLED.equals(existingEvent.getStatus());
 
@@ -164,53 +168,55 @@ public class EventServiceImpl implements EventService {
         existingEvent.setStatus(event.getStatus());
         existingEvent.setMaxCapacity(event.getMaxCapacity());
 
-        // Ticket type reconciliation (existing logic — untouched)
-        Set<UUID> requestTicketTypeIds = event.getTicketTypes()
-                .stream()
+        Set<UUID> requestIds = event.getTicketTypes().stream()
                 .map(UpdateTicketTypeRequest::getId)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toSet());
 
-        existingEvent.getTicketTypes().removeIf(existingTicketType ->
-                !requestTicketTypeIds.contains(existingTicketType.getId())
-        );
+        // FIX #3: Guard against removing ticket types that have sold tickets
+        existingEvent.getTicketTypes().removeIf(tt -> {
+            if (requestIds.contains(tt.getId())) return false;
+            if (!tt.getTickets().isEmpty()) {
+                throw new InvalidBusinessStateException(String.format(
+                        "Cannot remove ticket type '%s' — %d ticket(s) already sold. " +
+                                "Set totalAvailable to 0 to stop sales instead.",
+                        tt.getName(), tt.getTickets().size()));
+            }
+            return true;
+        });
 
-        Map<UUID, TicketType> existingTicketTypesIndex = existingEvent.getTicketTypes().stream()
+        Map<UUID, TicketType> existingIndex = existingEvent.getTicketTypes().stream()
                 .collect(Collectors.toMap(TicketType::getId, Function.identity()));
 
-        for (UpdateTicketTypeRequest ticketType : event.getTicketTypes()) {
-            if (null == ticketType.getId()) {
-                TicketType ticketTypeToCreate = new TicketType();
-                ticketTypeToCreate.setName(ticketType.getName());
-                ticketTypeToCreate.setPrice(ticketType.getPrice());
-                ticketTypeToCreate.setDescription(ticketType.getDescription());
-                ticketTypeToCreate.setTotalAvailable(ticketType.getTotalAvailable());
-                ticketTypeToCreate.setEvent(existingEvent);
-                existingEvent.getTicketTypes().add(ticketTypeToCreate);
-
-            } else if (existingTicketTypesIndex.containsKey(ticketType.getId())) {
-                TicketType existingTicketType = existingTicketTypesIndex.get(ticketType.getId());
-                existingTicketType.setName(ticketType.getName());
-                existingTicketType.setPrice(ticketType.getPrice());
-                existingTicketType.setDescription(ticketType.getDescription());
-                existingTicketType.setTotalAvailable(ticketType.getTotalAvailable());
+        for (UpdateTicketTypeRequest tt : event.getTicketTypes()) {
+            if (tt.getId() == null) {
+                TicketType newTt = new TicketType();
+                newTt.setName(tt.getName());
+                newTt.setPrice(tt.getPrice());
+                newTt.setDescription(tt.getDescription());
+                newTt.setTotalAvailable(tt.getTotalAvailable());
+                newTt.setEvent(existingEvent);
+                existingEvent.getTicketTypes().add(newTt);
+            } else if (existingIndex.containsKey(tt.getId())) {
+                TicketType existing = existingIndex.get(tt.getId());
+                existing.setName(tt.getName());
+                existing.setPrice(tt.getPrice());
+                existing.setDescription(tt.getDescription());
+                existing.setTotalAvailable(tt.getTotalAvailable());
             } else {
-                throw new TicketTypeNotFoundException(String.format(
-                        "Ticket type with ID '%s' does not exist", ticketType.getId()
-                ));
+                throw new TicketTypeNotFoundException(
+                        String.format("Ticket type '%s' does not exist", tt.getId()));
             }
         }
 
         Event savedEvent = eventRepository.save(existingEvent);
 
-        // Cascade cancellation AFTER the event is persisted
         if (becomingCancelled) {
             int cancelledCount = ticketRepository.bulkUpdateStatusByEventId(
-                    id, TicketStatusEnum.PURCHASED, TicketStatusEnum.CANCELLED
-            );
+                    id, TicketStatusEnum.PURCHASED, TicketStatusEnum.CANCELLED);
             log.info("Event '{}' cancelled — {} ticket(s) bulk-cancelled", id, cancelledCount);
-
             emitEventCancelledAudit(organizerId, savedEvent, cancelledCount);
+            sendCancellationEmails(savedEvent);
         }
 
         return savedEvent;
@@ -221,16 +227,14 @@ public class EventServiceImpl implements EventService {
     public void deleteEventForOrganizer(UUID organizerId, UUID id) {
         authorizationService.requireOrganizerAccess(organizerId, id);
 
-        // Block deletion if any tickets have been sold — those attendees hold valid records
-        int soldTicketCount = ticketRepository.countByTicketTypeEventId(id);
-        if (soldTicketCount > 0) {
-            throw new InvalidBusinessStateException(
-                    String.format(
-                            "Cannot delete event '%s' because %d ticket(s) have already been sold. "
-                                    + "Cancel the event instead by setting status to CANCELLED.",
-                            id, soldTicketCount
-                    )
-            );
+        // FIX #8: use countActiveTicketsByEventId (excludes CANCELLED) instead of
+        // countByTicketTypeEventId (counts all). Previously blocked deletion even
+        // after an organizer had correctly cancelled the event (bulk-cancelling tickets).
+        int activeTickets = ticketRepository.countActiveTicketsByEventId(id, TicketStatusEnum.CANCELLED);
+        if (activeTickets > 0) {
+            throw new InvalidBusinessStateException(String.format(
+                    "Cannot delete event '%s' — %d active ticket(s) exist. " +
+                            "Cancel the event first to bulk-cancel all tickets.", id, activeTickets));
         }
 
         eventRepository.findById(id).ifPresent(eventRepository::delete);
@@ -251,53 +255,48 @@ public class EventServiceImpl implements EventService {
         return eventRepository.findByIdAndStatus(id, EventStatusEnum.PUBLISHED);
     }
 
-    // ── Sales dashboard & reports ─────────────────────────────────────────────
-
     @Override
     public Map<String, Object> getSalesDashboard(UUID organizerId, UUID eventId) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
 
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new EventNotFoundException(
-                        String.format("Event with ID '%s' not found", eventId)
-                ));
+                        String.format("Event with ID '%s' not found", eventId)));
 
         Map<String, Object> dashboard = new HashMap<>();
 
+        // FIX #5: BigDecimal accumulators replace double — prevents financial precision errors
         int totalTicketsSold = 0;
-        double totalRevenueBeforeDiscount = 0.0;
-        double totalDiscountGiven = 0.0;
-        double totalRevenueFinal = 0.0;
+        BigDecimal totalRevenueBeforeDiscount = BigDecimal.ZERO;
+        BigDecimal totalDiscountGiven = BigDecimal.ZERO;
+        BigDecimal totalRevenueFinal = BigDecimal.ZERO;
 
         List<Map<String, Object>> ticketTypeStats = new ArrayList<>();
 
         for (TicketType ticketType : event.getTicketTypes()) {
             int soldCount = ticketType.getTickets().size();
 
-            double revenueBeforeDiscount = 0.0;
-            double discountGiven = 0.0;
-            double revenueFinal = 0.0;
+            BigDecimal revenueBeforeDiscount = BigDecimal.ZERO;
+            BigDecimal discountGiven = BigDecimal.ZERO;
+            BigDecimal revenueFinal = BigDecimal.ZERO;
 
             for (Ticket ticket : ticketType.getTickets()) {
-                double originalPrice = ticket.getOriginalPrice() != null
-                        ? ticket.getOriginalPrice().doubleValue()
-                        : ticketType.getPrice();
+                BigDecimal originalPrice = ticket.getOriginalPrice() != null
+                        ? ticket.getOriginalPrice() : ticketType.getPrice();
+                BigDecimal discountAmount = ticket.getDiscountApplied() != null
+                        ? ticket.getDiscountApplied() : BigDecimal.ZERO;
+                BigDecimal pricePaid = ticket.getPricePaid() != null
+                        ? ticket.getPricePaid() : ticketType.getPrice();
 
-                double discountAmount = ticket.getDiscountApplied() != null
-                        ? ticket.getDiscountApplied().doubleValue()
-                        : 0.0;
-
-                double pricePaid = ticket.getPricePaid().doubleValue();
-
-                revenueBeforeDiscount += originalPrice;
-                discountGiven += discountAmount;
-                revenueFinal += pricePaid;
+                revenueBeforeDiscount = revenueBeforeDiscount.add(originalPrice);
+                discountGiven = discountGiven.add(discountAmount);
+                revenueFinal = revenueFinal.add(pricePaid);
             }
 
             totalTicketsSold += soldCount;
-            totalRevenueBeforeDiscount += revenueBeforeDiscount;
-            totalDiscountGiven += discountGiven;
-            totalRevenueFinal += revenueFinal;
+            totalRevenueBeforeDiscount = totalRevenueBeforeDiscount.add(revenueBeforeDiscount);
+            totalDiscountGiven = totalDiscountGiven.add(discountGiven);
+            totalRevenueFinal = totalRevenueFinal.add(revenueFinal);
 
             Map<String, Object> typeStats = new HashMap<>();
             typeStats.put("ticketTypeName", ticketType.getName());
@@ -308,7 +307,6 @@ public class EventServiceImpl implements EventService {
             typeStats.put("revenueBeforeDiscount", revenueBeforeDiscount);
             typeStats.put("discountGiven", discountGiven);
             typeStats.put("revenueFinal", revenueFinal);
-
             ticketTypeStats.add(typeStats);
         }
 
@@ -328,56 +326,74 @@ public class EventServiceImpl implements EventService {
 
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new EventNotFoundException(
-                        String.format("Event with ID '%s' not found", eventId)
-                ));
+                        String.format("Event with ID '%s' not found", eventId)));
 
-        Map<String, Object> report = new HashMap<>();
         List<Map<String, Object>> attendeesList = new ArrayList<>();
-
         for (TicketType ticketType : event.getTicketTypes()) {
             for (Ticket ticket : ticketType.getTickets()) {
-                if (ticket.getPurchaser() == null) continue; // null-safe guard
-                Map<String, Object> attendeeInfo = new HashMap<>();
-                attendeeInfo.put("attendeeName", ticket.getPurchaser().getName());
-                attendeeInfo.put("attendeeEmail", ticket.getPurchaser().getEmail());
-                attendeeInfo.put("ticketType", ticketType.getName());
-                attendeeInfo.put("ticketStatus", ticket.getStatus().toString());
-                attendeeInfo.put("purchaseDate", ticket.getCreatedAt());
-                attendeeInfo.put("validationCount", ticket.getValidations().size());
-                attendeesList.add(attendeeInfo);
+                if (ticket.getPurchaser() == null) continue;
+                Map<String, Object> info = new HashMap<>();
+                info.put("attendeeName", ticket.getPurchaser().getName());
+                info.put("attendeeEmail", ticket.getPurchaser().getEmail());
+                info.put("ticketType", ticketType.getName());
+                info.put("ticketStatus", ticket.getStatus().toString());
+                info.put("purchaseDate", ticket.getCreatedAt());
+                info.put("validationCount", ticket.getValidations().size());
+                attendeesList.add(info);
             }
         }
 
+        Map<String, Object> report = new HashMap<>();
         report.put("eventName", event.getName());
         report.put("totalAttendees", attendeesList.size());
         report.put("attendees", attendeesList);
-
         return report;
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────────
+    // ── private helpers ───────────────────────────────────────────────────────
+
+    /**
+     * Sends cancellation emails to each UNIQUE ticket holder.
+     * Uses a Set to avoid sending duplicate emails to buyers with multiple tickets.
+     */
+    private void sendCancellationEmails(Event event) {
+        try {
+            Set<UUID> notified = new HashSet<>();
+            for (TicketType tt : event.getTicketTypes()) {
+                for (Ticket ticket : tt.getTickets()) {
+                    if (ticket.getPurchaser() == null) continue;
+                    UUID purchaserId = ticket.getPurchaser().getId();
+                    if (notified.contains(purchaserId)) continue;
+                    emailService.sendEventCancellationEmail(
+                            ticket.getPurchaser().getEmail(),
+                            ticket.getPurchaser().getName(),
+                            event.getName());
+                    notified.add(purchaserId);
+                }
+            }
+            log.info("Cancellation emails sent to {} unique ticket holder(s) for event '{}'",
+                    notified.size(), event.getName());
+        } catch (Exception e) {
+            log.error("Failed to send cancellation emails for event '{}': {}",
+                    event.getId(), e.getMessage());
+        }
+    }
 
     private void emitEventCancelledAudit(UUID organizerId, Event event, int ticketsCancelled) {
         try {
             User actor = userRepository.findById(organizerId)
                     .orElseGet(systemUserProvider::getSystemUser);
-
             AuditLog auditLog = AuditLog.builder()
-                    .action(AuditAction.EVENT_CANCELLED)
-                    .actor(actor)
-                    .event(event)
-                    .resourceType("EVENT")
-                    .resourceId(event.getId())
+                    .action(AuditAction.EVENT_CANCELLED).actor(actor).event(event)
+                    .resourceType("EVENT").resourceId(event.getId())
                     .details(String.format("eventName=%s,ticketsBulkCancelled=%d",
                             event.getName(), ticketsCancelled))
                     .ipAddress(extractClientIp(getCurrentRequest()))
                     .userAgent(extractUserAgent(getCurrentRequest()))
                     .build();
-
             auditLogService.saveAuditLog(auditLog);
         } catch (Exception e) {
-            // Audit failure must never break the cancellation itself
-            log.error("Failed to emit EVENT_CANCELLED audit for event '{}': {}", event.getId(), e.getMessage());
+            log.error("Failed to emit EVENT_CANCELLED audit: {}", e.getMessage());
         }
     }
 

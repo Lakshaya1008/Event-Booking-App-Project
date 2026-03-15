@@ -35,95 +35,94 @@ import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 @AllArgsConstructor
 public class User {
 
-  @Id
-  @Column(name = "id", updatable = false, nullable = false)
-  private UUID id;
+    @Id
+    @Column(name = "id", updatable = false, nullable = false)
+    private UUID id;
 
-  @Column(name = "name", nullable = false)
-  private String name;
+    @Column(name = "name", nullable = false)
+    private String name;
 
-  @Column(name = "email", nullable = false, unique = true)
-  private String email;
+    @Column(name = "email", nullable = false, unique = true)
+    private String email;
 
-  /**
-   * Approval status for admin approval gate.
-   * Default: PENDING for new registrations.
-   * Users must be APPROVED to access protected endpoints.
-   *
-   * NOTE: Column is nullable to allow Hibernate to add it to existing tables.
-   * Application logic ensures it's never actually null via:
-   * 1. Default value in Java (PENDING)
-   * 2. DatabaseInitializer auto-approves existing users on startup
-   */
-  @Enumerated(EnumType.STRING)
-  @Column(name = "approval_status", nullable = true, columnDefinition = "VARCHAR(255) DEFAULT 'APPROVED'")
-  private ApprovalStatus approvalStatus = ApprovalStatus.PENDING;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "approval_status", nullable = true, columnDefinition = "VARCHAR(255) DEFAULT 'APPROVED'")
+    private ApprovalStatus approvalStatus = ApprovalStatus.PENDING;
 
-  /**
-   * Timestamp when the user was approved by an admin.
-   * Null if status is PENDING or REJECTED.
-   */
-  @Column(name = "approved_at")
-  private LocalDateTime approvedAt;
+    /**
+     * Timestamp when the user was approved by an admin.
+     * Only set when status transitions to APPROVED.
+     */
+    @Column(name = "approved_at")
+    private LocalDateTime approvedAt;
 
-  /**
-   * Reference to the admin user who approved this account.
-   * Null if status is PENDING or REJECTED.
-   */
-  @ManyToOne
-  @JoinColumn(name = "approved_by")
-  private User approvedBy;
+    /**
+     * FIX #7: Added rejectedAt field.
+     * Previously rejectUser() incorrectly stamped approvedAt on rejection,
+     * making approved and rejected records look identical in the database.
+     * Now: approvedAt only set on APPROVED, rejectedAt only set on REJECTED.
+     */
+    @Column(name = "rejected_at")
+    private LocalDateTime rejectedAt;
 
-  /**
-   * Reason provided by admin for rejecting the account.
-   * Only set when status is REJECTED.
-   */
-  @Column(name = "rejection_reason", length = 500)
-  private String rejectionReason;
+    /**
+     * Reference to the admin user who reviewed this account.
+     */
+    @ManyToOne
+    @JoinColumn(name = "approved_by")
+    private User approvedBy;
 
-  @OneToMany(mappedBy = "organizer", cascade = CascadeType.ALL)
-  private List<Event> organizedEvents = new ArrayList<>();
+    @Column(name = "rejection_reason", length = 500)
+    private String rejectionReason;
 
-  @OneToMany(mappedBy = "purchaser", cascade = CascadeType.ALL)
-  private List<Ticket> purchasedTickets = new ArrayList<>();
+    @OneToMany(mappedBy = "organizer", cascade = CascadeType.ALL)
+    private List<Event> organizedEvents = new ArrayList<>();
 
-  @ManyToMany
-  @JoinTable(
-      name = "user_attending_events",
-      joinColumns = @JoinColumn(name = "user_id"),
-      inverseJoinColumns = @JoinColumn(name = "event_id")
-  )
-  private List<Event> attendingEvents = new ArrayList<>();
+    @OneToMany(mappedBy = "purchaser", cascade = CascadeType.ALL)
+    private List<Ticket> purchasedTickets = new ArrayList<>();
 
-  @ManyToMany
-  @JoinTable(
-      name = "user_staffing_events",
-      joinColumns = @JoinColumn(name = "user_id"),
-      inverseJoinColumns = @JoinColumn(name = "event_id")
-  )
-  private List<Event> staffingEvents = new ArrayList<>();
+    @ManyToMany
+    @JoinTable(
+            name = "user_attending_events",
+            joinColumns = @JoinColumn(name = "user_id"),
+            inverseJoinColumns = @JoinColumn(name = "event_id")
+    )
+    private List<Event> attendingEvents = new ArrayList<>();
 
-  @CreatedDate
-  @Column(name = "created_at", updatable = false, nullable = true)
-  private LocalDateTime createdAt;
+    @ManyToMany
+    @JoinTable(
+            name = "user_staffing_events",
+            joinColumns = @JoinColumn(name = "user_id"),
+            inverseJoinColumns = @JoinColumn(name = "event_id")
+    )
+    private List<Event> staffingEvents = new ArrayList<>();
 
-  @LastModifiedDate
-  @Column(name = "updated_at", nullable = true)
-  private LocalDateTime updatedAt;
+    @CreatedDate
+    @Column(name = "created_at", updatable = false, nullable = true)
+    private LocalDateTime createdAt;
 
-  @Override
-  public boolean equals(Object o) {
-    if (o == null || getClass() != o.getClass()) {
-      return false;
+    @LastModifiedDate
+    @Column(name = "updated_at", nullable = true)
+    private LocalDateTime updatedAt;
+
+    /**
+     * FIX #14: equals/hashCode based on ID only (standard JPA practice).
+     * Previous implementation compared id, name, email, createdAt, updatedAt.
+     * If updatedAt changed between when a User was loaded and when it was compared
+     * (e.g. a flush elsewhere in the transaction), two references to the same user
+     * would compare as unequal — causing event.getStaff().contains(user) to return
+     * false and the same user to be added to staff more than once.
+     */
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof User)) return false;
+        User user = (User) o;
+        return Objects.equals(id, user.id);
     }
-    User user = (User) o;
-    return Objects.equals(id, user.id) && Objects.equals(name, user.name) && Objects.equals(email,
-        user.email) && Objects.equals(createdAt, user.createdAt) && Objects.equals(updatedAt,
-        user.updatedAt);
-  }
 
-  @Override
-  public int hashCode() {
-    return Objects.hash(id, name, email, createdAt, updatedAt);
-  }
+    @Override
+    public int hashCode() {
+        return Objects.hash(id);
+    }
 }

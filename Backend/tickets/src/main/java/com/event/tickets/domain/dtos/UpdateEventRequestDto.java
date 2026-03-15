@@ -6,6 +6,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -19,28 +20,29 @@ import lombok.NoArgsConstructor;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class UpdateEventRequestDto {
 
-  // ID is sourced from URL path parameter, not request body
-  // This field is optional and ignored if provided (defensive check in controller)
-  private UUID id;
+    // ID sourced from URL path parameter — optional in body
+    private UUID id;
 
-  @NotBlank(message = "Event name is required")
-  private String name;
+    @NotBlank(message = "Event name is required")
+    @Size(max = 200, message = "Event name must not exceed 200 characters")
+    private String name;
 
-  private LocalDateTime start;
+    private LocalDateTime start;
 
-  private LocalDateTime end;
+    private LocalDateTime end;
 
-  @NotBlank(message = "Venue information is required")
-  private String venue;
+    @NotBlank(message = "Venue information is required")
+    @Size(max = 500, message = "Venue must not exceed 500 characters")
+    private String venue;
 
-  private LocalDateTime salesStart;
+    private LocalDateTime salesStart;
 
-  private LocalDateTime salesEnd;
+    private LocalDateTime salesEnd;
 
-  @NotNull(message = "Event status must be provided")
-  private EventStatusEnum status;
+    @NotNull(message = "Event status must be provided")
+    private EventStatusEnum status;
 
-  @NotEmpty(message = "At least one ticket type is required")
-  @Valid
-  private List<UpdateTicketTypeRequestDto> ticketTypes;
+    @NotEmpty(message = "At least one ticket type is required")
+    @Valid
+    private List<UpdateTicketTypeRequestDto> ticketTypes;
 }

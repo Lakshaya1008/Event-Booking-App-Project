@@ -37,14 +37,6 @@ public class SecurityConfig {
     @Value("${cors.allow-credentials:true}")
     private boolean allowCredentials;
 
-    /**
-     * Primary security filter chain, which disables CSRF and enables stateless sessions.
-     * It also configures OAuth2 resource server with JWT authentication and custom error handling.
-     *
-     * Public endpoints:
-     * - /actuator/health/** - Health check endpoints
-     * - /api/v1/auth/register - Public registration endpoint (invite-code based)
-     */
     @Bean
     @Primary
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
@@ -53,9 +45,23 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/").permitAll()
-                        .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info", "/actuator/metrics", "/actuator/metrics/**").permitAll()
+                        .requestMatchers("/actuator/health", "/actuator/health/**",
+                                "/actuator/info", "/actuator/metrics", "/actuator/metrics/**").permitAll()
                         .requestMatchers("/actuator/**").denyAll()
-                        .requestMatchers("/api/v1/auth/register").permitAll() // Public registration endpoint
+                        .requestMatchers("/api/v1/auth/register").permitAll()
+
+                        // Swagger / OpenAPI — allow unauthenticated access to the API docs
+                        // The docs only describe the API surface — no business data is exposed here.
+                        // Remove these lines if you want Swagger locked behind authentication.
+                        .requestMatchers(
+                                "/swagger-ui.html",
+                                "/swagger-ui/**",
+                                "/api-docs",
+                                "/api-docs/**",
+                                "/v3/api-docs",
+                                "/v3/api-docs/**"
+                        ).permitAll()
+
                         .anyRequest().authenticated()
                 )
                 .oauth2ResourceServer(oauth2 -> oauth2
@@ -71,9 +77,6 @@ public class SecurityConfig {
         return http.build();
     }
 
-    /**
-     * Custom converter: extracts roles from both realm_access and resource_access.
-     */
     @Bean
     public JwtAuthenticationConverter jwtAuthenticationConverter() {
         JwtAuthenticationConverter authenticationConverter = new JwtAuthenticationConverter();
@@ -84,16 +87,11 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-
-        // Parse allowed origins from comma-separated string
         configuration.setAllowedOrigins(Arrays.asList(allowedOrigins.split(",")));
-
-        // Parse allowed methods from comma-separated string
         configuration.setAllowedMethods(Arrays.asList(allowedMethods.split(",")));
-
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setAllowCredentials(allowCredentials);
-        configuration.setMaxAge(3600L); // Cache preflight requests for 1 hour
+        configuration.setMaxAge(3600L);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);
@@ -101,37 +99,27 @@ public class SecurityConfig {
     }
 
     /**
-     * Extracts authorities from JWT claims and adds ROLE_ prefix for Spring Security.
-     *
-     * Spring Security's hasRole() method automatically prepends "ROLE_" to the role name,
-     * so we need to add the prefix here to match. For example:
-     * - JWT contains: "ORGANIZER"
-     * - We create: "ROLE_ORGANIZER"
-     * - @PreAuthorize("hasRole('ORGANIZER')") checks for: "ROLE_ORGANIZER" ✓
-     *
-     * Roles are extracted from:
-     * 1. realm_access.roles (realm-level roles)
-     * 2. resource_access.event-ticket-platform-app.roles (client-specific roles)
+     * Extracts roles from realm_access and resource_access JWT claims.
+     * Adds ROLE_ prefix for Spring Security @PreAuthorize compatibility.
      */
     private Collection<GrantedAuthority> extractAuthorities(Jwt jwt) {
         Collection<GrantedAuthority> authorities = new ArrayList<>();
 
-        // Realm roles
+        // Realm-level roles
         Map<String, Object> realmAccess = jwt.getClaim("realm_access");
         if (realmAccess != null && realmAccess.get("roles") instanceof Collection<?>) {
             for (Object role : (Collection<?>) realmAccess.get("roles")) {
-                // Add ROLE_ prefix for Spring Security compatibility
                 authorities.add(new SimpleGrantedAuthority("ROLE_" + role.toString()));
             }
         }
 
-        // Client roles (for your event-ticket-platform-app)
+        // Client-specific roles
         Map<String, Object> resourceAccess = jwt.getClaim("resource_access");
-        if (resourceAccess != null && resourceAccess.get("event-ticket-platform-app") instanceof Map<?, ?> clientAccess) {
+        if (resourceAccess != null &&
+                resourceAccess.get("event-ticket-platform-app") instanceof Map<?, ?> clientAccess) {
             Object clientRoles = clientAccess.get("roles");
             if (clientRoles instanceof Collection<?>) {
                 for (Object role : (Collection<?>) clientRoles) {
-                    // Add ROLE_ prefix for Spring Security compatibility
                     authorities.add(new SimpleGrantedAuthority("ROLE_" + role.toString()));
                 }
             }

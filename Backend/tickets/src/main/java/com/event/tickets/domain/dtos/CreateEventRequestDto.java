@@ -6,6 +6,7 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import java.time.LocalDateTime;
 import java.util.List;
 import lombok.AllArgsConstructor;
@@ -18,6 +19,7 @@ import lombok.NoArgsConstructor;
 public class CreateEventRequestDto {
 
     @NotBlank(message = "Event name is required")
+    @Size(max = 200, message = "Event name must not exceed 200 characters")
     private String name;
 
     private LocalDateTime start;
@@ -25,6 +27,7 @@ public class CreateEventRequestDto {
     private LocalDateTime end;
 
     @NotBlank(message = "Venue information is required")
+    @Size(max = 500, message = "Venue must not exceed 500 characters")
     private String venue;
 
     private LocalDateTime salesStart;
@@ -34,11 +37,6 @@ public class CreateEventRequestDto {
     @NotNull(message = "Event status must be provided")
     private EventStatusEnum status;
 
-    /**
-     * Optional venue capacity limit.
-     * When provided, total tickets sold across all ticket types cannot exceed this value.
-     * Leave null to rely solely on per-ticket-type totalAvailable limits.
-     */
     @Min(value = 1, message = "maxCapacity must be at least 1 if provided")
     private Integer maxCapacity;
 
