@@ -37,10 +37,20 @@ public class SecurityConfig {
     @Value("${cors.allow-credentials:true}")
     private boolean allowCredentials;
 
+    /**
+     * C-07 FIX: .cors(cors -> cors.configurationSource(corsConfigurationSource())) added.
+     *
+     * Previously the corsConfigurationSource() @Bean was declared but never
+     * wired into the filter chain. Spring Security 6.x requires explicit wiring
+     * via .cors() — declaring the bean alone is not enough. Without this line,
+     * all cross-origin requests were rejected (CORS headers never added),
+     * breaking every browser-based frontend.
+     */
     @Bean
     @Primary
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
+                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
@@ -49,19 +59,11 @@ public class SecurityConfig {
                                 "/actuator/info", "/actuator/metrics", "/actuator/metrics/**").permitAll()
                         .requestMatchers("/actuator/**").denyAll()
                         .requestMatchers("/api/v1/auth/register").permitAll()
-
-                        // Swagger / OpenAPI — allow unauthenticated access to the API docs
-                        // The docs only describe the API surface — no business data is exposed here.
-                        // Remove these lines if you want Swagger locked behind authentication.
                         .requestMatchers(
-                                "/swagger-ui.html",
-                                "/swagger-ui/**",
-                                "/api-docs",
-                                "/api-docs/**",
-                                "/v3/api-docs",
-                                "/v3/api-docs/**"
+                                "/swagger-ui.html", "/swagger-ui/**",
+                                "/api-docs", "/api-docs/**",
+                                "/v3/api-docs", "/v3/api-docs/**"
                         ).permitAll()
-
                         .anyRequest().authenticated()
                 )
                 .oauth2ResourceServer(oauth2 -> oauth2
@@ -79,9 +81,9 @@ public class SecurityConfig {
 
     @Bean
     public JwtAuthenticationConverter jwtAuthenticationConverter() {
-        JwtAuthenticationConverter authenticationConverter = new JwtAuthenticationConverter();
-        authenticationConverter.setJwtGrantedAuthoritiesConverter(this::extractAuthorities);
-        return authenticationConverter;
+        JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
+        converter.setJwtGrantedAuthoritiesConverter(this::extractAuthorities);
+        return converter;
     }
 
     @Bean
@@ -99,27 +101,25 @@ public class SecurityConfig {
     }
 
     /**
-     * Extracts roles from realm_access and resource_access JWT claims.
+     * Reads roles from realm_access.roles and resource_access.<client>.roles.
      * Adds ROLE_ prefix for Spring Security @PreAuthorize compatibility.
      */
     private Collection<GrantedAuthority> extractAuthorities(Jwt jwt) {
         Collection<GrantedAuthority> authorities = new ArrayList<>();
 
-        // Realm-level roles
         Map<String, Object> realmAccess = jwt.getClaim("realm_access");
-        if (realmAccess != null && realmAccess.get("roles") instanceof Collection<?>) {
-            for (Object role : (Collection<?>) realmAccess.get("roles")) {
+        if (realmAccess != null && realmAccess.get("roles") instanceof Collection<?> realmRoles) {
+            for (Object role : realmRoles) {
                 authorities.add(new SimpleGrantedAuthority("ROLE_" + role.toString()));
             }
         }
 
-        // Client-specific roles
         Map<String, Object> resourceAccess = jwt.getClaim("resource_access");
         if (resourceAccess != null &&
                 resourceAccess.get("event-ticket-platform-app") instanceof Map<?, ?> clientAccess) {
             Object clientRoles = clientAccess.get("roles");
-            if (clientRoles instanceof Collection<?>) {
-                for (Object role : (Collection<?>) clientRoles) {
+            if (clientRoles instanceof Collection<?> roles) {
+                for (Object role : roles) {
                     authorities.add(new SimpleGrantedAuthority("ROLE_" + role.toString()));
                 }
             }

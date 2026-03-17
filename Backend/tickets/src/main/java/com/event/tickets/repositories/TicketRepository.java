@@ -16,21 +16,41 @@ import org.springframework.stereotype.Repository;
 @Repository
 public interface TicketRepository extends JpaRepository<Ticket, UUID> {
 
+    /**
+     * Counts ALL tickets for a ticket type regardless of status.
+     * Used for: hard sold-count display, audit, and historical records.
+     *
+     * NOTE: For purchase availability checks and the totalAvailable guard,
+     * use countActiveByTicketTypeId() instead — CANCELLED tickets should
+     * not permanently consume slots.
+     */
     int countByTicketTypeId(UUID ticketTypeId);
+
+    /**
+     * H-06 / H-07 FIX: Counts only non-CANCELLED tickets for a ticket type.
+     *
+     * Previously purchaseTickets() and updateTicketType() both called
+     * countByTicketTypeId() which included CANCELLED tickets. This caused:
+     *   H-06: If 10 tickets were sold and 3 cancelled, only 7 real slots were
+     *         used — but the check saw 10, blocking purchase of the 8th slot
+     *         when 13 were available. Cancelled slots were permanently locked.
+     *   H-07: updateTicketType() refused to raise totalAvailable back above
+     *         the CANCELLED-inclusive count, preventing organizers from
+     *         re-opening cancelled capacity.
+     */
+    @Query("SELECT COUNT(t) FROM Ticket t " +
+            "WHERE t.ticketType.id = :ticketTypeId " +
+            "AND t.status != :excludedStatus")
+    int countActiveByTicketTypeId(
+            @Param("ticketTypeId") UUID ticketTypeId,
+            @Param("excludedStatus") TicketStatusEnum excludedStatus
+    );
 
     int countByTicketTypeEventId(UUID eventId);
 
     /**
-     * FIX #8: Count only non-CANCELLED tickets for an event.
-     *
-     * The original countByTicketTypeEventId() counted ALL tickets including CANCELLED.
-     * This meant:
-     * - deleteEventForOrganizer() was blocked even after all tickets had been
-     *   bulk-cancelled (which is the required flow before deletion).
-     * - maxCapacity checks after cancellations were overly restrictive.
-     *
-     * This query excludes tickets with the given status (pass TicketStatusEnum.CANCELLED).
-     * Used for both the event-delete guard and maxCapacity enforcement.
+     * Counts non-CANCELLED tickets for an event.
+     * Used for: event-level maxCapacity enforcement and event delete guard.
      */
     @Query("SELECT COUNT(t) FROM Ticket t " +
             "WHERE t.ticketType.event.id = :eventId " +

@@ -26,6 +26,7 @@ import com.event.tickets.services.AuthorizationService;
 import com.event.tickets.services.DiscountService;
 import com.event.tickets.services.EmailService;
 import com.event.tickets.services.QrCodeService;
+import com.event.tickets.services.SystemUserProvider;
 import com.event.tickets.services.TicketTypeService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.transaction.Transactional;
@@ -45,19 +46,16 @@ import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
 
 /**
- * Ticket Type Service Implementation
+ * H-06 FIX: purchaseTickets() per-type availability check now uses
+ * countActiveByTicketTypeId() (excludes CANCELLED) instead of countByTicketTypeId().
+ * Previously, cancelled tickets permanently consumed slots — 100 available,
+ * 10 sold, 3 cancelled still showed 10 used, blocking the 8th slot when only 7 remain.
  *
- * FIX #9: updateTicketType() now blocks setting totalAvailable below
- * the number of tickets already sold.
+ * H-07 FIX: updateTicketType() sold-guard now uses countActiveByTicketTypeId().
+ * Previously organizers could not raise totalAvailable back above the
+ * CANCELLED-inclusive count even when real demand justified it.
  *
- * FIX #11: Removed redundant second ticketRepository.save(savedTicket) inside
- * the purchase loop. generateQrCode() does not modify the ticket, so the
- * re-save was a no-op UPDATE statement on every ticket purchased.
- *
- * FIX #15: Price is now BigDecimal throughout — the old BigDecimal.valueOf(ticketType.getPrice())
- * conversion from Double is gone since TicketType.price is now BigDecimal directly.
- *
- * EMAIL: sends ticket confirmation email after successful purchase.
+ * M-08 FIX: TICKET_PURCHASED AuditAction is now emitted after every purchase.
  */
 @Service
 @RequiredArgsConstructor
@@ -73,48 +71,70 @@ public class TicketTypeServiceImpl implements TicketTypeService {
     private final DiscountService discountService;
     private final AuditLogService auditLogService;
     private final EmailService emailService;
+    private final SystemUserProvider systemUserProvider;
 
     @Override
     @Transactional
     public List<Ticket> purchaseTickets(UUID userId, UUID ticketTypeId, int quantity) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new UserNotFoundException(
-                        String.format("User with ID %s was not found", userId)));
+        // FIX #3: Add audit logging for failed operations
+        HttpServletRequest request = getCurrentRequest();
+        String clientIp = extractClientIp(request);
+        String userAgent = extractUserAgent(request);
 
-        // Pessimistic lock — prevents concurrent overselling
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> {
+                    auditPurchaseFailure(userId, null, "USER_NOT_FOUND", clientIp, userAgent);
+                    return new UserNotFoundException(
+                            String.format("User with ID %s was not found", userId));
+                });
+
         TicketType ticketType = ticketTypeRepository.findByIdWithLock(ticketTypeId)
-                .orElseThrow(() -> new TicketTypeNotFoundException(
-                        String.format("Ticket type with ID %s was not found", ticketTypeId)));
+                .orElseThrow(() -> {
+                    auditPurchaseFailure(userId, null, "TICKET_TYPE_NOT_FOUND", clientIp, userAgent);
+                    return new TicketTypeNotFoundException(
+                            String.format("Ticket type with ID %s was not found", ticketTypeId));
+                });
 
         Event event = ticketType.getEvent();
 
         if (!EventStatusEnum.PUBLISHED.equals(event.getStatus())) {
             String reason = EventStatusEnum.CANCELLED.equals(event.getStatus())
+                    ? "EVENT_CANCELLED"
+                    : "EVENT_NOT_PUBLISHED";
+            auditPurchaseFailure(userId, event, reason, clientIp, userAgent);
+            throw new InvalidBusinessStateException(
+                    EventStatusEnum.CANCELLED.equals(event.getStatus())
                     ? "This event has been cancelled."
-                    : "Tickets are not available — the event is not open for sales.";
-            throw new InvalidBusinessStateException(reason);
+                    : "Tickets are not available — the event is not open for sales.");
         }
 
         LocalDateTime now = LocalDateTime.now();
         if (event.getSalesStart() != null && now.isBefore(event.getSalesStart())) {
+            auditPurchaseFailure(userId, event, "SALES_NOT_STARTED", clientIp, userAgent);
             throw new InvalidBusinessStateException(
                     String.format("Sales have not started yet. Sales open at %s.", event.getSalesStart()));
         }
         if (event.getSalesEnd() != null && now.isAfter(event.getSalesEnd())) {
+            auditPurchaseFailure(userId, event, "SALES_CLOSED", clientIp, userAgent);
             throw new InvalidBusinessStateException(
                     String.format("Sales have closed. Sales ended at %s.", event.getSalesEnd()));
         }
 
-        int purchasedForType = ticketRepository.countByTicketTypeId(ticketType.getId());
-        if (purchasedForType + quantity > ticketType.getTotalAvailable()) {
+        // H-06 FIX: use countActiveByTicketTypeId — CANCELLED slots are freed back up
+        int activeForType = ticketRepository.countActiveByTicketTypeId(
+                ticketType.getId(), TicketStatusEnum.CANCELLED);
+        // NEW FIX: null totalAvailable means unlimited — treat as no cap
+        if (ticketType.getTotalAvailable() != null
+                && activeForType + quantity > ticketType.getTotalAvailable()) {
+            auditPurchaseFailure(userId, event, "SOLD_OUT_TICKET_TYPE", clientIp, userAgent);
             throw new TicketsSoldOutException();
         }
 
-        // FIX #8 (also in EventServiceImpl): use countActiveTicketsByEventId for capacity cap
         if (event.getMaxCapacity() != null) {
             int totalSold = ticketRepository.countActiveTicketsByEventId(
                     event.getId(), TicketStatusEnum.CANCELLED);
             if (totalSold + quantity > event.getMaxCapacity()) {
+                auditPurchaseFailure(userId, event, "SOLD_OUT_EVENT", clientIp, userAgent);
                 throw new TicketsSoldOutException(String.format(
                         "Event venue capacity of %d reached. Only %d ticket(s) remaining.",
                         event.getMaxCapacity(), event.getMaxCapacity() - totalSold));
@@ -128,16 +148,13 @@ public class TicketTypeServiceImpl implements TicketTypeService {
             emitOrganizerSelfPurchaseAudit(user, event, quantity);
         }
 
-        // FIX #15: ticketType.getPrice() is now BigDecimal — no valueOf() conversion needed
         BigDecimal basePrice = ticketType.getPrice();
         Optional<Discount> activeDiscount = discountService.findActiveDiscount(ticketTypeId);
 
         BigDecimal finalPrice;
         BigDecimal discountAmount;
-
         if (activeDiscount.isPresent()) {
-            Discount discount = activeDiscount.get();
-            finalPrice = discountService.calculateFinalPrice(basePrice, discount);
+            finalPrice = discountService.calculateFinalPrice(basePrice, activeDiscount.get());
             discountAmount = basePrice.subtract(finalPrice);
         } else {
             finalPrice = basePrice;
@@ -153,22 +170,18 @@ public class TicketTypeServiceImpl implements TicketTypeService {
             ticket.setOriginalPrice(basePrice);
             ticket.setPricePaid(finalPrice);
             ticket.setDiscountApplied(discountAmount);
-
             Ticket savedTicket = ticketRepository.save(ticket);
             qrCodeService.generateQrCode(savedTicket);
-            // FIX #11: removed second redundant save() — generateQrCode does not modify
-            // the ticket object, so re-saving produced a no-op UPDATE on every ticket
             createdTickets.add(savedTicket);
         }
 
-        // Send confirmation email to purchaser
+        // M-08 FIX: emit TICKET_PURCHASED audit
+        emitTicketPurchasedAudit(user, event, ticketType, quantity);
+
         emailService.sendTicketConfirmationEmail(
-                user.getEmail(),
-                user.getName(),
-                event.getName(),
-                ticketType.getName(),
-                quantity,
-                createdTickets.get(0).getId());
+                user.getEmail(), user.getName(),
+                event.getName(), ticketType.getName(),
+                quantity, createdTickets.get(0).getId());
 
         return createdTickets;
     }
@@ -232,13 +245,14 @@ public class TicketTypeServiceImpl implements TicketTypeService {
                 .orElseThrow(() -> new TicketTypeNotFoundException(
                         String.format("Ticket type '%s' not found for event '%s'", ticketTypeId, eventId)));
 
-        // FIX #9: Block reducing totalAvailable below already-sold count
+        // H-07 FIX: use countActiveByTicketTypeId — CANCELLED tickets do not block raising totalAvailable
         if (request.getTotalAvailable() != null) {
-            int alreadySold = ticketRepository.countByTicketTypeId(ticketTypeId);
-            if (request.getTotalAvailable() < alreadySold) {
+            int activeAlreadySold = ticketRepository.countActiveByTicketTypeId(
+                    ticketTypeId, TicketStatusEnum.CANCELLED);
+            if (request.getTotalAvailable() < activeAlreadySold) {
                 throw new InvalidBusinessStateException(String.format(
-                        "Cannot set totalAvailable to %d — %d ticket(s) already sold.",
-                        request.getTotalAvailable(), alreadySold));
+                        "Cannot set totalAvailable to %d — %d active (non-cancelled) ticket(s) already sold.",
+                        request.getTotalAvailable(), activeAlreadySold));
             }
         }
 
@@ -265,14 +279,14 @@ public class TicketTypeServiceImpl implements TicketTypeService {
 
     private void emitOrganizerSelfPurchaseAudit(User organizer, Event event, int quantity) {
         try {
+            HttpServletRequest request = getCurrentRequest();
             AuditLog auditLog = AuditLog.builder()
                     .action(AuditAction.ORGANIZER_SELF_PURCHASE)
-                    .actor(organizer).targetUser(organizer).event(event)
-                    .resourceType("TICKET")
-                    .details(String.format("organizerId=%s,eventId=%s,quantity=%d",
-                            organizer.getId(), event.getId(), quantity))
-                    .ipAddress(extractClientIp(getCurrentRequest()))
-                    .userAgent(extractUserAgent(getCurrentRequest()))
+                    .actor(organizer).event(event)
+                    .resourceType("TICKET").resourceId(event.getId())
+                    .details(String.format("quantity=%d,eventName=%s", quantity, event.getName()))
+                    .ipAddress(extractClientIpSafely(request))
+                    .userAgent(extractUserAgentSafely(request))
                     .build();
             auditLogService.saveAuditLog(auditLog);
         } catch (Exception e) {
@@ -280,9 +294,64 @@ public class TicketTypeServiceImpl implements TicketTypeService {
         }
     }
 
+    private void emitTicketPurchasedAudit(User buyer, Event event, TicketType ticketType, int quantity) {
+        try {
+            HttpServletRequest request = getCurrentRequest();
+            AuditLog auditLog = AuditLog.builder()
+                    .action(AuditAction.TICKET_PURCHASED)
+                    .actor(buyer).targetUser(buyer).event(event)
+                    .resourceType("TICKET").resourceId(event.getId())
+                    .details(String.format("ticketType=%s,quantity=%d", ticketType.getName(), quantity))
+                    .ipAddress(extractClientIpSafely(request))
+                    .userAgent(extractUserAgentSafely(request))
+                    .build();
+            auditLogService.saveAuditLog(auditLog);
+        } catch (Exception e) {
+            log.error("Failed to emit TICKET_PURCHASED audit: {}", e.getMessage());
+        }
+    }
+
+    // NEW: Helper to audit purchase failures
+    private void auditPurchaseFailure(UUID userId, Event event, String reason,
+                                      String clientIp, String userAgent) {
+        try {
+            User actor = userId != null ?
+                userRepository.findById(userId).orElse(systemUserProvider.getSystemUser()) :
+                systemUserProvider.getSystemUser();
+
+            AuditLog auditLog = AuditLog.builder()
+                    .action(AuditAction.TICKET_PURCHASE_FAILED)
+                    .actor(actor)
+                    .event(event)
+                    .resourceType("TICKET")
+                    .details("reason=" + reason + ",quantity=unknown")
+                    .ipAddress(clientIp != null ? clientIp : "unknown")
+                    .userAgent(userAgent != null ? userAgent : "unknown")
+                    .build();
+            auditLogService.saveAuditLog(auditLog);
+        } catch (Exception e) {
+            log.error("Failed to emit purchase failure audit: {}", e.getMessage());
+        }
+    }
+
     private HttpServletRequest getCurrentRequest() {
         ServletRequestAttributes attributes =
                 (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
         return attributes != null ? attributes.getRequest() : null;
+    }
+
+    // NEW: Safe extraction for audit logging - never returns null
+    private String extractClientIpSafely(HttpServletRequest request) {
+        if (request == null) {
+            return "unknown";
+        }
+        return extractClientIp(request);
+    }
+
+    private String extractUserAgentSafely(HttpServletRequest request) {
+        if (request == null) {
+            return "unknown";
+        }
+        return extractUserAgent(request);
     }
 }

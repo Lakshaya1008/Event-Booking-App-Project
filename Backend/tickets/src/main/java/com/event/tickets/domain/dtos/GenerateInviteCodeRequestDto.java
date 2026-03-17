@@ -10,25 +10,32 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * Request DTO for generating an invite code.
+ * H-10 FIX: @Pattern now includes ADMIN.
  *
- * Used by ADMIN for global roles or ORGANIZER for event-staff invites.
+ * Previously: regexp = "^(ORGANIZER|ATTENDEE|STAFF)$"
+ * Any POST to /api/v1/invites with roleName:"ADMIN" returned HTTP 400 with
+ * "Role must be one of: ORGANIZER, ATTENDEE, STAFF" — even for ADMIN users.
+ * ADMINs could never create ADMIN-role invite codes via the API.
+ *
+ * The authorization check (only ADMINs can create ADMIN invites) is enforced
+ * in InviteCodeController.validateInviteCreation() — the DTO validation only
+ * needs to reject completely invalid role names.
  */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 public class GenerateInviteCodeRequestDto {
 
-  @NotBlank(message = "Role name is required")
-  @Pattern(
-      regexp = "^(ORGANIZER|ATTENDEE|STAFF)$",
-      message = "Role must be one of: ORGANIZER, ATTENDEE, STAFF"
-  )
-  private String roleName;
+    @NotBlank(message = "Role name is required")
+    @Pattern(
+            regexp = "^(ADMIN|ORGANIZER|ATTENDEE|STAFF)$",
+            message = "Role must be one of: ADMIN, ORGANIZER, ATTENDEE, STAFF"
+    )
+    private String roleName;
 
-  private UUID eventId; // Required only for STAFF role
+    private UUID eventId; // Required only for STAFF role
 
-  @NotNull(message = "Expiration hours is required")
-  @Positive(message = "Expiration hours must be positive")
-  private Integer expirationHours;
+    @NotNull(message = "Expiration hours is required")
+    @Positive(message = "Expiration hours must be positive")
+    private Integer expirationHours;
 }

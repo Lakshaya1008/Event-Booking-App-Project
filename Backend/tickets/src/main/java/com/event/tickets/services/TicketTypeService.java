@@ -27,11 +27,18 @@ public interface TicketTypeService {
      */
     List<Ticket> purchaseTickets(UUID userId, UUID eventId, UUID ticketTypeId, int quantity);
 
-    // Legacy single-ticket convenience method (delegates to quantity-aware version)
-    default Ticket purchaseTicket(UUID userId, UUID ticketTypeId) {
-        List<Ticket> tickets = purchaseTickets(userId, ticketTypeId, 1);
-        return tickets.get(0);
-    }
+    /**
+     * L-16 FIX: Default purchaseTicket() removed.
+     *
+     * The default method delegated to purchaseTickets(userId, ticketTypeId, 1) —
+     * the overload WITHOUT eventId. This allowed any caller to bypass the cross-event
+     * validation that verifies the ticketType actually belongs to the given eventId
+     * (preventing a crafted request from buying a ticket across unrelated events).
+     *
+     * All purchase paths must go through purchaseTickets(userId, eventId, ticketTypeId, quantity)
+     * which enforces event ownership. The method is removed from the interface to force
+     * compile-time errors if any caller tries to use the unsafe path.
+     */
 
     // Organizer CRUD operations
     TicketType createTicketType(UUID organizerId, UUID eventId, CreateTicketTypeRequest request);

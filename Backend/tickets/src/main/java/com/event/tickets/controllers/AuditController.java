@@ -93,6 +93,7 @@ public class AuditController {
                 .resourceId(auditLog.getResourceId())
                 .details(auditLog.getDetails())
                 .ipAddress(auditLog.getIpAddress())
+                .userAgent(auditLog.getUserAgent()) // L-19 FIX: was never mapped
                 .createdAt(auditLog.getCreatedAt())
                 .build();
     }

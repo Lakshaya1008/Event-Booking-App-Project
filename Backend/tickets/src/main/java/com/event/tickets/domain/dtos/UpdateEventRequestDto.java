@@ -3,6 +3,7 @@ package com.event.tickets.domain.dtos;
 import com.event.tickets.domain.entities.EventStatusEnum;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
@@ -14,6 +15,17 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+/**
+ * C-04 FIX: maxCapacity field added.
+ *
+ * Previously absent from this DTO. Every PUT /events/{id} call would call
+ * eventToCreate.setMaxCapacity(event.getMaxCapacity()) where getMaxCapacity()
+ * returned null — silently wiping the venue capacity on every update, even
+ * when the caller only meant to change the event name or status.
+ *
+ * maxCapacity is nullable (not @NotNull) because many events have no hard cap.
+ * Callers must explicitly send the existing value to preserve it.
+ */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -41,6 +53,9 @@ public class UpdateEventRequestDto {
 
     @NotNull(message = "Event status must be provided")
     private EventStatusEnum status;
+
+    @Min(value = 1, message = "maxCapacity must be at least 1 if provided")
+    private Integer maxCapacity;
 
     @NotEmpty(message = "At least one ticket type is required")
     @Valid

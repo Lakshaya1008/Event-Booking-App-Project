@@ -86,7 +86,14 @@ public class DataInitializer implements ApplicationRunner {
                 }
             }
 
-            ticketRepository.saveAll(ticketsNeedingUpdate);
+            // L-08 FIX: only save tickets that were actually updated (not skipped via continue).
+            // saveAll(ticketsNeedingUpdate) was issuing UPDATE for every ticket in the list,
+            // including ones skipped when ticketType/price was null.
+            List<Ticket> actuallyUpdated = ticketsNeedingUpdate.stream()
+                    .filter(t -> t.getPricePaid() != null && t.getOriginalPrice() != null
+                            && t.getDiscountApplied() != null)
+                    .toList();
+            ticketRepository.saveAll(actuallyUpdated);
             log.info("Successfully backfilled pricing data for {} tickets", updatedCount);
 
         } catch (Exception ex) {

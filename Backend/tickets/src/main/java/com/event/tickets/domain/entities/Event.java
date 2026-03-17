@@ -104,21 +104,14 @@ public class Event {
 
     @Override
     public boolean equals(Object o) {
-        if (o == null || getClass() != o.getClass()) {
-            return false;
-        }
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
         Event event = (Event) o;
-        return Objects.equals(id, event.id) && Objects.equals(name, event.name)
-                && Objects.equals(start, event.start) && Objects.equals(end, event.end)
-                && Objects.equals(venue, event.venue) && Objects.equals(salesStart, event.salesStart)
-                && Objects.equals(salesEnd, event.salesEnd) && status == event.status
-                && Objects.equals(maxCapacity, event.maxCapacity)
-                && Objects.equals(createdAt, event.createdAt) && Objects.equals(updatedAt, event.updatedAt);
+        return java.util.Objects.equals(id, event.id);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(id, name, start, end, venue, salesStart, salesEnd, status, maxCapacity,
-                createdAt, updatedAt);
+        return java.util.Objects.hash(id);
     }
 }

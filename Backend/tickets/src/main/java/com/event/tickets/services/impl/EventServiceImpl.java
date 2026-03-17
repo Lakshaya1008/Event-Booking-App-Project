@@ -51,24 +51,24 @@ import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
 
 /**
- * Event Service Implementation
+ * H-01 FIX: salesEnd guard now uses countActiveTicketsByEventId (excludes CANCELLED).
+ * Previously used countByTicketTypeEventId which included CANCELLED tickets —
+ * an event where all tickets were cancelled still blocked the salesEnd update.
  *
- * FIX #3: Ticket type removal in updateEventForOrganizer now checks for sold
- * tickets before allowing the removal. Previously, omitting a ticket type from
- * the update request silently cascade-deleted all its sold ticket records.
+ * H-05 FIX: getSalesDashboard and getAttendeesReport now skip CANCELLED tickets.
+ * Previously getTickets().size() and the revenue loop included CANCELLED tickets,
+ * inflating sold counts and revenue totals.
  *
- * FIX #5: getSalesDashboard revenue calculation uses BigDecimal instead of
- * double — prevents floating-point precision errors in financial totals.
+ * M-01 FIX: createEvent and updateEvent now validate date ordering.
+ * end must be after start; salesEnd must be after salesStart when both are set.
  *
- * FIX #8: deleteEventForOrganizer and maxCapacity checks now use
- * countActiveTicketsByEventId (excludes CANCELLED) instead of countByTicketTypeEventId
- * (counts all). Previously blocked deletion even after all tickets were cancelled.
+ * M-02 FIX: removeIf guard now counts only active (non-CANCELLED) tickets.
+ * Previously getTickets().isEmpty() included CANCELLED tickets, blocking removal
+ * of a ticket type where all sold tickets had been cancelled.
  *
- * FIX #16: updateEventForOrganizer now blocks setting maxCapacity below
- * the currently sold (non-cancelled) ticket count.
- *
- * EMAIL: sends cancellation notice to each unique ticket holder when an event
- * is cancelled. Uses a Set to avoid duplicate emails for multi-ticket buyers.
+ * M-08 FIX: EVENT_CREATED and EVENT_UPDATED AuditActions are now emitted.
+ * These were defined in the enum but never used — organizer event operations
+ * left no audit trail except EVENT_CANCELLED.
  */
 @Service
 @RequiredArgsConstructor
@@ -89,6 +89,10 @@ public class EventServiceImpl implements EventService {
         User organizer = userRepository.findById(organizerId)
                 .orElseThrow(() -> new UserNotFoundException(
                         String.format("User with ID '%s' not found", organizerId)));
+
+        // M-01 FIX: validate date ordering on create
+        validateDateOrdering(event.getStart(), event.getEnd(),
+                event.getSalesStart(), event.getSalesEnd());
 
         Event eventToCreate = new Event();
 
@@ -113,7 +117,13 @@ public class EventServiceImpl implements EventService {
         eventToCreate.setOrganizer(organizer);
         eventToCreate.setTicketTypes(ticketTypes);
 
-        return eventRepository.save(eventToCreate);
+        Event saved = eventRepository.save(eventToCreate);
+
+        // M-08 FIX: emit EVENT_CREATED audit
+        emitEventAudit(AuditAction.EVENT_CREATED, organizerId, saved,
+                "eventName=" + saved.getName());
+
+        return saved;
     }
 
     @Override
@@ -121,10 +131,15 @@ public class EventServiceImpl implements EventService {
         return eventRepository.findByOrganizerId(organizerId, pageable);
     }
 
+    /**
+     * L-26 FIX: Uses findByIdAndOrganizerId() — single DB call instead of two.
+     * Previously called requireOrganizerAccess() (which fetches the event) then
+     * findById() (which fetches it again). EventRepository already has a
+     * findByIdAndOrganizerId query that does ownership + fetch atomically.
+     */
     @Override
     public Optional<Event> getEventForOrganizer(UUID organizerId, UUID id) {
-        authorizationService.requireOrganizerAccess(organizerId, id);
-        return eventRepository.findById(id);
+        return eventRepository.findByIdAndOrganizerId(id, organizerId);
     }
 
     @Override
@@ -139,14 +154,27 @@ public class EventServiceImpl implements EventService {
                 .orElseThrow(() -> new EventNotFoundException(
                         String.format("Event with ID '%s' does not exist", id)));
 
-        if (event.getSalesEnd() != null
-                && event.getSalesEnd().isBefore(LocalDateTime.now())
-                && ticketRepository.countByTicketTypeEventId(id) > 0) {
+        // ENHANCED FIX: Block ALL modifications to cancelled events
+        if (EventStatusEnum.CANCELLED.equals(existingEvent.getStatus())) {
             throw new InvalidBusinessStateException(
-                    "Cannot set salesEnd to a past date when tickets have already been sold.");
+                    "Cannot modify a cancelled event. " +
+                    "All tickets for this event have been permanently cancelled " +
+                    "and cannot be restored. " +
+                    "To run a new event, please create a new event instead.");
         }
 
-        // FIX #16: maxCapacity cannot go below currently sold (non-cancelled) count
+        // M-01 FIX: validate date ordering on update
+        validateDateOrdering(event.getStart(), event.getEnd(),
+                event.getSalesStart(), event.getSalesEnd());
+
+        // H-01 FIX: use countActiveTicketsByEventId (excludes CANCELLED)
+        if (event.getSalesEnd() != null
+                && event.getSalesEnd().isBefore(LocalDateTime.now())
+                && ticketRepository.countActiveTicketsByEventId(id, TicketStatusEnum.CANCELLED) > 0) {
+            throw new InvalidBusinessStateException(
+                    "Cannot set salesEnd to a past date when active tickets have already been sold.");
+        }
+
         if (event.getMaxCapacity() != null) {
             int activeSold = ticketRepository.countActiveTicketsByEventId(id, TicketStatusEnum.CANCELLED);
             if (event.getMaxCapacity() < activeSold) {
@@ -158,6 +186,19 @@ public class EventServiceImpl implements EventService {
 
         boolean becomingCancelled = EventStatusEnum.CANCELLED.equals(event.getStatus())
                 && !EventStatusEnum.CANCELLED.equals(existingEvent.getStatus());
+
+        // NEW FIX: Block re-publishing a cancelled event.
+        // When an event is cancelled, all tickets are bulk-cancelled. Re-publishing
+        // would allow new purchases but those old cancelled tickets would NOT be
+        // restored — creating a confusing state where prior attendees can't enter
+        // while new buyers can. Organizers should create a new event instead.
+        if (EventStatusEnum.CANCELLED.equals(existingEvent.getStatus())
+                && !EventStatusEnum.CANCELLED.equals(event.getStatus())) {
+            throw new InvalidBusinessStateException(
+                    "Cannot change status of a cancelled event. " +
+                            "All tickets were cancelled with the event. " +
+                            "Please create a new event instead.");
+        }
 
         existingEvent.setName(event.getName());
         existingEvent.setStart(event.getStart());
@@ -173,14 +214,17 @@ public class EventServiceImpl implements EventService {
                 .filter(Objects::nonNull)
                 .collect(Collectors.toSet());
 
-        // FIX #3: Guard against removing ticket types that have sold tickets
+        // M-02 FIX: count only active (non-CANCELLED) tickets before blocking removal
         existingEvent.getTicketTypes().removeIf(tt -> {
             if (requestIds.contains(tt.getId())) return false;
-            if (!tt.getTickets().isEmpty()) {
+            long activeSoldForType = tt.getTickets().stream()
+                    .filter(t -> !TicketStatusEnum.CANCELLED.equals(t.getStatus()))
+                    .count();
+            if (activeSoldForType > 0) {
                 throw new InvalidBusinessStateException(String.format(
-                        "Cannot remove ticket type '%s' — %d ticket(s) already sold. " +
+                        "Cannot remove ticket type '%s' — %d active ticket(s) already sold. " +
                                 "Set totalAvailable to 0 to stop sales instead.",
-                        tt.getName(), tt.getTickets().size()));
+                        tt.getName(), activeSoldForType));
             }
             return true;
         });
@@ -211,6 +255,10 @@ public class EventServiceImpl implements EventService {
 
         Event savedEvent = eventRepository.save(existingEvent);
 
+        // M-08 FIX: emit EVENT_UPDATED audit
+        emitEventAudit(AuditAction.EVENT_UPDATED, organizerId, savedEvent,
+                "eventName=" + savedEvent.getName() + ",status=" + savedEvent.getStatus());
+
         if (becomingCancelled) {
             int cancelledCount = ticketRepository.bulkUpdateStatusByEventId(
                     id, TicketStatusEnum.PURCHASED, TicketStatusEnum.CANCELLED);
@@ -227,9 +275,6 @@ public class EventServiceImpl implements EventService {
     public void deleteEventForOrganizer(UUID organizerId, UUID id) {
         authorizationService.requireOrganizerAccess(organizerId, id);
 
-        // FIX #8: use countActiveTicketsByEventId (excludes CANCELLED) instead of
-        // countByTicketTypeEventId (counts all). Previously blocked deletion even
-        // after an organizer had correctly cancelled the event (bulk-cancelling tickets).
         int activeTickets = ticketRepository.countActiveTicketsByEventId(id, TicketStatusEnum.CANCELLED);
         if (activeTickets > 0) {
             throw new InvalidBusinessStateException(String.format(
@@ -237,7 +282,12 @@ public class EventServiceImpl implements EventService {
                             "Cancel the event first to bulk-cancel all tickets.", id, activeTickets));
         }
 
-        eventRepository.findById(id).ifPresent(eventRepository::delete);
+        // M-08 FIX: emit EVENT_DELETED audit before deletion
+        eventRepository.findById(id).ifPresent(event -> {
+            emitEventAudit(AuditAction.EVENT_DELETED, organizerId, event,
+                    "eventName=" + event.getName());
+            eventRepository.delete(event);
+        });
     }
 
     @Override
@@ -265,7 +315,6 @@ public class EventServiceImpl implements EventService {
 
         Map<String, Object> dashboard = new HashMap<>();
 
-        // FIX #5: BigDecimal accumulators replace double — prevents financial precision errors
         int totalTicketsSold = 0;
         BigDecimal totalRevenueBeforeDiscount = BigDecimal.ZERO;
         BigDecimal totalDiscountGiven = BigDecimal.ZERO;
@@ -274,13 +323,17 @@ public class EventServiceImpl implements EventService {
         List<Map<String, Object>> ticketTypeStats = new ArrayList<>();
 
         for (TicketType ticketType : event.getTicketTypes()) {
-            int soldCount = ticketType.getTickets().size();
+            // H-05 FIX: only count and sum non-CANCELLED tickets
+            List<Ticket> activeTickets = ticketType.getTickets().stream()
+                    .filter(t -> !TicketStatusEnum.CANCELLED.equals(t.getStatus()))
+                    .toList();
 
+            int soldCount = activeTickets.size();
             BigDecimal revenueBeforeDiscount = BigDecimal.ZERO;
             BigDecimal discountGiven = BigDecimal.ZERO;
             BigDecimal revenueFinal = BigDecimal.ZERO;
 
-            for (Ticket ticket : ticketType.getTickets()) {
+            for (Ticket ticket : activeTickets) {
                 BigDecimal originalPrice = ticket.getOriginalPrice() != null
                         ? ticket.getOriginalPrice() : ticketType.getPrice();
                 BigDecimal discountAmount = ticket.getDiscountApplied() != null
@@ -330,8 +383,10 @@ public class EventServiceImpl implements EventService {
 
         List<Map<String, Object>> attendeesList = new ArrayList<>();
         for (TicketType ticketType : event.getTicketTypes()) {
+            // H-05 FIX: skip CANCELLED tickets in attendees report too
             for (Ticket ticket : ticketType.getTickets()) {
                 if (ticket.getPurchaser() == null) continue;
+                if (TicketStatusEnum.CANCELLED.equals(ticket.getStatus())) continue;
                 Map<String, Object> info = new HashMap<>();
                 info.put("attendeeName", ticket.getPurchaser().getName());
                 info.put("attendeeEmail", ticket.getPurchaser().getEmail());
@@ -353,9 +408,21 @@ public class EventServiceImpl implements EventService {
     // ── private helpers ───────────────────────────────────────────────────────
 
     /**
-     * Sends cancellation emails to each UNIQUE ticket holder.
-     * Uses a Set to avoid sending duplicate emails to buyers with multiple tickets.
+     * M-01 FIX: Validates that start < end and salesStart < salesEnd when provided.
+     * Previously createEvent and updateEvent accepted impossible date ranges silently.
      */
+    private void validateDateOrdering(LocalDateTime start, LocalDateTime end,
+                                      LocalDateTime salesStart, LocalDateTime salesEnd) {
+        if (start != null && end != null && !end.isAfter(start)) {
+            throw new InvalidBusinessStateException(
+                    "Event end date must be after start date.");
+        }
+        if (salesStart != null && salesEnd != null && !salesEnd.isAfter(salesStart)) {
+            throw new InvalidBusinessStateException(
+                    "Sales end date must be after sales start date.");
+        }
+    }
+
     private void sendCancellationEmails(Event event) {
         try {
             Set<UUID> notified = new HashSet<>();
@@ -371,7 +438,7 @@ public class EventServiceImpl implements EventService {
                     notified.add(purchaserId);
                 }
             }
-            log.info("Cancellation emails sent to {} unique ticket holder(s) for event '{}'",
+            log.info("Cancellation emails sent to {} unique holder(s) for event '{}'",
                     notified.size(), event.getName());
         } catch (Exception e) {
             log.error("Failed to send cancellation emails for event '{}': {}",
@@ -383,13 +450,14 @@ public class EventServiceImpl implements EventService {
         try {
             User actor = userRepository.findById(organizerId)
                     .orElseGet(systemUserProvider::getSystemUser);
+            HttpServletRequest request = getCurrentRequest();
             AuditLog auditLog = AuditLog.builder()
                     .action(AuditAction.EVENT_CANCELLED).actor(actor).event(event)
                     .resourceType("EVENT").resourceId(event.getId())
                     .details(String.format("eventName=%s,ticketsBulkCancelled=%d",
                             event.getName(), ticketsCancelled))
-                    .ipAddress(extractClientIp(getCurrentRequest()))
-                    .userAgent(extractUserAgent(getCurrentRequest()))
+                    .ipAddress(extractClientIpSafely(request))
+                    .userAgent(extractUserAgentSafely(request))
                     .build();
             auditLogService.saveAuditLog(auditLog);
         } catch (Exception e) {
@@ -397,9 +465,42 @@ public class EventServiceImpl implements EventService {
         }
     }
 
+    /** M-08 FIX: Generic audit emitter for EVENT_CREATED, EVENT_UPDATED, EVENT_DELETED. */
+    private void emitEventAudit(AuditAction action, UUID organizerId, Event event, String details) {
+        try {
+            User actor = userRepository.findById(organizerId)
+                    .orElseGet(systemUserProvider::getSystemUser);
+            AuditLog auditLog = AuditLog.builder()
+                    .action(action).actor(actor).event(event)
+                    .resourceType("EVENT").resourceId(event.getId())
+                    .details(details)
+                    .ipAddress(extractClientIp(getCurrentRequest()))
+                    .userAgent(extractUserAgent(getCurrentRequest()))
+                    .build();
+            auditLogService.saveAuditLog(auditLog);
+        } catch (Exception e) {
+            log.error("Failed to emit {} audit for event {}: {}", action, event.getId(), e.getMessage());
+        }
+    }
+
     private HttpServletRequest getCurrentRequest() {
         ServletRequestAttributes attributes =
                 (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
         return attributes != null ? attributes.getRequest() : null;
+    }
+
+    // NEW: Safe extraction for audit logging - never returns null
+    private String extractClientIpSafely(HttpServletRequest request) {
+        if (request == null) {
+            return "unknown";
+        }
+        return extractClientIp(request);
+    }
+
+    private String extractUserAgentSafely(HttpServletRequest request) {
+        if (request == null) {
+            return "unknown";
+        }
+        return extractUserAgent(request);
     }
 }

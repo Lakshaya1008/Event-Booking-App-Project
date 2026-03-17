@@ -1,5 +1,6 @@
 package com.event.tickets.controllers;
 
+import static com.event.tickets.util.JwtUtil.parseUserId;
 import com.event.tickets.domain.dtos.CreateDiscountRequestDto;
 import com.event.tickets.domain.dtos.DiscountResponseDto;
 import com.event.tickets.domain.entities.Discount;
@@ -49,181 +50,186 @@ import org.springframework.web.bind.annotation.RestController;
 @Slf4j
 public class DiscountController {
 
-  private final DiscountService discountService;
-  private final DiscountMapper discountMapper;
+    private final DiscountService discountService;
+    private final DiscountMapper discountMapper;
 
-  /**
-   * Creates a new discount for a ticket type.
-   *
-   * <p><strong>Authorization:</strong> ORGANIZER must own the event
-   *
-   * <p><strong>Business Rules:</strong>
-   * <ul>
-   *   <li>Only one active discount per ticket type</li>
-   *   <li>validTo must be after validFrom</li>
-   *   <li>PERCENTAGE: value must be 0-100</li>
-   *   <li>FIXED_AMOUNT: value must be positive</li>
-   * </ul>
-   *
-   * @param jwt Authenticated user's JWT token
-   * @param eventId ID of the event
-   * @param ticketTypeId ID of the ticket type
-   * @param request Discount configuration
-   * @return Created discount
-   */
-  @PostMapping
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<DiscountResponseDto> createDiscount(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID eventId,
-      @PathVariable UUID ticketTypeId,
-      @Valid @RequestBody CreateDiscountRequestDto request
-  ) {
-    UUID organizerId = UUID.fromString(jwt.getSubject());
+    /**
+     * Creates a new discount for a ticket type.
+     *
+     * <p><strong>Authorization:</strong> ORGANIZER must own the event
+     *
+     * <p><strong>Business Rules:</strong>
+     * <ul>
+     *   <li>Only one active discount per ticket type</li>
+     *   <li>validTo must be after validFrom</li>
+     *   <li>PERCENTAGE: value must be 0-100</li>
+     *   <li>FIXED_AMOUNT: value must be positive</li>
+     * </ul>
+     *
+     * @param jwt Authenticated user's JWT token
+     * @param eventId ID of the event
+     * @param ticketTypeId ID of the ticket type
+     * @param request Discount configuration
+     * @return Created discount
+     */
+    @PostMapping
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<DiscountResponseDto> createDiscount(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID eventId,
+            @PathVariable UUID ticketTypeId,
+            @Valid @RequestBody CreateDiscountRequestDto request
+    ) {
+        // L-06 FIX: parseUserId(jwt) handles parsing consistently and throws on invalid subject
+        UUID organizerId = parseUserId(jwt);
 
-    log.info("Organizer {} creating discount for ticket type {} in event {}",
-        organizerId, ticketTypeId, eventId);
+        log.info("Organizer {} creating discount for ticket type {} in event {}",
+                organizerId, ticketTypeId, eventId);
 
-    Discount discount = discountService.createDiscount(
-        organizerId,
-        eventId,
-        ticketTypeId,
-        request
-    );
+        Discount discount = discountService.createDiscount(
+                organizerId,
+                eventId,
+                ticketTypeId,
+                request
+        );
 
-    DiscountResponseDto response = discountMapper.toResponseDto(discount);
-    return new ResponseEntity<>(response, HttpStatus.CREATED);
-  }
+        DiscountResponseDto response = discountMapper.toResponseDto(discount);
+        return new ResponseEntity<>(response, HttpStatus.CREATED);
+    }
 
-  /**
-   * Updates an existing discount.
-   *
-   * <p><strong>Authorization:</strong> ORGANIZER must own the event
-   *
-   * @param jwt Authenticated user's JWT token
-   * @param eventId ID of the event
-   * @param ticketTypeId ID of the ticket type
-   * @param discountId ID of the discount to update
-   * @param request Updated discount configuration
-   * @return Updated discount
-   */
-  @PutMapping("/{discountId}")
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<DiscountResponseDto> updateDiscount(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID eventId,
-      @PathVariable UUID ticketTypeId,
-      @PathVariable UUID discountId,
-      @Valid @RequestBody CreateDiscountRequestDto request
-  ) {
-    UUID organizerId = UUID.fromString(jwt.getSubject());
+    /**
+     * Updates an existing discount.
+     *
+     * <p><strong>Authorization:</strong> ORGANIZER must own the event
+     *
+     * @param jwt Authenticated user's JWT token
+     * @param eventId ID of the event
+     * @param ticketTypeId ID of the ticket type
+     * @param discountId ID of the discount to update
+     * @param request Updated discount configuration
+     * @return Updated discount
+     */
+    @PutMapping("/{discountId}")
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<DiscountResponseDto> updateDiscount(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID eventId,
+            @PathVariable UUID ticketTypeId,
+            @PathVariable UUID discountId,
+            @Valid @RequestBody CreateDiscountRequestDto request
+    ) {
+        // L-06 FIX: parseUserId(jwt) handles parsing consistently and throws on invalid subject
+        UUID organizerId = parseUserId(jwt);
 
-    log.info("Organizer {} updating discount {} for ticket type {} in event {}",
-        organizerId, discountId, ticketTypeId, eventId);
+        log.info("Organizer {} updating discount {} for ticket type {} in event {}",
+                organizerId, discountId, ticketTypeId, eventId);
 
-    Discount discount = discountService.updateDiscount(
-        organizerId,
-        eventId,
-        ticketTypeId,
-        discountId,
-        request
-    );
+        Discount discount = discountService.updateDiscount(
+                organizerId,
+                eventId,
+                ticketTypeId,
+                discountId,
+                request
+        );
 
-    DiscountResponseDto response = discountMapper.toResponseDto(discount);
-    return ResponseEntity.ok(response);
-  }
+        DiscountResponseDto response = discountMapper.toResponseDto(discount);
+        return ResponseEntity.ok(response);
+    }
 
-  /**
-   * Deletes a discount.
-   *
-   * <p><strong>Authorization:</strong> ORGANIZER must own the event
-   *
-   * @param jwt Authenticated user's JWT token
-   * @param eventId ID of the event
-   * @param ticketTypeId ID of the ticket type
-   * @param discountId ID of the discount to delete
-   * @return No content
-   */
-  @DeleteMapping("/{discountId}")
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<Void> deleteDiscount(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID eventId,
-      @PathVariable UUID ticketTypeId,
-      @PathVariable UUID discountId
-  ) {
-    UUID organizerId = UUID.fromString(jwt.getSubject());
+    /**
+     * Deletes a discount.
+     *
+     * <p><strong>Authorization:</strong> ORGANIZER must own the event
+     *
+     * @param jwt Authenticated user's JWT token
+     * @param eventId ID of the event
+     * @param ticketTypeId ID of the ticket type
+     * @param discountId ID of the discount to delete
+     * @return No content
+     */
+    @DeleteMapping("/{discountId}")
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<Void> deleteDiscount(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID eventId,
+            @PathVariable UUID ticketTypeId,
+            @PathVariable UUID discountId
+    ) {
+        // L-06 FIX: parseUserId(jwt) handles parsing consistently and throws on invalid subject
+        UUID organizerId = parseUserId(jwt);
 
-    log.info("Organizer {} deleting discount {} for ticket type {} in event {}",
-        organizerId, discountId, ticketTypeId, eventId);
+        log.info("Organizer {} deleting discount {} for ticket type {} in event {}",
+                organizerId, discountId, ticketTypeId, eventId);
 
-    discountService.deleteDiscount(organizerId, eventId, ticketTypeId, discountId);
-    return ResponseEntity.noContent().build();
-  }
+        discountService.deleteDiscount(organizerId, eventId, ticketTypeId, discountId);
+        return ResponseEntity.noContent().build();
+    }
 
-  /**
-   * Gets a specific discount.
-   *
-   * <p><strong>Authorization:</strong> ORGANIZER must own the event
-   *
-   * @param jwt Authenticated user's JWT token
-   * @param eventId ID of the event
-   * @param ticketTypeId ID of the ticket type
-   * @param discountId ID of the discount
-   * @return Discount details
-   */
-  @GetMapping("/{discountId}")
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<DiscountResponseDto> getDiscount(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID eventId,
-      @PathVariable UUID ticketTypeId,
-      @PathVariable UUID discountId
-  ) {
-    UUID organizerId = UUID.fromString(jwt.getSubject());
+    /**
+     * Gets a specific discount.
+     *
+     * <p><strong>Authorization:</strong> ORGANIZER must own the event
+     *
+     * @param jwt Authenticated user's JWT token
+     * @param eventId ID of the event
+     * @param ticketTypeId ID of the ticket type
+     * @param discountId ID of the discount
+     * @return Discount details
+     */
+    @GetMapping("/{discountId}")
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<DiscountResponseDto> getDiscount(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID eventId,
+            @PathVariable UUID ticketTypeId,
+            @PathVariable UUID discountId
+    ) {
+        // L-06 FIX: parseUserId(jwt) handles parsing consistently and throws on invalid subject
+        UUID organizerId = parseUserId(jwt);
 
-    Discount discount = discountService.getDiscount(
-        organizerId,
-        eventId,
-        ticketTypeId,
-        discountId
-    ).orElseThrow(() -> new com.event.tickets.exceptions.DiscountNotFoundException(
-        String.format("Discount %s not found", discountId)
-    ));
+        Discount discount = discountService.getDiscount(
+                organizerId,
+                eventId,
+                ticketTypeId,
+                discountId
+        ).orElseThrow(() -> new com.event.tickets.exceptions.DiscountNotFoundException(
+                String.format("Discount %s not found", discountId)
+        ));
 
-    DiscountResponseDto response = discountMapper.toResponseDto(discount);
-    return ResponseEntity.ok(response);
-  }
+        DiscountResponseDto response = discountMapper.toResponseDto(discount);
+        return ResponseEntity.ok(response);
+    }
 
-  /**
-   * Lists all discounts for a ticket type.
-   *
-   * <p><strong>Authorization:</strong> ORGANIZER must own the event
-   *
-   * @param jwt Authenticated user's JWT token
-   * @param eventId ID of the event
-   * @param ticketTypeId ID of the ticket type
-   * @return List of discounts (active and inactive)
-   */
-  @GetMapping
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<List<DiscountResponseDto>> listDiscounts(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID eventId,
-      @PathVariable UUID ticketTypeId
-  ) {
-    UUID organizerId = UUID.fromString(jwt.getSubject());
+    /**
+     * Lists all discounts for a ticket type.
+     *
+     * <p><strong>Authorization:</strong> ORGANIZER must own the event
+     *
+     * @param jwt Authenticated user's JWT token
+     * @param eventId ID of the event
+     * @param ticketTypeId ID of the ticket type
+     * @return List of discounts (active and inactive)
+     */
+    @GetMapping
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<List<DiscountResponseDto>> listDiscounts(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID eventId,
+            @PathVariable UUID ticketTypeId
+    ) {
+        // L-06 FIX: parseUserId(jwt) handles parsing consistently and throws on invalid subject
+        UUID organizerId = parseUserId(jwt);
 
-    List<Discount> discounts = discountService.listDiscounts(
-        organizerId,
-        eventId,
-        ticketTypeId
-    );
+        List<Discount> discounts = discountService.listDiscounts(
+                organizerId,
+                eventId,
+                ticketTypeId
+        );
 
-    List<DiscountResponseDto> response = discounts.stream()
-        .map(discountMapper::toResponseDto)
-        .toList();
+        List<DiscountResponseDto> response = discounts.stream()
+                .map(discountMapper::toResponseDto)
+                .toList();
 
-    return ResponseEntity.ok(response);
-  }
+        return ResponseEntity.ok(response);
+    }
 }

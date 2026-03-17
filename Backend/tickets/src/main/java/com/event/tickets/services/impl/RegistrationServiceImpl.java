@@ -196,7 +196,10 @@ public class RegistrationServiceImpl implements RegistrationService {
                 eventForAudit = new Event();
                 eventForAudit.setId(eventId);
             }
-            userRepository.saveAndFlush(user);
+            // L-01 FIX: removed redundant saveAndFlush(user).
+            // user was already persisted at step 5 via userRepository.save(user).
+            // No fields were modified between step 5 and here, so this was issuing
+            // a no-op UPDATE + unnecessary flush on every registration.
             emitAuditEvent(user, user, eventForAudit, AuditAction.REGISTRATION_SUCCESS,
                     "email=" + request.getEmail() + ",role=" + assignedRole, clientIp, userAgent);
 

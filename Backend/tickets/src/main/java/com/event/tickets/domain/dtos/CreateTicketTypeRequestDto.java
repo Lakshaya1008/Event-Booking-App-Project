@@ -23,5 +23,7 @@ public class CreateTicketTypeRequestDto {
 
     private String description;
 
+    @jakarta.validation.constraints.NotNull(message = "Total available tickets is required")
+    @jakarta.validation.constraints.Min(value = 1, message = "Total available must be at least 1")
     private Integer totalAvailable;
 }

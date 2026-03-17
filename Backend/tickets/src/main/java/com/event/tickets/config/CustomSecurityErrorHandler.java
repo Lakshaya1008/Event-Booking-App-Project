@@ -19,13 +19,22 @@ import java.util.Arrays;
 
 @Component
 @Slf4j
+@lombok.RequiredArgsConstructor
 public class CustomSecurityErrorHandler implements AuthenticationEntryPoint, AccessDeniedHandler {
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    /**
+     * L-15 FIX: ObjectMapper injected by Spring, not created with new.
+     * new ObjectMapper() ignores Jackson auto-configuration — custom serializers,
+     * date formats, and module registrations (Java time, Kotlin, etc.) set up
+     * by Spring Boot's JacksonAutoConfiguration are bypassed. This caused
+     * timestamp fields in error responses to serialize differently from the
+     * main application JSON responses.
+     */
+    private final ObjectMapper objectMapper;
 
     @Override
     public void commence(HttpServletRequest request, HttpServletResponse response,
-                        AuthenticationException authException) throws IOException {
+                         AuthenticationException authException) throws IOException {
         log.error("Authentication error: {}", authException.getMessage());
 
         ErrorDto errorDto = new ErrorDto();
@@ -40,23 +49,23 @@ public class CustomSecurityErrorHandler implements AuthenticationEntryPoint, Acc
         String endpointAnalysis = analyzeEndpointError(request.getRequestURI(), 401);
 
         errorDto.setPossibleCauses(Arrays.asList(
-            "CLIENT ISSUE: Missing Authorization header in request",
-            "CLIENT ISSUE: Invalid or expired JWT token",
-            "CLIENT ISSUE: Token format is incorrect (should be 'Bearer <token>')",
-            "CLIENT ISSUE: Token contains invalid claims or signature",
-            "SERVER ISSUE: Keycloak server is not running or unreachable",
-            "CLIENT ISSUE: Token was issued by wrong issuer/realm",
-            "SERVER ISSUE: JWT validation configuration error",
-            "ENDPOINT ANALYSIS: " + endpointAnalysis
+                "CLIENT ISSUE: Missing Authorization header in request",
+                "CLIENT ISSUE: Invalid or expired JWT token",
+                "CLIENT ISSUE: Token format is incorrect (should be 'Bearer <token>')",
+                "CLIENT ISSUE: Token contains invalid claims or signature",
+                "SERVER ISSUE: Keycloak server is not running or unreachable",
+                "CLIENT ISSUE: Token was issued by wrong issuer/realm",
+                "SERVER ISSUE: JWT validation configuration error",
+                "ENDPOINT ANALYSIS: " + endpointAnalysis
         ));
         errorDto.setSolutions(Arrays.asList(
-            "Add 'Authorization: Bearer <your-token>' header to your request",
-            "Get a fresh token from Keycloak: POST http://localhost:9090/realms/event-ticket-platform/protocol/openid-connect/token",
-            "Check token format: 'Authorization: Bearer eyJhbGciOiJSUzI1NiIs...'",
-            "Verify your token hasn't expired (check exp claim)",
-            "Ensure Keycloak is running on http://localhost:9090",
-            "Confirm token was obtained from correct realm: event-ticket-platform",
-            "Try getting a new token with proper client_id and credentials"
+                "Add 'Authorization: Bearer <your-token>' header to your request",
+                "Get a fresh token from Keycloak: POST http://localhost:9090/realms/event-ticket-platform/protocol/openid-connect/token",
+                "Check token format: 'Authorization: Bearer eyJhbGciOiJSUzI1NiIs...'",
+                "Verify your token hasn't expired (check exp claim)",
+                "Ensure Keycloak is running on http://localhost:9090",
+                "Confirm token was obtained from correct realm: event-ticket-platform",
+                "Try getting a new token with proper client_id and credentials"
         ));
 
         response.setStatus(HttpStatus.UNAUTHORIZED.value());
@@ -66,7 +75,7 @@ public class CustomSecurityErrorHandler implements AuthenticationEntryPoint, Acc
 
     @Override
     public void handle(HttpServletRequest request, HttpServletResponse response,
-                      AccessDeniedException accessDeniedException) throws IOException {
+                       AccessDeniedException accessDeniedException) throws IOException {
         log.error("Access denied: {}", accessDeniedException.getMessage());
 
         ErrorDto errorDto = new ErrorDto();
@@ -81,21 +90,21 @@ public class CustomSecurityErrorHandler implements AuthenticationEntryPoint, Acc
         String endpointAnalysis = analyzeEndpointError(request.getRequestURI(), 403);
 
         errorDto.setPossibleCauses(Arrays.asList(
-            "CLIENT ISSUE: User doesn't have required role (ORGANIZER, ATTENDEE, or STAFF)",
-            "CLIENT ISSUE: Valid token but insufficient permissions for this endpoint",
-            "CLIENT ISSUE: Trying to access another user's private resources",
-            "CLIENT ISSUE: User role not properly configured in Keycloak",
-            "SERVER ISSUE: Role mapping configuration error in application",
-            "CLIENT ISSUE: Token missing required scopes or role claims",
-            "ENDPOINT ANALYSIS: " + endpointAnalysis
+                "CLIENT ISSUE: User doesn't have required role (ORGANIZER, ATTENDEE, or STAFF)",
+                "CLIENT ISSUE: Valid token but insufficient permissions for this endpoint",
+                "CLIENT ISSUE: Trying to access another user's private resources",
+                "CLIENT ISSUE: User role not properly configured in Keycloak",
+                "SERVER ISSUE: Role mapping configuration error in application",
+                "CLIENT ISSUE: Token missing required scopes or role claims",
+                "ENDPOINT ANALYSIS: " + endpointAnalysis
         ));
         errorDto.setSolutions(Arrays.asList(
-            "Verify your user has the correct role in Keycloak admin console",
-            "Check role mapping is configured in Keycloak client settings",
-            "Ensure you're only accessing your own resources",
-            "Contact administrator to assign proper roles (ORGANIZER/ATTENDEE/STAFF)",
-            "Get a new token after role assignment",
-            "Verify endpoint documentation for required permissions"
+                "Verify your user has the correct role in Keycloak admin console",
+                "Check role mapping is configured in Keycloak client settings",
+                "Ensure you're only accessing your own resources",
+                "Contact administrator to assign proper roles (ORGANIZER/ATTENDEE/STAFF)",
+                "Get a new token after role assignment",
+                "Verify endpoint documentation for required permissions"
         ));
 
         response.setStatus(HttpStatus.FORBIDDEN.value());

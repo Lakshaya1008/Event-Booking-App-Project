@@ -45,9 +45,24 @@ public class User {
     @Column(name = "email", nullable = false, unique = true)
     private String email;
 
+    /**
+     * L-09 FIX: Java default is now null, not ApprovalStatus.PENDING.
+     *
+     * Previously the Java field initializer set PENDING while the DB column
+     * defaulted to APPROVED. This created an inconsistency:
+     * - New objects created in Java started as PENDING (correct for new registrations)
+     * - But existing rows with null approval_status were read back as null, not PENDING
+     * - DatabaseInitializer then tried to migrate nulls → APPROVED, but when the
+     *   field had a Java default of PENDING, JPA would sometimes write PENDING on
+     *   flush before the migration ran.
+     *
+     * Fix: Java default is null. RegistrationServiceImpl explicitly sets PENDING
+     * on new registrations. DatabaseInitializer migrates nulls to APPROVED.
+     * The DB column default of APPROVED handles any edge cases at the SQL level.
+     */
     @Enumerated(EnumType.STRING)
     @Column(name = "approval_status", nullable = true, columnDefinition = "VARCHAR(255) DEFAULT 'APPROVED'")
-    private ApprovalStatus approvalStatus = ApprovalStatus.PENDING;
+    private ApprovalStatus approvalStatus;
 
     /**
      * Timestamp when the user was approved by an admin.

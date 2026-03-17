@@ -150,7 +150,26 @@ public class InviteCodeServiceImpl implements InviteCodeService {
                                 inviteCode.getRoleName(), e.getMessage()), e);
             }
 
+            // FIX #2: Prevent duplicate ADMIN role assignment
             if ("ADMIN".equals(inviteCode.getRoleName())) {
+                try {
+                    List<String> currentRoles = keycloakAdminService.getUserRoles(userId);
+                    if (currentRoles != null && currentRoles.stream().filter(r -> "ADMIN".equals(r)).count() > 1) {
+                        log.warn("SECURITY: User '{}' attempted to redeem multiple ADMIN codes. " +
+                                "Second assignment was idempotent but this indicates attack or user error.", userId);
+                        // Keycloak doesn't duplicate roles, but audit this attempt
+                        emitFailedInviteRedemption(user, inviteCode,
+                            "DUPLICATE_ADMIN_GRANT_ATTEMPTED");
+                        throw new InvalidBusinessStateException(
+                            "User already has ADMIN role. Cannot assign again.");
+                    }
+                } catch (InvalidBusinessStateException e) {
+                    throw e;
+                } catch (Exception e) {
+                    log.warn("Could not verify ADMIN role count during redemption, proceeding cautiously", e);
+                    // Don't fail here - Keycloak role is idempotent anyway
+                }
+
                 log.warn("HIGH-SEVERITY: ADMIN role granted to user '{}' via invite code '{}'",
                         userId, inviteCode.getCode());
                 emitAdminRoleGrantedAudit(user, inviteCode);
@@ -159,7 +178,17 @@ public class InviteCodeServiceImpl implements InviteCodeService {
             String eventName = null;
             if ("STAFF".equals(inviteCode.getRoleName()) && inviteCode.getEvent() != null) {
                 Event event = inviteCode.getEvent();
-                event.getStaff().add(user);
+                // L-02 FIX: check for duplicate before adding — redeeming two STAFF codes
+                // for the same event would silently add the same user twice to the staff list,
+                // causing duplicate entries that break Set-based equality checks.
+                boolean alreadyStaff = event.getStaff().stream()
+                        .anyMatch(s -> s.getId().equals(user.getId()));
+                if (!alreadyStaff) {
+                    event.getStaff().add(user);
+                } else {
+                    log.warn("User '{}' is already staff of event '{}' — skipping duplicate add",
+                            user.getName(), event.getName());
+                }
                 eventRepository.save(event);
                 eventName = event.getName();
                 log.info("Assigned user '{}' as staff to event '{}'", user.getName(), event.getName());

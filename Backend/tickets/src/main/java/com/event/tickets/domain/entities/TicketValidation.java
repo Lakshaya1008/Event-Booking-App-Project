@@ -70,16 +70,14 @@ public class TicketValidation {
 
     @Override
     public boolean equals(Object o) {
-        if (o == null || getClass() != o.getClass()) {
-            return false;
-        }
-        TicketValidation that = (TicketValidation) o;
-        return Objects.equals(id, that.id) && status == that.status && Objects.equals(createdAt,
-                that.createdAt) && Objects.equals(updatedAt, that.updatedAt);
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        TicketValidation ticketValidation = (TicketValidation) o;
+        return java.util.Objects.equals(id, ticketValidation.id);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(id, status, createdAt, updatedAt);
+        return java.util.Objects.hash(id);
     }
 }

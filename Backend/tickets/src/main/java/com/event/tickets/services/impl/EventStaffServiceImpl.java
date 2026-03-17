@@ -148,7 +148,13 @@ public class EventStaffServiceImpl implements EventStaffService {
                     .build();
             auditLogService.saveAuditLog(auditLog);
         } else {
-            log.warn("User '{}' was not staff of event '{}'", user.getName(), event.getName());
+            // L-21 FIX: throw instead of silently logging. A silent no-op means the
+            // organizer gets a 200 OK response when removing a user who was never on
+            // the staff list — no way to detect the mistake. InvalidBusinessStateException
+            // returns HTTP 400, making the contract clear.
+            throw new com.event.tickets.exceptions.InvalidBusinessStateException(
+                    String.format("User '%s' is not assigned as staff to event '%s'.",
+                            user.getName(), event.getName()));
         }
     }
 

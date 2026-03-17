@@ -32,42 +32,45 @@ import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 @Builder
 public class QrCode {
 
-  @Id
-  @Column(name = "id", nullable = false, updatable = false)
-  private UUID id;
+    /**
+     * T-05: No @GeneratedValue — intentional, not missing.
+     * QrCodeServiceImpl sets id manually (UUID.randomUUID()) and encodes it into the QR image.
+     * The validator reads this UUID from the scan and calls findByIdAndStatus().
+     * Never call qrCodeRepository.save(qrCode) without calling qrCode.setId() first.
+     */
+    @Id
+    @Column(name = "id", nullable = false, updatable = false)
+    private UUID id;
 
-  @Column(name = "status", nullable = false)
-  @Enumerated(EnumType.STRING)
-  private QrCodeStatusEnum status;
+    @Column(name = "status", nullable = false)
+    @Enumerated(EnumType.STRING)
+    private QrCodeStatusEnum status;
 
-  @Column(name = "qr_value", length = 1000, nullable = false)
-  private String value;
+    @Column(name = "qr_value", length = 1000, nullable = false)
+    private String value;
 
-  @ManyToOne(fetch = FetchType.LAZY)
-  @JoinColumn(name = "ticket_id")
-  private Ticket ticket;
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "ticket_id")
+    private Ticket ticket;
 
-  @CreatedDate
-  @Column(name = "created_at", updatable = false, nullable = false)
-  private LocalDateTime createdAt;
+    @CreatedDate
+    @Column(name = "created_at", updatable = false, nullable = false)
+    private LocalDateTime createdAt;
 
-  @LastModifiedDate
-  @Column(name = "updated_at", nullable = false)
-  private LocalDateTime updatedAt;
+    @LastModifiedDate
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
 
-  @Override
-  public boolean equals(Object o) {
-      if (o == null || getClass() != o.getClass()) {
-          return false;
-      }
-    QrCode qrCode = (QrCode) o;
-    return Objects.equals(id, qrCode.id) && status == qrCode.status && Objects.equals(value,
-        qrCode.value) && Objects.equals(createdAt, qrCode.createdAt) && Objects.equals(updatedAt,
-        qrCode.updatedAt);
-  }
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        QrCode qrCode = (QrCode) o;
+        return java.util.Objects.equals(id, qrCode.id);
+    }
 
-  @Override
-  public int hashCode() {
-    return Objects.hash(id, status, value, createdAt, updatedAt);
-  }
+    @Override
+    public int hashCode() {
+        return java.util.Objects.hash(id);
+    }
 }

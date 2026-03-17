@@ -18,17 +18,22 @@ import lombok.NoArgsConstructor;
 @Builder
 public class AuditLogDto {
 
-  private UUID id;
-  private String action;
-  private String actorName;
-  private UUID actorId;
-  private String targetUserName;
-  private UUID targetUserId;
-  private String eventName;
-  private UUID eventId;
-  private String resourceType;
-  private UUID resourceId;
-  private String details;
-  private String ipAddress;
-  private LocalDateTime createdAt;
+    private UUID id;
+    private String action;
+    private String actorName;
+    private UUID actorId;
+    private String targetUserName;
+    private UUID targetUserId;
+    private String eventName;
+    private UUID eventId;
+    private String resourceType;
+    private UUID resourceId;
+    private String details;
+    private String ipAddress;
+    /**
+     * L-18 FIX: userAgent field added. AuditLog entity stores userAgent
+     * but it was dropped here — invisible to every admin API response.
+     */
+    private String userAgent;
+    private LocalDateTime createdAt;
 }

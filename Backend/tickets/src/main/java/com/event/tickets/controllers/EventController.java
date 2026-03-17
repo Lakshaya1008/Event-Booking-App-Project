@@ -55,171 +55,175 @@ import org.springframework.web.bind.annotation.RestController;
 @Slf4j
 public class EventController {
 
-  private final EventMapper eventMapper;
-  private final EventService eventService;
-  private final ExportService exportService;
+    private final EventMapper eventMapper;
+    private final EventService eventService;
+    private final ExportService exportService;
 
-  @PostMapping
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<CreateEventResponseDto> createEvent(
-      @AuthenticationPrincipal Jwt jwt,
-      @Valid @RequestBody CreateEventRequestDto createEventRequestDto) {
-    CreateEventRequest createEventRequest = eventMapper.fromDto(createEventRequestDto);
-    UUID userId = parseUserId(jwt);
+    @PostMapping
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<CreateEventResponseDto> createEvent(
+            @AuthenticationPrincipal Jwt jwt,
+            @Valid @RequestBody CreateEventRequestDto createEventRequestDto) {
+        CreateEventRequest createEventRequest = eventMapper.fromDto(createEventRequestDto);
+        UUID userId = parseUserId(jwt);
 
-    Event createdEvent = eventService.createEvent(userId, createEventRequest);
-    CreateEventResponseDto createEventResponseDto = eventMapper.toDto(createdEvent);
-    return new ResponseEntity<>(createEventResponseDto, HttpStatus.CREATED);
-  }
-
-  @PutMapping(path = "/{eventId}")
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<UpdateEventResponseDto> updateEvent(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID eventId,
-      @Valid @RequestBody UpdateEventRequestDto updateEventRequestDto) {
-
-    // Defensive check: if body contains ID, it must match path parameter
-    // This prevents accidental ID mismatch and ensures single source of truth (URL)
-    if (updateEventRequestDto.getId() != null &&
-        !eventId.equals(updateEventRequestDto.getId())) {
-      throw new IllegalArgumentException(
-          "Event ID in request body does not match path parameter"
-      );
+        Event createdEvent = eventService.createEvent(userId, createEventRequest);
+        CreateEventResponseDto createEventResponseDto = eventMapper.toDto(createdEvent);
+        return new ResponseEntity<>(createEventResponseDto, HttpStatus.CREATED);
     }
 
-    // Set eventId from path parameter (single source of truth)
-    updateEventRequestDto.setId(eventId);
+    @PutMapping(path = "/{eventId}")
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<UpdateEventResponseDto> updateEvent(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID eventId,
+            @Valid @RequestBody UpdateEventRequestDto updateEventRequestDto) {
 
-    UpdateEventRequest updateEventRequest = eventMapper.fromDto(updateEventRequestDto);
-    UUID userId = parseUserId(jwt);
+        // Defensive check: if body contains ID, it must match path parameter
+        // This prevents accidental ID mismatch and ensures single source of truth (URL)
+        if (updateEventRequestDto.getId() != null &&
+                !eventId.equals(updateEventRequestDto.getId())) {
+            throw new IllegalArgumentException(
+                    "Event ID in request body does not match path parameter"
+            );
+        }
 
-    Event updatedEvent = eventService.updateEventForOrganizer(
-        userId, eventId, updateEventRequest
-    );
+        // Set eventId from path parameter (single source of truth)
+        updateEventRequestDto.setId(eventId);
 
-    UpdateEventResponseDto updateEventResponseDto = eventMapper.toUpdateEventResponseDto(
-        updatedEvent);
+        UpdateEventRequest updateEventRequest = eventMapper.fromDto(updateEventRequestDto);
+        UUID userId = parseUserId(jwt);
 
-    return ResponseEntity.ok(updateEventResponseDto);
-  }
+        Event updatedEvent = eventService.updateEventForOrganizer(
+                userId, eventId, updateEventRequest
+        );
 
-  @GetMapping
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<Page<ListEventResponseDto>> listEvents(
-      @AuthenticationPrincipal Jwt jwt, Pageable pageable
-  ) {
-    UUID userId = parseUserId(jwt);
-    Page<Event> events = eventService.listEventsForOrganizer(userId, pageable);
-    return ResponseEntity.ok(
-        events.map(eventMapper::toListEventResponseDto)
-    );
-  }
+        UpdateEventResponseDto updateEventResponseDto = eventMapper.toUpdateEventResponseDto(
+                updatedEvent);
 
-  @GetMapping(path = "/{eventId}")
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<GetEventDetailsResponseDto> getEvent(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID eventId
-  ) {
-    UUID userId = parseUserId(jwt);
-    return eventService.getEventForOrganizer(userId, eventId)
-        .map(eventMapper::toGetEventDetailsResponseDto)
-        .map(ResponseEntity::ok)
-        .orElse(ResponseEntity.notFound().build());
-  }
-
-  @DeleteMapping(path = "/{eventId}")
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<Void> deleteEvent(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID eventId
-  ) {
-    UUID userId = parseUserId(jwt);
-    eventService.deleteEventForOrganizer(userId, eventId);
-    return ResponseEntity.noContent().build();
-  }
-
-  // Sales dashboard endpoints
-  @GetMapping("/{eventId}/sales-dashboard")
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<Map<String, Object>> getSalesDashboard(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID eventId) {
-    UUID organizerId = parseUserId(jwt);
-    Map<String, Object> dashboard = eventService.getSalesDashboard(organizerId, eventId);
-    return ResponseEntity.ok(dashboard);
-  }
-
-  @GetMapping("/{eventId}/attendees-report")
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<Map<String, Object>> getAttendeesReport(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID eventId) {
-    UUID organizerId = parseUserId(jwt);
-    Map<String, Object> report = eventService.getAttendeesReport(organizerId, eventId);
-    return ResponseEntity.ok(report);
-  }
-
-  /**
-   * EXPORT SALES REPORT (Excel .xlsx)
-   *
-   * Downloads complete sales report as Excel spreadsheet.
-   * Content-Disposition: attachment (forces download)
-   * Filename: <event-name>_sales_report_<yyyyMMdd_HHmmss>.xlsx
-   *
-   * DATA SOURCE:
-   * - Reuses EventService.getSalesDashboard() for consistency
-   * - NO duplicate queries or parallel business logic
-   *
-   * IDEMPOTENT: Safe to download multiple times, no state change.
-   * AUDIT: Logs SALES_REPORT_EXPORTED action.
-   *
-   * ACCESS CONTROL:
-   * - ORGANIZER: Must own the event (checked in ExportService)
-   * - ADMIN: NO bypass access
-   * - ATTENDEE/STAFF: NO access
-   */
-  @GetMapping("/{eventId}/sales-report.xlsx")
-  @PreAuthorize("hasRole('ORGANIZER')")
-  public ResponseEntity<byte[]> exportSalesReportExcel(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID eventId) {
-
-    UUID organizerId = parseUserId(jwt);
-    log.info("Sales report Excel export requested: organizerId={}, eventId={}",
-        organizerId, eventId);
-
-    // Generate Excel (authorization checked in service layer)
-    byte[] excelBytes = exportService.generateSalesReportExcel(organizerId, eventId);
-
-    // Get event name for filename (already authorized, safe to fetch)
-    String filename = "sales_report.xlsx"; // Fallback
-    try {
-      var event = eventService.getEventForOrganizer(organizerId, eventId);
-      if (event.isPresent()) {
-        filename = exportService.generateSalesReportFilename(event.get().getName());
-      }
-    } catch (Exception ex) {
-      log.warn("Failed to generate custom filename for eventId={}", eventId, ex);
+        return ResponseEntity.ok(updateEventResponseDto);
     }
 
-    HttpHeaders headers = new HttpHeaders();
-    headers.setContentType(MediaType.parseMediaType(
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    ));
-    headers.setContentLength(excelBytes.length);
-    headers.setContentDisposition(
-        org.springframework.http.ContentDisposition.attachment()
-            .filename(filename)
-            .build()
-    );
+    @GetMapping
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<Page<ListEventResponseDto>> listEvents(
+            @AuthenticationPrincipal Jwt jwt, Pageable pageable
+    ) {
+        UUID userId = parseUserId(jwt);
+        Page<Event> events = eventService.listEventsForOrganizer(userId, pageable);
+        return ResponseEntity.ok(
+                events.map(eventMapper::toListEventResponseDto)
+        );
+    }
 
-    log.info("Sales report Excel export completed: eventId={}, size={} bytes, filename={}",
-        eventId, excelBytes.length, filename);
+    @GetMapping(path = "/{eventId}")
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<GetEventDetailsResponseDto> getEvent(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID eventId
+    ) {
+        UUID userId = parseUserId(jwt);
+        return eventService.getEventForOrganizer(userId, eventId)
+                .map(eventMapper::toGetEventDetailsResponseDto)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
 
-    return ResponseEntity.ok()
-        .headers(headers)
-        .body(excelBytes);
-  }
+    @DeleteMapping(path = "/{eventId}")
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<Void> deleteEvent(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID eventId
+    ) {
+        UUID userId = parseUserId(jwt);
+        eventService.deleteEventForOrganizer(userId, eventId);
+        return ResponseEntity.noContent().build();
+    }
+
+    // Sales dashboard endpoints
+    @GetMapping("/{eventId}/sales-dashboard")
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<Map<String, Object>> getSalesDashboard(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID eventId) {
+        UUID organizerId = parseUserId(jwt);
+        Map<String, Object> dashboard = eventService.getSalesDashboard(organizerId, eventId);
+        return ResponseEntity.ok(dashboard);
+    }
+
+    @GetMapping("/{eventId}/attendees-report")
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<Map<String, Object>> getAttendeesReport(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID eventId) {
+        UUID organizerId = parseUserId(jwt);
+        Map<String, Object> report = eventService.getAttendeesReport(organizerId, eventId);
+        return ResponseEntity.ok(report);
+    }
+
+    /**
+     * EXPORT SALES REPORT (Excel .xlsx)
+     *
+     * Downloads complete sales report as Excel spreadsheet.
+     * Content-Disposition: attachment (forces download)
+     * Filename: <event-name>_sales_report_<yyyyMMdd_HHmmss>.xlsx
+     *
+     * DATA SOURCE:
+     * - Reuses EventService.getSalesDashboard() for consistency
+     * - NO duplicate queries or parallel business logic
+     *
+     * IDEMPOTENT: Safe to download multiple times, no state change.
+     * AUDIT: Logs SALES_REPORT_EXPORTED action.
+     *
+     * ACCESS CONTROL:
+     * - ORGANIZER: Must own the event (checked in ExportService)
+     * - ADMIN: NO bypass access
+     * - ATTENDEE/STAFF: NO access
+     */
+    @GetMapping("/{eventId}/sales-report.xlsx")
+    @PreAuthorize("hasRole('ORGANIZER')")
+    public ResponseEntity<byte[]> exportSalesReportExcel(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID eventId) {
+
+        UUID organizerId = parseUserId(jwt);
+        log.info("Sales report Excel export requested: organizerId={}, eventId={}",
+                organizerId, eventId);
+
+        // Generate Excel (authorization checked in service layer)
+        byte[] excelBytes = exportService.generateSalesReportExcel(organizerId, eventId);
+
+        // L-04 NOTE: generateSalesReportExcel already calls getSalesDashboard internally,
+        // so getSalesDashboard is invoked once. The second getEventForOrganizer call below
+        // is the remaining redundancy — it uses the EventRepository findByIdAndOrganizerId
+        // query (single DB call) which is cheap compared to the dashboard query above.
+        // A full fix would require adding eventName to the ExportService return type.
+        String filename = "sales_report.xlsx";
+        try {
+            var event = eventService.getEventForOrganizer(organizerId, eventId);
+            if (event.isPresent()) {
+                filename = exportService.generateSalesReportFilename(event.get().getName());
+            }
+        } catch (Exception ex) {
+            log.warn("Failed to generate custom filename for eventId={}", eventId, ex);
+        }
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.parseMediaType(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ));
+        headers.setContentLength(excelBytes.length);
+        headers.setContentDisposition(
+                org.springframework.http.ContentDisposition.attachment()
+                        .filename(filename)
+                        .build()
+        );
+
+        log.info("Sales report Excel export completed: eventId={}, size={} bytes, filename={}",
+                eventId, excelBytes.length, filename);
+
+        return ResponseEntity.ok()
+                .headers(headers)
+                .body(excelBytes);
+    }
 }

@@ -8,7 +8,6 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 
 import java.time.Instant;
-import java.util.Collections;
 
 import static org.mockito.Mockito.mock;
 
@@ -21,7 +20,13 @@ public class TestSecurityConfig {
         return token -> Jwt.withTokenValue(token)
                 .header("alg", "none")
                 .claim("sub", "test-user")
-                .claim("roles", Collections.singletonList("ROLE_ATTENDEE")) // Default role in tests
+                // T-01 FIX: Keycloak puts roles in realm_access.roles, NOT a top-level "roles" claim.
+                // The old .claim("roles", ...) mirrored the production C-08 bug — tests were passing
+                // against a JWT structure that does not match real Keycloak tokens.
+                // SecurityConfig.extractAuthorities() reads realm_access.roles — tests must match.
+                .claim("realm_access", java.util.Map.of(
+                        "roles", java.util.List.of("ATTENDEE")  // no ROLE_ prefix here; added in extractAuthorities
+                ))
                 .issuedAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(3600))
                 .build();

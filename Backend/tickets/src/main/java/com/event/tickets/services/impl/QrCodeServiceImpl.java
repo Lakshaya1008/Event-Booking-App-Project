@@ -234,11 +234,13 @@ public class QrCodeServiceImpl implements QrCodeService {
 
     private String sanitizeForFilename(String input) {
         if (input == null) return "unknown";
-        return input.toLowerCase()
+        // C-05 FIX: capture sanitized result first, THEN apply length cap.
+        // The regex calls can shorten the string — using input.length() caused SIOOBE.
+        String sanitized = input.toLowerCase()
                 .replaceAll("[^a-z0-9\\s-]", "")
                 .replaceAll("\\s+", "_")
-                .replaceAll("-+", "_")
-                .substring(0, Math.min(input.length(), 50));
+                .replaceAll("-+", "_");
+        return sanitized.substring(0, Math.min(sanitized.length(), 50));
     }
 
     private void auditQrCodeAccess(UUID userId, UUID ticketId, AuditAction action) {

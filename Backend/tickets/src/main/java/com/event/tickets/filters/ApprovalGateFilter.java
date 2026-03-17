@@ -46,7 +46,12 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
     private final UserRepository userRepository;
     private final AuditLogService auditLogService;
     private final SystemUserProvider systemUserProvider;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    /**
+     * L-15 style FIX: ObjectMapper injected by Spring, not created with new.
+     * ApprovalGateFilter writes error responses — using a separate ObjectMapper
+     * instance would serialize timestamps differently from the rest of the API.
+     */
+    private final ObjectMapper objectMapper;
 
     private static final String[] APPROVAL_BYPASS_PATHS = {
             "/api/v1/auth/register",

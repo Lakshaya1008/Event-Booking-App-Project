@@ -14,178 +14,150 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Database initializer that handles schema migrations and data fixes on application startup.
+ * C-03 FIX: Race condition eliminated.
+ * Previously had 4 separate @PostConstruct methods. Jakarta EE spec permits
+ * only ONE @PostConstruct per class — multiple methods produce undefined
+ * execution order. On a fresh database, SystemUserProvider.loadSystemUser()
+ * could run BEFORE createSystemUser(), causing immediate app crash.
  *
- * This component:
- * 1. Auto-approves existing users who were created before the approval system
- * 2. Ensures backward compatibility when adding new required fields
- * 3. Normalizes Keycloak state for approved users
- * 4. Runs once on startup using @PostConstruct
+ * L-07 FIX: All 4 methods consolidated into one @PostConstruct initialize()
+ * that calls them in strict dependency order:
+ *   1. migrateExistingUsers    (no deps)
+ *   2. createSystemUser        (no deps — must complete before SystemUserProvider)
+ *   3. normalizeKeycloak       (needs system user row to exist for skip check)
+ *   4. validateDatabaseState   (terminal log)
+ *
+ * H-11 FIX: normalizeKeycloak now calls activateUser() (1 atomic API call)
+ * instead of setUserEnabled() + setEmailVerified() + clearRequiredActions()
+ * (3 separate Keycloak round-trips per user).
+ *
+ * SystemUserProvider is annotated @DependsOn("databaseInitializer") so Spring
+ * guarantees this bean fully initializes (including createSystemUser) before
+ * SystemUserProvider attempts loadSystemUser().
  */
-@Component
+@Component("databaseInitializer")
 @RequiredArgsConstructor
 @Slf4j
 public class DatabaseInitializer {
 
-  private final UserRepository userRepository;
-  private final KeycloakAdminService keycloakAdminService;
+    private static final UUID SYSTEM_USER_ID =
+            UUID.fromString("00000000-0000-0000-0000-000000000000");
 
-  /**
-   * Migrates existing users to the approval system.
-   *
-   * WHY: When adding the approval_status column to an existing database,
-   * pre-existing users will have NULL values. This method auto-approves them
-   * because they were created before the approval system existed.
-   *
-   * This ensures:
-   * - No disruption for existing users
-   * - Backward compatibility
-   * - Grandfathering of legacy accounts
-   */
-  @PostConstruct
-  @Transactional
-  public void migrateExistingUsers() {
-    try {
-      log.info("Starting database migration: Checking for users without approval status...");
+    private final UserRepository userRepository;
+    private final KeycloakAdminService keycloakAdminService;
 
-      // Find all users with null approval_status (existing users before migration)
-      List<User> usersToMigrate = userRepository.findAll().stream()
-          .filter(user -> user.getApprovalStatus() == null)
-          .toList();
-
-      if (usersToMigrate.isEmpty()) {
-        log.info("✅ No users need migration. All users have approval status set.");
-        return;
-      }
-
-      log.info("Found {} users without approval status. Auto-approving them...", usersToMigrate.size());
-
-      // Auto-approve all existing users and set timestamps if missing
-      LocalDateTime now = LocalDateTime.now();
-      for (User user : usersToMigrate) {
-        user.setApprovalStatus(ApprovalStatus.APPROVED);
-        user.setApprovedAt(now);
-
-        // Set timestamps if they're missing (backward compatibility)
-        if (user.getCreatedAt() == null) {
-          user.setCreatedAt(now);
-        }
-        if (user.getUpdatedAt() == null) {
-          user.setUpdatedAt(now);
-        }
-
-        // approvedBy is left as null (system auto-approval)
-        log.debug("Auto-approved user: {} ({})", user.getEmail(), user.getId());
-      }
-
-      userRepository.saveAll(usersToMigrate);
-
-      log.info("✅ Successfully migrated {} existing users to APPROVED status", usersToMigrate.size());
-      log.info("These users were grandfathered in because they existed before the approval system.");
-      log.info("New registrations will require admin approval.");
-
-    } catch (Exception e) {
-      log.error("❌ Error during database migration: {}", e.getMessage(), e);
-      log.warn("Application will continue, but existing users may have access issues.");
-      log.warn("Please check the database manually or run fix_approval_schema.sql");
+    /**
+     * Single entry point — runs once after Spring context is ready.
+     * Order matters: createSystemUser must complete before normalizeKeycloak
+     * so the SYSTEM user skip-check works correctly.
+     */
+    @PostConstruct
+    @Transactional
+    public void initialize() {
+        migrateExistingUsers();
+        createSystemUser();
+        normalizeKeycloakStateForApprovedUsers();
+        validateDatabaseState();
     }
-  }
 
-  /**
-   * Creates the SYSTEM user if it doesn't exist.
-   * This user is used for unauthenticated audit events.
-   */
-  @PostConstruct
-  @Transactional
-  public void createSystemUser() {
-    try {
-      UUID systemUserId = UUID.fromString("00000000-0000-0000-0000-000000000000");
-      if (!userRepository.existsById(systemUserId)) {
-        User systemUser = new User();
-        systemUser.setId(systemUserId);
-        systemUser.setEmail("system@system.local");
-        systemUser.setName("SYSTEM");
-        systemUser.setApprovalStatus(ApprovalStatus.APPROVED);
-        systemUser.setCreatedAt(LocalDateTime.now());
-        systemUser.setUpdatedAt(LocalDateTime.now());
+    // ── step 1 ────────────────────────────────────────────────────────────────
 
-        userRepository.save(systemUser);
-        log.info("✅ SYSTEM user created for audit logging");
-      } else {
-        log.info("✅ SYSTEM user already exists");
-      }
-    } catch (Exception e) {
-      log.error("❌ Failed to create SYSTEM user: {}", e.getMessage(), e);
-      throw new RuntimeException("SYSTEM user creation failed", e);
-    }
-  }
-
-  /**
-   * Normalizes Keycloak state for all APPROVED users.
-   *
-   * WHY: Existing users were auto-approved in DB during migration,
-   * but their Keycloak accounts may still be disabled, have unverified emails,
-   * or have required actions that prevent token issuance.
-   *
-   * This ensures approved users can obtain access tokens.
-   */
-  @PostConstruct
-  public void normalizeKeycloakStateForApprovedUsers() {
-    try {
-      log.info("Starting Keycloak state normalization for approved users...");
-
-      List<User> approvedUsers = userRepository.findAll().stream()
-          .filter(user -> user.getApprovalStatus() == ApprovalStatus.APPROVED)
-          .toList();
-
-      if (approvedUsers.isEmpty()) {
-        log.info("✅ No approved users to normalize.");
-        return;
-      }
-
-      int normalizedCount = 0;
-      for (User user : approvedUsers) {
+    /**
+     * Auto-approves users created before the approval system existed (null status).
+     */
+    private void migrateExistingUsers() {
         try {
-          // Skip SYSTEM user
-          if (user.getId().equals(UUID.fromString("00000000-0000-0000-0000-000000000000"))) {
-            continue;
-          }
+            List<User> usersToMigrate = userRepository.findAll().stream()
+                    .filter(u -> u.getApprovalStatus() == null)
+                    .toList();
 
-          // Normalize Keycloak state for approved users
-          keycloakAdminService.setUserEnabled(user.getId(), true);
-          keycloakAdminService.setEmailVerified(user.getId(), true);
-          keycloakAdminService.clearRequiredActions(user.getId());
+            if (usersToMigrate.isEmpty()) {
+                log.info("No users require approval-status migration.");
+                return;
+            }
 
-          normalizedCount++;
-          log.debug("Normalized Keycloak state for approved user: {} ({})", user.getEmail(), user.getId());
-
+            LocalDateTime now = LocalDateTime.now();
+            for (User u : usersToMigrate) {
+                u.setApprovalStatus(ApprovalStatus.APPROVED);
+                u.setApprovedAt(now);
+                if (u.getCreatedAt() == null) u.setCreatedAt(now);
+                if (u.getUpdatedAt() == null) u.setUpdatedAt(now);
+            }
+            userRepository.saveAll(usersToMigrate);
+            log.info("Migrated {} legacy users to APPROVED status.", usersToMigrate.size());
         } catch (Exception e) {
-          log.warn("Failed to normalize Keycloak state for user {}: {}", user.getEmail(), e.getMessage());
-          // Continue with other users - don't fail the entire process
+            log.error("User migration failed: {}", e.getMessage(), e);
         }
-      }
-
-      log.info("✅ Successfully normalized Keycloak state for {} approved users", normalizedCount);
-      log.info("These users can now obtain access tokens via password grant.");
-
-    } catch (Exception e) {
-      log.error("❌ Error during Keycloak state normalization: {}", e.getMessage(), e);
-      log.warn("Application will continue, but some approved users may not be able to login.");
-      log.warn("Manual Keycloak fixes may be required for affected users.");
     }
-  }
 
-  /**
-   * Additional startup validations can be added here.
-   *
-   * Future enhancements:
-   * - Validate database constraints
-   * - Check for orphaned records
-   * - Initialize default admin account
-   * - Verify required indexes exist
-   */
-  @PostConstruct
-  public void validateDatabaseState() {
-    log.info("Database validation complete. Application ready.");
-  }
+    // ── step 2 ────────────────────────────────────────────────────────────────
+
+    /**
+     * Creates the SYSTEM user (00000000-…) if it does not exist.
+     * Must run before SystemUserProvider.loadSystemUser() — guaranteed by
+     * the @DependsOn("databaseInitializer") on SystemUserProvider.
+     */
+    private void createSystemUser() {
+        try {
+            if (!userRepository.existsById(SYSTEM_USER_ID)) {
+                User systemUser = new User();
+                systemUser.setId(SYSTEM_USER_ID);
+                systemUser.setEmail("system@system.local");
+                systemUser.setName("SYSTEM");
+                systemUser.setApprovalStatus(ApprovalStatus.APPROVED);
+                LocalDateTime now = LocalDateTime.now();
+                systemUser.setCreatedAt(now);
+                systemUser.setUpdatedAt(now);
+                userRepository.save(systemUser);
+                log.info("SYSTEM user created for audit logging.");
+            } else {
+                log.debug("SYSTEM user already exists.");
+            }
+        } catch (Exception e) {
+            log.error("SYSTEM user creation failed: {}", e.getMessage(), e);
+            throw new RuntimeException("SYSTEM user creation failed — application cannot start", e);
+        }
+    }
+
+    // ── step 3 ────────────────────────────────────────────────────────────────
+
+    /**
+     * H-11 FIX: Calls activateUser() — one atomic Keycloak operation — instead
+     * of three separate HTTP calls (setUserEnabled + setEmailVerified +
+     * clearRequiredActions) that each open a round-trip to Keycloak.
+     */
+    private void normalizeKeycloakStateForApprovedUsers() {
+        try {
+            List<User> approvedUsers = userRepository.findAll().stream()
+                    .filter(u -> u.getApprovalStatus() == ApprovalStatus.APPROVED)
+                    .filter(u -> !SYSTEM_USER_ID.equals(u.getId()))
+                    .toList();
+
+            if (approvedUsers.isEmpty()) {
+                log.info("No approved users require Keycloak normalization.");
+                return;
+            }
+
+            int normalized = 0;
+            for (User u : approvedUsers) {
+                try {
+                    // H-11 FIX: single activateUser() call instead of 3 separate calls
+                    keycloakAdminService.activateUser(u.getId());
+                    normalized++;
+                } catch (Exception e) {
+                    log.warn("Keycloak normalization failed for user {}: {}", u.getEmail(), e.getMessage());
+                }
+            }
+            log.info("Keycloak normalization complete: {} users activated.", normalized);
+        } catch (Exception e) {
+            log.error("Keycloak normalization error: {}", e.getMessage(), e);
+            log.warn("Application will continue — some approved users may not be able to log in.");
+        }
+    }
+
+    // ── step 4 ────────────────────────────────────────────────────────────────
+
+    private void validateDatabaseState() {
+        log.info("Database initialization complete. Application is ready.");
+    }
 }

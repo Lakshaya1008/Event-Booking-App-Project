@@ -6,16 +6,17 @@ import com.event.tickets.domain.entities.AuditLog;
 import com.event.tickets.domain.entities.QrCode;
 import com.event.tickets.domain.entities.QrCodeStatusEnum;
 import com.event.tickets.domain.entities.Ticket;
+import com.event.tickets.domain.entities.TicketStatusEnum;
 import com.event.tickets.domain.entities.TicketValidation;
 import com.event.tickets.domain.entities.TicketValidationMethod;
 import com.event.tickets.domain.entities.TicketValidationStatusEnum;
 import com.event.tickets.domain.entities.User;
 import com.event.tickets.services.SystemUserProvider;
 import com.event.tickets.exceptions.EventNotFoundException;
+import com.event.tickets.exceptions.InvalidBusinessStateException;
 import com.event.tickets.exceptions.QrCodeNotFoundException;
 import com.event.tickets.exceptions.TicketNotFoundException;
 import com.event.tickets.exceptions.UserNotFoundException;
-import com.event.tickets.repositories.AuditLogRepository;
 import com.event.tickets.repositories.EventRepository;
 import com.event.tickets.repositories.QrCodeRepository;
 import com.event.tickets.repositories.TicketRepository;
@@ -39,12 +40,16 @@ import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
 
 /**
- * Ticket Validation Service Implementation
+ * H-02 FIX: validateTicket() now rejects CANCELLED tickets immediately.
+ * Previously the method only checked past validation records to detect
+ * duplicate scans — it never verified the ticket's own status. A CANCELLED
+ * ticket with no prior scans would be marked VALID, letting a cancelled
+ * attendee walk through the door.
  *
- * Key fixes applied:
- * 1. validateTicket() now receives the validator (User) and stores it in TicketValidation.validatedBy
- * 2. Successful validations are now audited (TICKET_VALIDATED action)
- * 3. Failed validations still emit FAILED_TICKET_VALIDATION
+ * L-20 FIX: Removed dead AuditLogRepository dependency. It was injected but
+ * never used — all audit writes go through AuditLogService. The unused field
+ * forced every test that mocks this class to also provide an AuditLogRepository
+ * mock, or Mockito would inject null and silently suppress NPEs in audit helpers.
  */
 @Service
 @RequiredArgsConstructor
@@ -52,13 +57,14 @@ import static com.event.tickets.util.RequestUtil.extractUserAgent;
 @Transactional
 public class TicketValidationServiceImpl implements TicketValidationService {
 
+    // L-20 FIX: AuditLogRepository removed — was injected but never used directly.
+    // All audit writes go through AuditLogService.saveAuditLog().
     private final QrCodeRepository qrCodeRepository;
     private final TicketValidationRepository ticketValidationRepository;
     private final TicketRepository ticketRepository;
     private final EventRepository eventRepository;
     private final AuthorizationService authorizationService;
     private final UserRepository userRepository;
-    private final AuditLogRepository auditLogRepository;
     private final SystemUserProvider systemUserProvider;
     private final AuditLogService auditLogService;
 
@@ -70,20 +76,15 @@ public class TicketValidationServiceImpl implements TicketValidationService {
         try {
             QrCode qrCode = qrCodeRepository.findByIdAndStatus(qrCodeId, QrCodeStatusEnum.ACTIVE)
                     .orElseThrow(() -> new QrCodeNotFoundException(
-                            String.format("QR Code with ID %s was not found", qrCodeId)
-                    ));
+                            String.format("QR Code with ID %s was not found", qrCodeId)));
 
             Ticket ticket = qrCode.getTicket();
             Event event = ticket.getTicketType().getEvent();
 
             authorizationService.requireOrganizerOrStaffAccess(userId, event);
 
-            // Pass validator so it gets stored on the record
             TicketValidation result = validateTicket(ticket, TicketValidationMethod.QR_SCAN, validator);
-
-            // Audit successful validation
             emitSuccessfulTicketValidation(validator, ticket, "QR_SCAN");
-
             return result;
 
         } catch (QrCodeNotFoundException e) {
@@ -102,15 +103,10 @@ public class TicketValidationServiceImpl implements TicketValidationService {
                     .orElseThrow(TicketNotFoundException::new);
 
             Event event = ticket.getTicketType().getEvent();
-
             authorizationService.requireOrganizerOrStaffAccess(userId, event);
 
-            // Pass validator so it gets stored on the record
             TicketValidation result = validateTicket(ticket, TicketValidationMethod.MANUAL, validator);
-
-            // Audit successful validation
             emitSuccessfulTicketValidation(validator, ticket, "MANUAL");
-
             return result;
 
         } catch (TicketNotFoundException e) {
@@ -120,41 +116,46 @@ public class TicketValidationServiceImpl implements TicketValidationService {
     }
 
     /**
-     * Core validation logic.
+     * H-02 FIX: CANCELLED tickets are now rejected before any duplicate-scan check.
      *
-     * A ticket is VALID on first scan. Any subsequent scan marks it INVALID
-     * (already used). The validator identity is now stored so we know exactly
-     * who scanned which ticket at what time.
+     * Previous logic only examined past validations to detect already-used tickets.
+     * It never looked at ticket.getStatus(). A CANCELLED ticket with no prior
+     * validation records would reach the stream, find no VALID entry, and receive
+     * TicketValidationStatusEnum.VALID — letting a cancelled attendee enter the event.
+     *
+     * New logic:
+     *   1. Reject CANCELLED tickets with InvalidBusinessStateException.
+     *   2. VALID on first scan (no prior VALID validation).
+     *   3. INVALID on any subsequent scan (already has a VALID validation record).
      */
-    private TicketValidation validateTicket(Ticket ticket,
-                                            TicketValidationMethod method, User validator) {
+    private TicketValidation validateTicket(Ticket ticket, TicketValidationMethod method, User validator) {
+        // H-02 FIX: reject CANCELLED tickets — must check before the duplicate-scan logic
+        if (TicketStatusEnum.CANCELLED.equals(ticket.getStatus())) {
+            throw new InvalidBusinessStateException(
+                    "Ticket " + ticket.getId() + " has been cancelled and cannot be validated.");
+        }
 
         TicketValidationStatusEnum status = ticket.getValidations().stream()
                 .filter(v -> TicketValidationStatusEnum.VALID.equals(v.getStatus()))
                 .findFirst()
-                .map(v -> TicketValidationStatusEnum.INVALID)   // already validated once → INVALID
-                .orElse(TicketValidationStatusEnum.VALID);      // first scan → VALID
+                .map(v -> TicketValidationStatusEnum.INVALID)   // already scanned → INVALID
+                .orElse(TicketValidationStatusEnum.VALID);       // first scan → VALID
 
         TicketValidation validation = new TicketValidation();
         validation.setTicket(ticket);
         validation.setValidationMethod(method);
-        validation.setValidatedBy(validator);               // FIX #1: record who scanned
+        validation.setValidatedBy(validator);
         validation.setStatus(status);
 
         return ticketValidationRepository.save(validation);
     }
 
-    // ─── listing operations ────────────────────────────────────────────────────
-
     @Override
     public Page<TicketValidation> listValidationsForEvent(UUID userId, UUID eventId, Pageable pageable) {
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new EventNotFoundException(
-                        String.format("Event with ID '%s' not found", eventId)
-                ));
-
+                        String.format("Event with ID '%s' not found", eventId)));
         authorizationService.requireOrganizerOrStaffAccess(userId, event);
-
         return ticketValidationRepository.findByTicketTicketTypeEventId(eventId, pageable);
     }
 
@@ -162,20 +163,10 @@ public class TicketValidationServiceImpl implements TicketValidationService {
     public List<TicketValidation> getValidationsByTicket(UUID userId, UUID ticketId) {
         Ticket ticket = ticketRepository.findById(ticketId)
                 .orElseThrow(TicketNotFoundException::new);
-
-        Event event = ticket.getTicketType().getEvent();
-
-        authorizationService.requireOrganizerOrStaffAccess(userId, event);
-
+        authorizationService.requireOrganizerOrStaffAccess(userId, ticket.getTicketType().getEvent());
         return ticketValidationRepository.findByTicketId(ticketId);
     }
 
-    // ─── audit helpers ─────────────────────────────────────────────────────────
-
-    /**
-     * Audits a SUCCESSFUL ticket validation.
-     * Previously no success audit existed — only failures were logged.
-     */
     private void emitSuccessfulTicketValidation(User validator, Ticket ticket, String method) {
         try {
             AuditLog auditLog = AuditLog.builder()
@@ -191,16 +182,13 @@ public class TicketValidationServiceImpl implements TicketValidationService {
                     .build();
             auditLogService.saveAuditLog(auditLog);
         } catch (Exception e) {
-            log.error("Failed to emit TICKET_VALIDATED audit event: ticketId={}, error={}",
-                    ticket.getId(), e.getMessage());
+            log.error("Failed to emit TICKET_VALIDATED audit: ticketId={}", ticket.getId(), e);
         }
     }
 
     private void emitFailedTicketValidation(User user, Ticket ticket, String reason, String method) {
         try {
-            if (user == null) {
-                user = systemUserProvider.getSystemUser();
-            }
+            if (user == null) user = systemUserProvider.getSystemUser();
             AuditLog auditLog = AuditLog.builder()
                     .action(AuditAction.FAILED_TICKET_VALIDATION)
                     .actor(user)
@@ -214,7 +202,7 @@ public class TicketValidationServiceImpl implements TicketValidationService {
                     .build();
             auditLogService.saveAuditLog(auditLog);
         } catch (Exception e) {
-            log.error("Failed to emit FAILED_TICKET_VALIDATION audit event: error={}", e.getMessage());
+            log.error("Failed to emit FAILED_TICKET_VALIDATION audit: {}", e.getMessage());
         }
     }
 

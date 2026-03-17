@@ -312,6 +312,30 @@ public class GlobalExceptionHandler {
 
     // ============= 404 NOT FOUND =============
 
+    @ExceptionHandler(QrCodeNotFoundException.class)
+    public ResponseEntity<ErrorDto> handleQrCodeNotFoundException(
+            QrCodeNotFoundException ex, HttpServletRequest request) {
+        log.warn("QR code not found: {}", ex.getMessage());
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("QR Code Not Found");
+        errorDto.setMessage(sanitizeErrorMessage(ex.getMessage()));
+        errorDto.setStatusCode(404);
+        errorDto.setStatusDescription("NOT FOUND - QR code does not exist or is not active");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        errorDto.setPossibleCauses(Arrays.asList(
+                "CLIENT ISSUE: QR code ID is invalid or not yet generated",
+                "CLIENT ISSUE: Ticket was cancelled — QR code deactivated",
+                "CLIENT ISSUE: QR code was already revoked"
+        ));
+        errorDto.setSolutions(Arrays.asList(
+                "Re-download the QR code from GET /api/v1/tickets/{ticketId}/qr-codes/png",
+                "Check that the ticket status is PURCHASED (not CANCELLED)",
+                "Contact the event organizer if the issue persists"
+        ));
+        return new ResponseEntity<>(errorDto, HttpStatus.NOT_FOUND);
+    }
+
     @ExceptionHandler(NoHandlerFoundException.class)
     public ResponseEntity<ErrorDto> handleNoHandlerFoundException(
             NoHandlerFoundException ex, HttpServletRequest request) {
@@ -386,7 +410,7 @@ public class GlobalExceptionHandler {
 
     // ============= 500 INTERNAL SERVER ERROR =============
 
-    @ExceptionHandler({QrCodeGenerationException.class, QrCodeNotFoundException.class,
+    @ExceptionHandler({QrCodeGenerationException.class,
             DataIntegrityViolationException.class, KeycloakOperationException.class})
     public ResponseEntity<ErrorDto> handleInternalServerError(
             Exception ex, HttpServletRequest request) {
