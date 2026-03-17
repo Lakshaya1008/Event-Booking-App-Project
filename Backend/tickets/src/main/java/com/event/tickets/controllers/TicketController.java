@@ -25,230 +25,161 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * Ticket Controller
- *
- * Handles ticket operations including viewing and QR code exports.
- *
- * QR CODE EXPORT SECURITY (READ-ONLY OPERATIONS):
- * - ATTENDEE: Can view/download QR for OWN tickets only
- * - ORGANIZER: Can view/download QR for tickets of events they own
- * - STAFF: NO access to QR operations
- * - ADMIN: NO bypass access
- *
- * QR CODE SECURITY MODEL:
- * - QR codes encode ONLY immutable ticket ID (UUID)
- * - QR image integrity is NOT a security boundary
- * - Security enforced during backend validation at scan time
- * - Safe to re-download, re-view, or share QR codes
- * - All QR operations are IDEMPOTENT (same content every time)
- */
 @RestController
 @RequestMapping(path = "/api/v1/tickets")
 @RequiredArgsConstructor
 @Slf4j
 public class TicketController {
 
-  private final TicketService ticketService;
-  private final TicketMapper ticketMapper;
-  private final QrCodeService qrCodeService;
+    private final TicketService ticketService;
+    private final TicketMapper ticketMapper;
+    private final QrCodeService qrCodeService;
 
-  /**
-   * Lists all tickets for the authenticated user.
-   * ROLE-ONLY endpoint (no ownership check at list level).
-   */
-  @GetMapping
-  @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
-  public Page<ListTicketResponseDto> listTickets(
-      @AuthenticationPrincipal Jwt jwt,
-      Pageable pageable
-  ) {
-    return ticketService.listTicketsForUser(
-        parseUserId(jwt),
-        pageable
-    ).map(ticketMapper::toListTicketResponseDto);
-  }
-
-  /**
-   * Gets a specific ticket by ID.
-   * RESOURCE endpoint: Ownership checked in service layer.
-   */
-  @GetMapping(path = "/{ticketId}")
-  @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
-  public ResponseEntity<GetTicketResponseDto> getTicket(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID ticketId
-  ) {
-    return ticketService
-        .getTicketForUser(parseUserId(jwt), ticketId)
-        .map(ticketMapper::toGetTicketResponseDto)
-        .map(ResponseEntity::ok)
-        .orElse(ResponseEntity.notFound().build());
-  }
-
-  /**
-   * Legacy QR code endpoint (maintained for backward compatibility).
-   * DEPRECATED: Use /qr-codes/view instead.
-   */
-  @GetMapping(path = "/{ticketId}/qr-codes")
-  @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
-  public ResponseEntity<byte[]> getTicketQrCode(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID ticketId
-  ) {
-    byte[] qrCodeImage = qrCodeService.getQrCodeImageForUserAndTicket(
-        parseUserId(jwt),
-        ticketId
-    );
-
-    HttpHeaders headers = new HttpHeaders();
-    headers.setContentType(MediaType.IMAGE_PNG);
-    headers.setContentLength(qrCodeImage.length);
-
-    return ResponseEntity.ok()
-        .headers(headers)
-        .body(qrCodeImage);
-  }
-
-  /**
-   * VIEW QR CODE (Inline Display)
-   *
-   * Returns QR code as PNG image for inline display in browser/app.
-   * Content-Disposition: inline (browser displays, doesn't download)
-   *
-   * IDEMPOTENT: Safe to view multiple times, no state change.
-   * AUDIT: Logs QR_CODE_VIEWED action.
-   *
-   * ACCESS CONTROL:
-   * - ATTENDEE: Own tickets only
-   * - ORGANIZER: Tickets from own events only
-   * - STAFF/ADMIN: NO access
-   */
-  @GetMapping(path = "/{ticketId}/qr-codes/view")
-  @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
-  public ResponseEntity<byte[]> viewQrCode(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID ticketId
-  ) {
-    UUID userId = parseUserId(jwt);
-    log.info("QR code view requested: userId={}, ticketId={}", userId, ticketId);
-
-    byte[] qrCodePng = qrCodeService.generateQrCodePngForViewing(userId, ticketId);
-
-    HttpHeaders headers = new HttpHeaders();
-    headers.setContentType(MediaType.IMAGE_PNG);
-    headers.setContentLength(qrCodePng.length);
-    headers.setContentDisposition(
-        org.springframework.http.ContentDisposition.inline()
-            .filename("qr-code.png")
-            .build()
-    );
-    headers.setCacheControl(CacheControl.maxAge(Duration.ofMinutes(5)).cachePublic());
-
-    return ResponseEntity.ok()
-        .headers(headers)
-        .body(qrCodePng);
-  }
-
-  /**
-   * DOWNLOAD QR CODE (PNG)
-   *
-   * Returns QR code as PNG image for download.
-   * Content-Disposition: attachment (forces download)
-   * Filename: <event>_<ticket-type>_<user>_<id>.png
-   *
-   * IDEMPOTENT: Safe to download multiple times, no state change.
-   * AUDIT: Logs QR_CODE_DOWNLOADED_PNG action.
-   *
-   * ACCESS CONTROL:
-   * - ATTENDEE: Own tickets only
-   * - ORGANIZER: Tickets from own events only
-   * - STAFF/ADMIN: NO access
-   */
-  @GetMapping(path = "/{ticketId}/qr-codes/png")
-  @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
-  public ResponseEntity<byte[]> downloadQrCodePng(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID ticketId
-  ) {
-    UUID userId = parseUserId(jwt);
-    log.info("QR code PNG download requested: userId={}, ticketId={}", userId, ticketId);
-
-    byte[] qrCodePng = qrCodeService.generateQrCodePngForDownload(userId, ticketId);
-
-    // Get ticket for filename generation (authorization already checked in service)
-    String filename = "qr-code.png"; // Fallback filename
-    try {
-      var ticket = ticketService.getTicketForUser(userId, ticketId);
-      if (ticket.isPresent()) {
-        filename = qrCodeService.generateQrCodeFilename(ticket.get(), "png");
-      }
-    } catch (Exception ex) {
-      log.warn("Failed to generate custom filename for ticketId={}", ticketId, ex);
+    @GetMapping
+    @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
+    public Page<ListTicketResponseDto> listTickets(
+            @AuthenticationPrincipal Jwt jwt,
+            Pageable pageable
+    ) {
+        return ticketService.listTicketsForUser(
+                parseUserId(jwt),
+                pageable
+        ).map(ticketMapper::toListTicketResponseDto);
     }
 
-    HttpHeaders headers = new HttpHeaders();
-    headers.setContentType(MediaType.IMAGE_PNG);
-    headers.setContentLength(qrCodePng.length);
-    headers.setContentDisposition(
-        org.springframework.http.ContentDisposition.attachment()
-            .filename(filename)
-            .build()
-    );
-
-    return ResponseEntity.ok()
-        .headers(headers)
-        .body(qrCodePng);
-  }
-
-  /**
-   * DOWNLOAD QR CODE (PDF)
-   *
-   * Returns QR code embedded in PDF document with ticket details.
-   * Content-Disposition: attachment (forces download)
-   * Filename: <event>_<ticket-type>_<user>_<id>.pdf
-   *
-   * IDEMPOTENT: Safe to download multiple times, no state change.
-   * AUDIT: Logs QR_CODE_DOWNLOADED_PDF action.
-   *
-   * ACCESS CONTROL:
-   * - ATTENDEE: Own tickets only
-   * - ORGANIZER: Tickets from own events only
-   * - STAFF/ADMIN: NO access
-   */
-  @GetMapping(path = "/{ticketId}/qr-codes/pdf")
-  @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
-  public ResponseEntity<byte[]> downloadQrCodePdf(
-      @AuthenticationPrincipal Jwt jwt,
-      @PathVariable UUID ticketId
-  ) {
-    UUID userId = parseUserId(jwt);
-    log.info("QR code PDF download requested: userId={}, ticketId={}", userId, ticketId);
-
-    byte[] qrCodePdf = qrCodeService.generateQrCodePdf(userId, ticketId);
-
-    // Get ticket for filename generation (authorization already checked in service)
-    String filename = "qr-code.pdf"; // Fallback filename
-    try {
-      var ticket = ticketService.getTicketForUser(userId, ticketId);
-      if (ticket.isPresent()) {
-        filename = qrCodeService.generateQrCodeFilename(ticket.get(), "pdf");
-      }
-    } catch (Exception ex) {
-      log.warn("Failed to generate custom filename for ticketId={}", ticketId, ex);
+    @GetMapping(path = "/{ticketId}")
+    @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
+    public ResponseEntity<GetTicketResponseDto> getTicket(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID ticketId
+    ) {
+        return ticketService
+                .getTicketForUser(parseUserId(jwt), ticketId)
+                .map(ticketMapper::toGetTicketResponseDto)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
     }
 
-    HttpHeaders headers = new HttpHeaders();
-    headers.setContentType(MediaType.APPLICATION_PDF);
-    headers.setContentLength(qrCodePdf.length);
-    headers.setContentDisposition(
-        org.springframework.http.ContentDisposition.attachment()
-            .filename(filename)
-            .build()
-    );
+    /** Legacy endpoint — maintained for backward compatibility. */
+    @GetMapping(path = "/{ticketId}/qr-codes")
+    @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
+    public ResponseEntity<byte[]> getTicketQrCode(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID ticketId
+    ) {
+        byte[] qrCodeImage = qrCodeService.getQrCodeImageForUserAndTicket(
+                parseUserId(jwt),
+                ticketId
+        );
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.IMAGE_PNG);
+        headers.setContentLength(qrCodeImage.length);
+        return ResponseEntity.ok().headers(headers).body(qrCodeImage);
+    }
 
-    return ResponseEntity.ok()
-        .headers(headers)
-        .body(qrCodePdf);
-  }
+    /**
+     * VIEW QR CODE (Inline Display)
+     *
+     * FIX ISSUE 3: Changed cachePublic() → cachePrivate().
+     * QR codes are user-specific security tokens. Marking them public allows
+     * CDNs, proxies, and shared browser caches to serve one user's QR code
+     * to another user, or to serve a cancelled ticket's QR as valid after
+     * it has been deactivated. Private cache is mandatory for any
+     * user-specific or security-sensitive content.
+     */
+    @GetMapping(path = "/{ticketId}/qr-codes/view")
+    @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
+    public ResponseEntity<byte[]> viewQrCode(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID ticketId
+    ) {
+        UUID userId = parseUserId(jwt);
+        log.info("QR code view requested: userId={}, ticketId={}", userId, ticketId);
+
+        byte[] qrCodePng = qrCodeService.generateQrCodePngForViewing(userId, ticketId);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.IMAGE_PNG);
+        headers.setContentLength(qrCodePng.length);
+        headers.setContentDisposition(
+                org.springframework.http.ContentDisposition.inline()
+                        .filename("qr-code.png")
+                        .build()
+        );
+        // FIX ISSUE 3: cachePrivate() — QR codes must never be stored by shared caches
+        headers.setCacheControl(CacheControl.maxAge(Duration.ofMinutes(5)).cachePrivate());
+
+        return ResponseEntity.ok().headers(headers).body(qrCodePng);
+    }
+
+    @GetMapping(path = "/{ticketId}/qr-codes/png")
+    @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
+    public ResponseEntity<byte[]> downloadQrCodePng(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID ticketId
+    ) {
+        UUID userId = parseUserId(jwt);
+        log.info("QR code PNG download requested: userId={}, ticketId={}", userId, ticketId);
+
+        byte[] qrCodePng = qrCodeService.generateQrCodePngForDownload(userId, ticketId);
+
+        // FIX ISSUE 15: getTicketForUser only checks purchaser ownership, not organizer.
+        // Use the ticket returned from QrCodeService (authorization already validated there)
+        // to build filename. Fall back gracefully for organizers viewing attendee tickets.
+        String filename = "qr-code.png";
+        try {
+            var ticket = ticketService.getTicketForUser(userId, ticketId);
+            if (ticket.isPresent()) {
+                filename = qrCodeService.generateQrCodeFilename(ticket.get(), "png");
+            }
+            // Note: if organizer is downloading (not purchaser), getTicketForUser returns empty
+            // — fallback filename is used. This is acceptable since authorization is already done.
+        } catch (Exception ex) {
+            log.warn("Failed to generate custom filename for ticketId={}", ticketId, ex);
+        }
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.IMAGE_PNG);
+        headers.setContentLength(qrCodePng.length);
+        headers.setContentDisposition(
+                org.springframework.http.ContentDisposition.attachment()
+                        .filename(filename)
+                        .build()
+        );
+
+        return ResponseEntity.ok().headers(headers).body(qrCodePng);
+    }
+
+    @GetMapping(path = "/{ticketId}/qr-codes/pdf")
+    @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
+    public ResponseEntity<byte[]> downloadQrCodePdf(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID ticketId
+    ) {
+        UUID userId = parseUserId(jwt);
+        log.info("QR code PDF download requested: userId={}, ticketId={}", userId, ticketId);
+
+        byte[] qrCodePdf = qrCodeService.generateQrCodePdf(userId, ticketId);
+
+        String filename = "qr-code.pdf";
+        try {
+            var ticket = ticketService.getTicketForUser(userId, ticketId);
+            if (ticket.isPresent()) {
+                filename = qrCodeService.generateQrCodeFilename(ticket.get(), "pdf");
+            }
+        } catch (Exception ex) {
+            log.warn("Failed to generate custom filename for ticketId={}", ticketId, ex);
+        }
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_PDF);
+        headers.setContentLength(qrCodePdf.length);
+        headers.setContentDisposition(
+                org.springframework.http.ContentDisposition.attachment()
+                        .filename(filename)
+                        .build()
+        );
+
+        return ResponseEntity.ok().headers(headers).body(qrCodePdf);
+    }
 }

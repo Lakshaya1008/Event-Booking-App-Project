@@ -45,18 +45,6 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
 
-/**
- * H-06 FIX: purchaseTickets() per-type availability check now uses
- * countActiveByTicketTypeId() (excludes CANCELLED) instead of countByTicketTypeId().
- * Previously, cancelled tickets permanently consumed slots — 100 available,
- * 10 sold, 3 cancelled still showed 10 used, blocking the 8th slot when only 7 remain.
- *
- * H-07 FIX: updateTicketType() sold-guard now uses countActiveByTicketTypeId().
- * Previously organizers could not raise totalAvailable back above the
- * CANCELLED-inclusive count even when real demand justified it.
- *
- * M-08 FIX: TICKET_PURCHASED AuditAction is now emitted after every purchase.
- */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -76,10 +64,9 @@ public class TicketTypeServiceImpl implements TicketTypeService {
     @Override
     @Transactional
     public List<Ticket> purchaseTickets(UUID userId, UUID ticketTypeId, int quantity) {
-        // FIX #3: Add audit logging for failed operations
         HttpServletRequest request = getCurrentRequest();
-        String clientIp = extractClientIp(request);
-        String userAgent = extractUserAgent(request);
+        String clientIp = extractClientIpSafely(request);
+        String userAgent = extractUserAgentSafely(request);
 
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> {
@@ -104,8 +91,8 @@ public class TicketTypeServiceImpl implements TicketTypeService {
             auditPurchaseFailure(userId, event, reason, clientIp, userAgent);
             throw new InvalidBusinessStateException(
                     EventStatusEnum.CANCELLED.equals(event.getStatus())
-                    ? "This event has been cancelled."
-                    : "Tickets are not available — the event is not open for sales.");
+                            ? "This event has been cancelled."
+                            : "Tickets are not available — the event is not open for sales.");
         }
 
         LocalDateTime now = LocalDateTime.now();
@@ -120,10 +107,8 @@ public class TicketTypeServiceImpl implements TicketTypeService {
                     String.format("Sales have closed. Sales ended at %s.", event.getSalesEnd()));
         }
 
-        // H-06 FIX: use countActiveByTicketTypeId — CANCELLED slots are freed back up
         int activeForType = ticketRepository.countActiveByTicketTypeId(
                 ticketType.getId(), TicketStatusEnum.CANCELLED);
-        // NEW FIX: null totalAvailable means unlimited — treat as no cap
         if (ticketType.getTotalAvailable() != null
                 && activeForType + quantity > ticketType.getTotalAvailable()) {
             auditPurchaseFailure(userId, event, "SOLD_OUT_TICKET_TYPE", clientIp, userAgent);
@@ -175,7 +160,6 @@ public class TicketTypeServiceImpl implements TicketTypeService {
             createdTickets.add(savedTicket);
         }
 
-        // M-08 FIX: emit TICKET_PURCHASED audit
         emitTicketPurchasedAudit(user, event, ticketType, quantity);
 
         emailService.sendTicketConfirmationEmail(
@@ -245,7 +229,6 @@ public class TicketTypeServiceImpl implements TicketTypeService {
                 .orElseThrow(() -> new TicketTypeNotFoundException(
                         String.format("Ticket type '%s' not found for event '%s'", ticketTypeId, eventId)));
 
-        // H-07 FIX: use countActiveByTicketTypeId — CANCELLED tickets do not block raising totalAvailable
         if (request.getTotalAvailable() != null) {
             int activeAlreadySold = ticketRepository.countActiveByTicketTypeId(
                     ticketTypeId, TicketStatusEnum.CANCELLED);
@@ -264,6 +247,16 @@ public class TicketTypeServiceImpl implements TicketTypeService {
         return ticketTypeRepository.save(ticketType);
     }
 
+    /**
+     * FIX ISSUE 6: Only block deletion when there are ACTIVE (non-cancelled) tickets.
+     *
+     * BEFORE: checked ticketType.getTickets().isEmpty() — blocked deletion even
+     * when ALL tickets had been cancelled (e.g. event cancellation cancelled all of them).
+     * Organizer could never clean up the ticket type structure after a cancellation.
+     *
+     * AFTER: counts only non-CANCELLED tickets. If all tickets are cancelled,
+     * deletion proceeds. Historical data is preserved until the parent event is deleted.
+     */
     @Override
     @Transactional
     public void deleteTicketType(UUID organizerId, UUID eventId, UUID ticketTypeId) {
@@ -271,8 +264,16 @@ public class TicketTypeServiceImpl implements TicketTypeService {
         TicketType ticketType = ticketTypeRepository.findByIdAndEventId(ticketTypeId, eventId)
                 .orElseThrow(() -> new TicketTypeNotFoundException(
                         String.format("Ticket type '%s' not found for event '%s'", ticketTypeId, eventId)));
-        if (!ticketType.getTickets().isEmpty()) {
-            throw new TicketTypeDeleteNotAllowedException("Cannot delete ticket type with sold tickets");
+
+        // FIX ISSUE 6: count only active tickets — cancelled tickets must not block deletion
+        long activeTickets = ticketType.getTickets().stream()
+                .filter(t -> !TicketStatusEnum.CANCELLED.equals(t.getStatus()))
+                .count();
+        if (activeTickets > 0) {
+            throw new TicketTypeDeleteNotAllowedException(String.format(
+                    "Cannot delete ticket type with %d active (non-cancelled) sold ticket(s). " +
+                            "Cancel the event first, or set totalAvailable to 0 to stop further sales.",
+                    activeTickets));
         }
         ticketTypeRepository.delete(ticketType);
     }
@@ -311,16 +312,15 @@ public class TicketTypeServiceImpl implements TicketTypeService {
         }
     }
 
-    // NEW: Helper to audit purchase failures
     private void auditPurchaseFailure(UUID userId, Event event, String reason,
                                       String clientIp, String userAgent) {
         try {
             User actor = userId != null ?
-                userRepository.findById(userId).orElse(systemUserProvider.getSystemUser()) :
-                systemUserProvider.getSystemUser();
+                    userRepository.findById(userId).orElse(systemUserProvider.getSystemUser()) :
+                    systemUserProvider.getSystemUser();
 
             AuditLog auditLog = AuditLog.builder()
-                    .action(AuditAction.TICKET_PURCHASE_FAILED)
+                    .action(AuditAction.TICKET_PURCHASE_FAILED)   // FIX ISSUE 2: now exists in enum
                     .actor(actor)
                     .event(event)
                     .resourceType("TICKET")
@@ -340,18 +340,13 @@ public class TicketTypeServiceImpl implements TicketTypeService {
         return attributes != null ? attributes.getRequest() : null;
     }
 
-    // NEW: Safe extraction for audit logging - never returns null
     private String extractClientIpSafely(HttpServletRequest request) {
-        if (request == null) {
-            return "unknown";
-        }
+        if (request == null) return "unknown";
         return extractClientIp(request);
     }
 
     private String extractUserAgentSafely(HttpServletRequest request) {
-        if (request == null) {
-            return "unknown";
-        }
+        if (request == null) return "unknown";
         return extractUserAgent(request);
     }
 }

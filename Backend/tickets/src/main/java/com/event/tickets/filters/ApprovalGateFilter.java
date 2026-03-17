@@ -27,16 +27,6 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
 
-/**
- * Approval Gate Filter
- *
- * FIX #10: emitApprovalGateViolation() previously called extractClientIp(null)
- * and extractUserAgent(null), producing null/unknown in every audit record.
- * The HttpServletRequest was available in doFilterInternal() but not being passed
- * down to the private method. Every violation audit had no forensic data.
- *
- * Fix: request is now passed as a parameter to emitApprovalGateViolation().
- */
 @Component
 @Order(2)
 @RequiredArgsConstructor
@@ -46,18 +36,29 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
     private final UserRepository userRepository;
     private final AuditLogService auditLogService;
     private final SystemUserProvider systemUserProvider;
-    /**
-     * L-15 style FIX: ObjectMapper injected by Spring, not created with new.
-     * ApprovalGateFilter writes error responses — using a separate ObjectMapper
-     * instance would serialize timestamps differently from the rest of the API.
-     */
     private final ObjectMapper objectMapper;
 
+    /**
+     * FIX ISSUE 9: Added Swagger UI and actuator paths to the bypass list.
+     *
+     * BEFORE: A PENDING user hitting /swagger-ui.html would get 403 APPROVAL_PENDING
+     * instead of the documentation page. Same for Kubernetes/Render health probes
+     * that authenticate with a JWT but hit /actuator/health.
+     *
+     * AFTER: Swagger and all actuator endpoints bypass the approval gate.
+     * This is safe because:
+     * - Actuator endpoints are individually secured in SecurityConfig
+     * - Swagger UI is read-only documentation
+     * - Business endpoints (/api/v1/**) still require APPROVED status
+     */
     private static final String[] APPROVAL_BYPASS_PATHS = {
             "/api/v1/auth/register",
-            "/actuator/health",
-            "/actuator/info",
-            "/api/v1/invites/redeem"
+            "/actuator",               // all actuator endpoints including health, info, metrics
+            "/api/v1/invites/redeem",
+            // FIX ISSUE 9: Swagger/OpenAPI endpoints — docs must be accessible regardless of approval
+            "/swagger-ui",
+            "/v3/api-docs",
+            "/api-docs",
     };
 
     @Override
@@ -94,10 +95,7 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
 
             if (status == ApprovalStatus.PENDING) {
                 log.warn("APPROVAL GATE BLOCK: PENDING — userId={}, email={}, path={}", userId, user.getEmail(), path);
-
-                // FIX #10: pass request so real IP and UserAgent are captured in audit
                 emitApprovalGateViolation(user, path, method, "PENDING", request);
-
                 sendForbiddenResponse(response, "APPROVAL_PENDING",
                         "Your account is awaiting approval from an administrator. " +
                                 "You will be notified once your account has been reviewed.",
@@ -107,12 +105,8 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
 
             if (status == ApprovalStatus.REJECTED) {
                 log.warn("APPROVAL GATE BLOCK: REJECTED — userId={}, email={}, path={}", userId, user.getEmail(), path);
-
                 String reason = user.getRejectionReason() != null ? user.getRejectionReason() : "No reason provided";
-
-                // FIX #10: pass request
                 emitApprovalGateViolation(user, path, method, "REJECTED: " + reason, request);
-
                 sendForbiddenResponse(response, "APPROVAL_REJECTED",
                         "Your account has been rejected. Reason: " + reason,
                         userId.toString());
@@ -151,11 +145,6 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
         response.getWriter().write(objectMapper.writeValueAsString(errorBody));
     }
 
-    /**
-     * FIX #10: Accepts HttpServletRequest so real IP and UserAgent are recorded.
-     * Old signature had no request parameter — used extractClientIp(null) which
-     * always produced "unknown", defeating the purpose of the audit trail.
-     */
     private void emitApprovalGateViolation(User user, String path, String method,
                                            String reason, HttpServletRequest request) {
         try {

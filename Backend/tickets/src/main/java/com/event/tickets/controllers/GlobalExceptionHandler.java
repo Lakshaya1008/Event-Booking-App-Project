@@ -23,9 +23,9 @@ import jakarta.validation.ConstraintViolationException;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
@@ -46,600 +46,93 @@ public class GlobalExceptionHandler {
     @Value("${spring.profiles.active:dev}")
     private String activeProfile;
 
-    // ============= 400 BAD REQUEST =============
+    // ============= 400 BAD REQUEST — VALIDATION =============
 
+    /**
+     * FIX: Now returns ALL field validation errors, not just the first one.
+     *
+     * BEFORE: fieldErrors.get(0).getDefaultMessage() — only showed the first failing field.
+     * A request with 3 invalid fields forced 3 round-trips to discover all the problems.
+     *
+     * AFTER: All field errors are collected into errorDto.validationErrors as a list.
+     * The message summarises how many fields failed. The client can display all problems
+     * at once and the user can fix everything in a single pass.
+     *
+     * Example response for a register request missing all 3 required fields:
+     * {
+     *   "error": "VALIDATION_ERROR",
+     *   "message": "Validation failed on 3 field(s). See validationErrors for details.",
+     *   "statusCode": 400,
+     *   "validationErrors": [
+     *     "email: Email is required",
+     *     "password: Password is required",
+     *     "name: Name is required"
+     *   ]
+     * }
+     */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErrorDto> handleValidationException(
             MethodArgumentNotValidException ex, HttpServletRequest request) {
-        log.error("Validation error", ex);
+        log.warn("Validation error on {}: {}", request.getRequestURI(), ex.getBindingResult().getErrorCount());
 
         BindingResult bindingResult = ex.getBindingResult();
         List<FieldError> fieldErrors = bindingResult.getFieldErrors();
-        String errorMessage = fieldErrors.isEmpty() ? "Validation failed" :
-                fieldErrors.get(0).getDefaultMessage();
+
+        // FIX: collect ALL errors, not just the first
+        List<String> allValidationErrors = fieldErrors.stream()
+                .map(fe -> fe.getField() + ": " + fe.getDefaultMessage())
+                .collect(Collectors.toList());
+
+        String message = fieldErrors.isEmpty()
+                ? "Validation failed"
+                : "Validation failed on " + fieldErrors.size() + " field(s). See validationErrors for details.";
 
         ErrorDto errorDto = new ErrorDto();
-        errorDto.setError("Validation Error");
-        errorDto.setMessage(errorMessage);
+        errorDto.setError("VALIDATION_ERROR");
+        errorDto.setMessage(message);
         errorDto.setStatusCode(400);
-        errorDto.setStatusDescription("BAD REQUEST - Invalid input data");
+        errorDto.setStatusDescription("BAD REQUEST - Validation failed");
         errorDto.setTimestamp(LocalDateTime.now().toString());
         errorDto.setPath(request.getRequestURI());
-
-        // API Endpoint-specific error analysis
-        String endpointAnalysis = analyzeEndpointError(request.getRequestURI(), 400, "Validation failed");
-
+        errorDto.setValidationErrors(allValidationErrors);  // FIX: full list, not just first
         errorDto.setPossibleCauses(Arrays.asList(
-                "CLIENT ISSUE: Missing required fields in request body",
-                "CLIENT ISSUE: Invalid data format (e.g., invalid email, negative numbers)",
-                "CLIENT ISSUE: Field values outside allowed range (e.g., quantity > 10)",
-                "CLIENT ISSUE: Invalid date format (expected: YYYY-MM-DDTHH:mm:ss)",
-                "CLIENT ISSUE: Invalid UUID format in URL or body",
-                "CLIENT ISSUE: Request body is malformed JSON",
-                "ENDPOINT ANALYSIS: " + endpointAnalysis
+                "Missing required fields in request body",
+                "Invalid data format (e.g. invalid email, weak password)",
+                "Field values outside allowed range",
+                "Invalid date format — expected: YYYY-MM-DDTHH:mm:ss",
+                "Invalid UUID format in path or body"
         ));
         errorDto.setSolutions(Arrays.asList(
-                "Check all required fields are present in request body",
-                "Validate data formats match API specification",
-                "Ensure numeric values are within allowed ranges (quantity: 1-10)",
-                "Use proper date format: 2025-12-15T09:00:00",
-                "Verify UUIDs are properly formatted",
-                "Check JSON syntax is valid",
-                "See API documentation for exact field requirements"
+                "Fix ALL fields listed in the validationErrors array",
+                "Check each field's format requirements",
+                "Ensure numeric values are in allowed ranges"
         ));
 
         return new ResponseEntity<>(errorDto, HttpStatus.BAD_REQUEST);
-    }
-
-    @ExceptionHandler({TicketsSoldOutException.class, EventUpdateException.class,
-            TicketNotFoundException.class, TicketTypeNotFoundException.class,
-            EventNotFoundException.class, UserNotFoundException.class,
-            InviteCodeNotFoundException.class, InvalidInviteCodeException.class})
-    public ResponseEntity<ErrorDto> handleBusinessLogicExceptions(
-            Exception ex, HttpServletRequest request) {
-        log.error("Business logic error", ex);
-
-        ErrorDto errorDto = new ErrorDto();
-        errorDto.setError("Business Logic Error");
-        errorDto.setMessage(sanitizeErrorMessage(ex.getMessage()));
-        errorDto.setStatusCode(400);
-        errorDto.setStatusDescription("BAD REQUEST - Business rule violation");
-        errorDto.setTimestamp(LocalDateTime.now().toString());
-        errorDto.setPath(request.getRequestURI());
-
-        // API Endpoint-specific error analysis
-        String endpointAnalysis = analyzeEndpointError(request.getRequestURI(), 400, ex.getClass().getSimpleName());
-
-        if (ex instanceof TicketsSoldOutException) {
-            errorDto.setPossibleCauses(Arrays.asList(
-                    "CLIENT ISSUE: All tickets for this type have been sold",
-                    "CLIENT ISSUE: Requested quantity exceeds available tickets",
-                    "TIMING ISSUE: Another user purchased the last tickets before your request",
-                    "ENDPOINT ANALYSIS: " + endpointAnalysis
-            ));
-            errorDto.setSolutions(Arrays.asList(
-                    "Try purchasing fewer tickets",
-                    "Check other ticket types for the same event",
-                    "Contact event organizer for more tickets",
-                    "Refresh event data and check availability"
-            ));
-        } else if (ex instanceof EventNotFoundException) {
-            errorDto.setPossibleCauses(Arrays.asList(
-                    "CLIENT ISSUE: Event ID doesn't exist in database",
-                    "CLIENT ISSUE: Event belongs to different organizer (permission issue)",
-                    "DATA ISSUE: Event has been deleted",
-                    "CLIENT ISSUE: Incorrect UUID format in URL",
-                    "ENDPOINT ANALYSIS: " + endpointAnalysis
-            ));
-            errorDto.setSolutions(Arrays.asList(
-                    "Verify the event ID is correct",
-                    "Check if you have permission to access this event",
-                    "Use the correct event UUID from event listing API",
-                    "Ensure you're using your own event IDs (for organizer endpoints)"
-            ));
-        } else {
-            errorDto.setPossibleCauses(Arrays.asList(
-                    "CLIENT ISSUE: Resource not found in database",
-                    "CLIENT ISSUE: Access to resource not permitted",
-                    "DATA ISSUE: Resource has been deleted or modified",
-                    "CLIENT ISSUE: Incorrect resource ID in URL",
-                    "ENDPOINT ANALYSIS: " + endpointAnalysis
-            ));
-            errorDto.setSolutions(Arrays.asList(
-                    "Verify the resource ID is correct",
-                    "Check your permissions for this resource",
-                    "Refresh your data and try again",
-                    "Use correct UUIDs from listing APIs"
-            ));
-        }
-
-        return new ResponseEntity<>(errorDto, HttpStatus.BAD_REQUEST);
-    }
-
-    // ============= REGISTRATION SPECIFIC EXCEPTIONS =============
-
-    @ExceptionHandler(EmailAlreadyInUseException.class)
-    public ResponseEntity<ErrorDto> handleEmailAlreadyInUseException(
-            EmailAlreadyInUseException ex, HttpServletRequest request) {
-        log.error("Email already in use", ex);
-
-        ErrorDto errorDto = new ErrorDto();
-        errorDto.setError("Email Already Registered");
-        errorDto.setMessage("An account with this email address already exists");
-        errorDto.setStatusCode(409);
-        errorDto.setStatusDescription("CONFLICT - Email already registered");
-        errorDto.setTimestamp(LocalDateTime.now().toString());
-        errorDto.setPath(request.getRequestURI());
-
-        errorDto.setPossibleCauses(Arrays.asList(
-                "CLIENT ISSUE: Email address already has an account",
-                "CLIENT ISSUE: User previously registered with this email",
-                "DATA ISSUE: Account exists but user forgot they registered",
-                "ENDPOINT ANALYSIS: Registration endpoint conflict"
-        ));
-        errorDto.setSolutions(Arrays.asList(
-                "Try logging in with existing account",
-                "Use password reset if credentials forgotten",
-                "Register with a different email address",
-                "Contact administrator if account access issues"
-        ));
-
-        return new ResponseEntity<>(errorDto, HttpStatus.CONFLICT);
-    }
-
-    @ExceptionHandler({RegistrationException.class, KeycloakUserCreationException.class})
-    public ResponseEntity<ErrorDto> handleRegistrationExceptions(
-            Exception ex, HttpServletRequest request) {
-        log.error("Registration failed", ex);
-
-        ErrorDto errorDto = new ErrorDto();
-        errorDto.setError("Registration Failed");
-        errorDto.setMessage("Unable to complete user registration");
-        errorDto.setStatusCode(422);
-        errorDto.setStatusDescription("UNPROCESSABLE ENTITY - Registration error");
-        errorDto.setTimestamp(LocalDateTime.now().toString());
-        errorDto.setPath(request.getRequestURI());
-
-        if (ex instanceof KeycloakUserCreationException) {
-            errorDto.setStatusCode(409);
-            errorDto.setStatusDescription("CONFLICT - User already exists");
-            errorDto.setPossibleCauses(Arrays.asList(
-                    "USER ALREADY EXISTS: Email address is already registered",
-                    "DUPLICATE REGISTRATION: Attempting to register the same email twice"
-            ));
-            errorDto.setSolutions(Arrays.asList(
-                    "Use a different email address",
-                    "Login with existing account if you already registered",
-                    "Contact administrator if you forgot your password"
-            ));
-            return new ResponseEntity<>(errorDto, HttpStatus.CONFLICT);
-        } else {
-            errorDto.setPossibleCauses(Arrays.asList(
-                    "SYSTEM ISSUE: Database connection error",
-                    "SYSTEM ISSUE: Transaction rollback occurred",
-                    "DATA ISSUE: Invalid registration data",
-                    "SYSTEM ISSUE: Role assignment failure"
-            ));
-            errorDto.setSolutions(Arrays.asList(
-                    "Try registration again with same data",
-                    "Verify all required fields are complete",
-                    "Check invite code validity (if provided)",
-                    "Contact administrator if issue persists"
-            ));
-        }
-
-        return new ResponseEntity<>(errorDto, HttpStatus.UNPROCESSABLE_ENTITY);
-    }
-
-    // ============= 401 UNAUTHORIZED =============
-
-    @ExceptionHandler({AuthenticationException.class, BadCredentialsException.class})
-    public ResponseEntity<ErrorDto> handleAuthenticationException(
-            Exception ex, HttpServletRequest request) {
-        log.error("Authentication error", ex);
-
-        ErrorDto errorDto = new ErrorDto();
-        errorDto.setError("Authentication Failed");
-        errorDto.setMessage("Invalid or missing authentication credentials");
-        errorDto.setStatusCode(401);
-        errorDto.setStatusDescription("UNAUTHORIZED - Authentication required");
-        errorDto.setTimestamp(LocalDateTime.now().toString());
-        errorDto.setPath(request.getRequestURI());
-
-        // API Endpoint-specific error analysis
-        String endpointAnalysis = analyzeEndpointError(request.getRequestURI(), 401, "Authentication failed");
-
-        errorDto.setPossibleCauses(Arrays.asList(
-                "CLIENT ISSUE: Missing Authorization header in request",
-                "CLIENT ISSUE: Invalid or expired JWT token",
-                "CLIENT ISSUE: Token format is incorrect (should be 'Bearer <token>')",
-                "SERVER ISSUE: Keycloak server is not running or unreachable",
-                "CLIENT ISSUE: Token was issued by wrong issuer/realm",
-                "SERVER ISSUE: System clock skew causing token validation failure",
-                "ENDPOINT ANALYSIS: " + endpointAnalysis
-        ));
-        errorDto.setSolutions(Arrays.asList(
-                "Add 'Authorization: Bearer <your-token>' header",
-                "Get a new token from Keycloak: POST /realms/event-ticket-platform/protocol/openid-connect/token",
-                "Check token format: Authorization: Bearer eyJhbGciOiJSUzI1NiIs...",
-                "Verify Keycloak is running on http://localhost:9090",
-                "Ensure token was obtained from correct realm: event-ticket-platform",
-                "Synchronize system time if token appears valid"
-        ));
-
-        return new ResponseEntity<>(errorDto, HttpStatus.UNAUTHORIZED);
-    }
-
-    // ============= 403 FORBIDDEN =============
-
-    @ExceptionHandler(AccessDeniedException.class)
-    public ResponseEntity<ErrorDto> handleAccessDeniedException(
-            AccessDeniedException ex, HttpServletRequest request) {
-        log.error("Access denied: {}", ex.getMessage());
-
-        ErrorDto errorDto = new ErrorDto();
-        errorDto.setError("Access Denied");
-        // Use the detailed message from centralized authorization service
-        errorDto.setMessage(ex.getMessage());
-        errorDto.setStatusCode(403);
-        errorDto.setStatusDescription("FORBIDDEN - Authorization Failed");
-        errorDto.setTimestamp(LocalDateTime.now().toString());
-        errorDto.setPath(request.getRequestURI());
-
-        // API Endpoint-specific error analysis
-        String endpointAnalysis = analyzeEndpointError(request.getRequestURI(), 403, "Access denied");
-
-        errorDto.setPossibleCauses(Arrays.asList(
-                "CLIENT ISSUE: User is not the organizer of this event",
-                "CLIENT ISSUE: Staff member is not assigned to this event",
-                "CLIENT ISSUE: User doesn't have required role (ORGANIZER, ATTENDEE, or STAFF)",
-                "CLIENT ISSUE: Trying to access another user's resources",
-                "SERVER ISSUE: Event-staff relationship not properly configured",
-                "ENDPOINT ANALYSIS: " + endpointAnalysis
-        ));
-        errorDto.setSolutions(Arrays.asList(
-                "Verify you are the organizer of this event",
-                "Contact event organizer to be assigned as staff",
-                "Check user has correct role in Keycloak (ORGANIZER/ATTENDEE/STAFF)",
-                "Ensure you're accessing your own resources only",
-                "Get new token if roles were recently updated",
-                "Check endpoint documentation for required permissions"
-        ));
-
-        return new ResponseEntity<>(errorDto, HttpStatus.FORBIDDEN);
-    }
-
-
-    // ============= 404 NOT FOUND =============
-
-    @ExceptionHandler(QrCodeNotFoundException.class)
-    public ResponseEntity<ErrorDto> handleQrCodeNotFoundException(
-            QrCodeNotFoundException ex, HttpServletRequest request) {
-        log.warn("QR code not found: {}", ex.getMessage());
-        ErrorDto errorDto = new ErrorDto();
-        errorDto.setError("QR Code Not Found");
-        errorDto.setMessage(sanitizeErrorMessage(ex.getMessage()));
-        errorDto.setStatusCode(404);
-        errorDto.setStatusDescription("NOT FOUND - QR code does not exist or is not active");
-        errorDto.setTimestamp(LocalDateTime.now().toString());
-        errorDto.setPath(request.getRequestURI());
-        errorDto.setPossibleCauses(Arrays.asList(
-                "CLIENT ISSUE: QR code ID is invalid or not yet generated",
-                "CLIENT ISSUE: Ticket was cancelled — QR code deactivated",
-                "CLIENT ISSUE: QR code was already revoked"
-        ));
-        errorDto.setSolutions(Arrays.asList(
-                "Re-download the QR code from GET /api/v1/tickets/{ticketId}/qr-codes/png",
-                "Check that the ticket status is PURCHASED (not CANCELLED)",
-                "Contact the event organizer if the issue persists"
-        ));
-        return new ResponseEntity<>(errorDto, HttpStatus.NOT_FOUND);
-    }
-
-    @ExceptionHandler(NoHandlerFoundException.class)
-    public ResponseEntity<ErrorDto> handleNoHandlerFoundException(
-            NoHandlerFoundException ex, HttpServletRequest request) {
-        log.error("Endpoint not found", ex);
-
-        ErrorDto errorDto = new ErrorDto();
-        errorDto.setError("Endpoint Not Found");
-        errorDto.setMessage("The requested API endpoint does not exist");
-        errorDto.setStatusCode(404);
-        errorDto.setStatusDescription("NOT FOUND - Endpoint does not exist");
-        errorDto.setTimestamp(LocalDateTime.now().toString());
-        errorDto.setPath(request.getRequestURI());
-
-        // API Endpoint-specific error analysis
-        String endpointAnalysis = analyzeEndpointError(request.getRequestURI(), 404, "Endpoint not found");
-
-        errorDto.setPossibleCauses(Arrays.asList(
-                "CLIENT ISSUE: Incorrect API endpoint URL",
-                "CLIENT ISSUE: Typo in the endpoint path",
-                "CLIENT ISSUE: Missing path variables (e.g., {eventId}, {ticketTypeId})",
-                "CLIENT ISSUE: Wrong HTTP method (GET vs POST vs PUT vs DELETE)",
-                "CLIENT ISSUE: API version mismatch in URL path",
-                "ENDPOINT ANALYSIS: " + endpointAnalysis
-        ));
-        errorDto.setSolutions(Arrays.asList(
-                "Check API documentation for correct endpoint",
-                "Verify all path variables are included",
-                "Ensure correct HTTP method is used",
-                "Base URL should be: http://localhost:8081/api/v1/",
-                "Example: POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/tickets",
-                "Double-check UUID format in URL path"
-        ));
-
-        return new ResponseEntity<>(errorDto, HttpStatus.NOT_FOUND);
-    }
-
-    // ============= 405 METHOD NOT ALLOWED =============
-
-    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
-    public ResponseEntity<ErrorDto> handleMethodNotAllowed(
-            HttpRequestMethodNotSupportedException ex, HttpServletRequest request) {
-        log.error("Method not allowed", ex);
-
-        ErrorDto errorDto = new ErrorDto();
-        errorDto.setError("Method Not Allowed");
-        errorDto.setMessage("HTTP method not supported for this endpoint");
-        errorDto.setStatusCode(405);
-        errorDto.setStatusDescription("METHOD NOT ALLOWED - Wrong HTTP method");
-        errorDto.setTimestamp(LocalDateTime.now().toString());
-        errorDto.setPath(request.getRequestURI());
-
-        // API Endpoint-specific error analysis
-        String endpointAnalysis = analyzeEndpointError(request.getRequestURI(), 405, "Method not allowed");
-
-        errorDto.setPossibleCauses(Arrays.asList(
-                "CLIENT ISSUE: Using wrong HTTP method (e.g., GET instead of POST)",
-                "CLIENT ISSUE: Endpoint only supports specific methods",
-                "CLIENT ISSUE: Typo in HTTP method name",
-                "ENDPOINT ANALYSIS: " + endpointAnalysis
-        ));
-        errorDto.setSolutions(Arrays.asList(
-                "Check API documentation for correct HTTP method",
-                "Purchase tickets: POST (not GET)",
-                "Get data: GET (not POST)",
-                "Update data: PUT (not POST)",
-                "Delete data: DELETE (not GET)",
-                "Verify method in API documentation"
-        ));
-
-        return new ResponseEntity<>(errorDto, HttpStatus.METHOD_NOT_ALLOWED);
-    }
-
-    // ============= 500 INTERNAL SERVER ERROR =============
-
-    @ExceptionHandler({QrCodeGenerationException.class,
-            DataIntegrityViolationException.class, KeycloakOperationException.class})
-    public ResponseEntity<ErrorDto> handleInternalServerError(
-            Exception ex, HttpServletRequest request) {
-        log.error("Internal server error", ex);
-
-        ErrorDto errorDto = new ErrorDto();
-        errorDto.setError("Internal Server Error");
-        errorDto.setMessage(ex.getMessage());
-        errorDto.setStatusCode(500);
-        errorDto.setStatusDescription("INTERNAL SERVER ERROR - Server-side issue");
-        errorDto.setTimestamp(LocalDateTime.now().toString());
-        errorDto.setPath(request.getRequestURI());
-
-        // API Endpoint-specific error analysis
-        String endpointAnalysis = analyzeEndpointError(request.getRequestURI(), 500, ex.getClass().getSimpleName());
-
-        errorDto.setPossibleCauses(Arrays.asList(
-                "SERVER ISSUE: Database connection issues",
-                "SERVER ISSUE: QR code generation service failure",
-                "SERVER ISSUE: Keycloak Admin API connection failed",
-                "SERVER ISSUE: Keycloak Admin API authentication failed",
-                "SERVER ISSUE: Data constraint violations in database",
-                "SERVER ISSUE: External service (Keycloak) unavailable",
-                "CODE ISSUE: Application configuration errors",
-                "SERVER ISSUE: Insufficient server resources",
-                "ENDPOINT ANALYSIS: " + endpointAnalysis
-        ));
-        errorDto.setSolutions(Arrays.asList(
-                "Check if PostgreSQL database is running on localhost:5432",
-                "Verify Keycloak is running on http://localhost:9090",
-                "Check Keycloak admin credentials in application.properties",
-                "Verify user exists in both application database and Keycloak",
-                "Check application logs for detailed error information",
-                "Ensure database schema is up to date",
-                "Restart the application if persistent",
-                "Contact system administrator if problem persists"
-        ));
-
-        return new ResponseEntity<>(errorDto, HttpStatus.INTERNAL_SERVER_ERROR);
-    }
-
-    // ============= GENERIC EXCEPTION HANDLER =============
-
-    @ExceptionHandler({com.event.tickets.exceptions.KeycloakUserDeletionException.class,
-            com.event.tickets.exceptions.KeycloakUserUpdateException.class})
-    public ResponseEntity<ErrorDto> handleKeycloakUserOperationException(
-            RuntimeException ex, HttpServletRequest request) {
-        log.error("Keycloak user operation failed", ex);
-
-        ErrorDto errorDto = new ErrorDto();
-        errorDto.setError("KEYCLOAK_USER_OPERATION_FAILED");
-        errorDto.setMessage("A Keycloak user management operation failed. Please check Keycloak connectivity.");
-        errorDto.setStatusCode(500);
-        errorDto.setStatusDescription("INTERNAL SERVER ERROR - Keycloak user operation");
-        errorDto.setTimestamp(LocalDateTime.now().toString());
-        errorDto.setPath(request.getRequestURI());
-        return new ResponseEntity<>(errorDto, HttpStatus.INTERNAL_SERVER_ERROR);
-    }
-
-    @ExceptionHandler(Exception.class)
-    public ResponseEntity<ErrorDto> handleGenericException(
-            Exception ex, HttpServletRequest request) {
-        log.error("Unexpected error", ex);
-
-        ErrorDto errorDto = new ErrorDto();
-        errorDto.setError("Unexpected Error");
-        errorDto.setMessage("An unexpected error occurred: " + ex.getMessage());
-        errorDto.setStatusCode(500);
-        errorDto.setStatusDescription("INTERNAL SERVER ERROR - Unexpected issue");
-        errorDto.setTimestamp(LocalDateTime.now().toString());
-        errorDto.setPath(request.getRequestURI());
-
-        // API Endpoint-specific error analysis
-        String endpointAnalysis = analyzeEndpointError(request.getRequestURI(), 500, "Unexpected error");
-
-        errorDto.setPossibleCauses(Arrays.asList(
-                "CODE ISSUE: Unhandled application error",
-                "CODE ISSUE: Programming bug in the code",
-                "DATA ISSUE: Unexpected data condition",
-                "SERVER ISSUE: Resource exhaustion (memory, disk space)",
-                "ENDPOINT ANALYSIS: " + endpointAnalysis
-        ));
-        errorDto.setSolutions(Arrays.asList(
-                "Check application logs for stack trace",
-                "Try the request again after a moment",
-                "Contact system administrator",
-                "Report this error with exact steps to reproduce",
-                "Check if this is a known issue in the codebase"
-        ));
-
-        return new ResponseEntity<>(errorDto, HttpStatus.INTERNAL_SERVER_ERROR);
-    }
-
-    // ============= ENDPOINT ANALYSIS HELPER =============
-
-    private String analyzeEndpointError(String path, int statusCode, String errorType) {
-        if (path.contains("/ticket-types/") && path.contains("/tickets")) {
-            // Ticket Purchase Endpoint
-            if (statusCode == 400) {
-                return "Ticket Purchase API - Common Issues: Invalid quantity (1-10), malformed request body, sold out tickets";
-            } else if (statusCode == 401) {
-                return "Ticket Purchase API - Requires ATTENDEE role with valid Bearer token";
-            } else if (statusCode == 403) {
-                return "Ticket Purchase API - User must have ATTENDEE role, not ORGANIZER or STAFF";
-            } else if (statusCode == 404) {
-                return "Ticket Purchase API - Check eventId and ticketTypeId in URL are valid UUIDs";
-            } else if (statusCode == 500) {
-                return "Ticket Purchase API - Likely QR code generation or database issue";
-            }
-        } else if (path.contains("/events") && path.contains("/ticket-types") && !path.contains("/tickets")) {
-            // Ticket Type Management
-            if (statusCode == 401 || statusCode == 403) {
-                return "Ticket Type Management - Requires ORGANIZER role and access to own events only";
-            } else if (statusCode == 404) {
-                return "Ticket Type Management - Check eventId and ticketTypeId belong to authenticated organizer";
-            }
-        } else if (path.startsWith("/api/v1/events")) {
-            // Event Management
-            if (statusCode == 401 || statusCode == 403) {
-                return "Event Management - Requires ORGANIZER role for create/update/delete operations";
-            } else if (statusCode == 400) {
-                return "Event Management - Check date formats, required fields, and business rules";
-            }
-        } else if (path.startsWith("/api/v1/published-events")) {
-            // Published Events
-            if (statusCode == 401 || statusCode == 403) {
-                return "Published Events - Requires ATTENDEE, ORGANIZER, or STAFF role for browsing events";
-            }
-        } else if (path.startsWith("/api/v1/tickets")) {
-            // User Tickets
-            if (statusCode == 401 || statusCode == 403) {
-                return "User Tickets - Requires ATTENDEE role to view own tickets";
-            } else if (statusCode == 404) {
-                return "User Tickets - Ticket not found or doesn't belong to authenticated user";
-            }
-        } else if (path.startsWith("/api/v1/ticket-validations")) {
-            // Ticket Validation
-            if (statusCode == 401 || statusCode == 403) {
-                return "Ticket Validation - Requires STAFF role for validation operations";
-            } else if (statusCode == 400) {
-                return "Ticket Validation - Check validation method (MANUAL/QR_SCAN) and correct ID type";
-            }
-        }
-
-        return "General API issue - Check HTTP method, URL format, authentication, and request body";
-    }
-
-    /**
-     * Sanitizes error messages to prevent information leakage in production.
-     *
-     * In production:
-     * - Removes stack traces
-     * - Masks sensitive information (UUIDs, file paths, SQL)
-     * - Provides user-friendly messages
-     *
-     * In development:
-     * - Returns full error message for debugging
-     *
-     * @param message Original error message
-     * @return Sanitized error message
-     */
-    private String sanitizeErrorMessage(String message) {
-        if (message == null) {
-            return "An error occurred";
-        }
-
-        // In development, return full message for debugging
-        if ("dev".equals(activeProfile) || "local".equals(activeProfile)) {
-            return message;
-        }
-
-        // In production, sanitize sensitive information
-        String sanitized = message;
-
-        // Remove UUIDs (except in user-facing contexts)
-        sanitized = sanitized.replaceAll(
-                "(?i)user with id '[a-f0-9-]{36}'",
-                "user"
-        );
-        sanitized = sanitized.replaceAll(
-                "(?i)event with id '[a-f0-9-]{36}'",
-                "event"
-        );
-
-        // Remove file paths
-        sanitized = sanitized.replaceAll(
-                "(?i)at [a-z0-9._]+\\([^)]+\\)",
-                ""
-        );
-
-        // Remove SQL statements
-        sanitized = sanitized.replaceAll(
-                "(?i)SQL.*?;",
-                "database query"
-        );
-
-        // Limit message length in production
-        if (sanitized.length() > 200) {
-            sanitized = sanitized.substring(0, 200) + "...";
-        }
-
-        return sanitized;
     }
 
     @ExceptionHandler(ConstraintViolationException.class)
     public ResponseEntity<ErrorDto> handleConstraintViolationException(
             ConstraintViolationException ex, HttpServletRequest request) {
-        log.error("Constraint violation", ex);
-
-        String message = ex.getConstraintViolations().stream()
+        // FIX: collect all constraint violations, not just one
+        List<String> allErrors = ex.getConstraintViolations().stream()
                 .map(v -> v.getPropertyPath() + ": " + v.getMessage())
-                .findFirst()
-                .orElse("Validation constraint violated");
+                .collect(Collectors.toList());
 
         ErrorDto errorDto = new ErrorDto();
         errorDto.setError("CONSTRAINT_VIOLATION");
-        errorDto.setMessage(message);
+        errorDto.setMessage("Validation constraint(s) violated. See validationErrors for details.");
         errorDto.setStatusCode(400);
         errorDto.setStatusDescription("BAD REQUEST - Constraint violation");
         errorDto.setTimestamp(LocalDateTime.now().toString());
         errorDto.setPath(request.getRequestURI());
+        errorDto.setValidationErrors(allErrors);
         return new ResponseEntity<>(errorDto, HttpStatus.BAD_REQUEST);
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ErrorDto> handleIllegalArgumentException(
             IllegalArgumentException ex, HttpServletRequest request) {
-        log.error("Illegal argument", ex);
-
         ErrorDto errorDto = new ErrorDto();
         errorDto.setError("INVALID_ARGUMENT");
         errorDto.setMessage(ex.getMessage());
@@ -653,7 +146,6 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(InvalidInputException.class)
     public ResponseEntity<ErrorDto> handleInvalidInputException(
             InvalidInputException ex, HttpServletRequest request) {
-        log.error("Invalid input error", ex);
         ErrorDto errorDto = new ErrorDto();
         errorDto.setError("INVALID_INPUT");
         errorDto.setMessage(ex.getMessage());
@@ -664,38 +156,397 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(errorDto, HttpStatus.BAD_REQUEST);
     }
 
+    // ============= 400 BAD REQUEST — BUSINESS LOGIC (individual handlers for clarity) =============
+
+    /**
+     * FIX: Split into individual handlers instead of one big grouped handler.
+     *
+     * BEFORE: TicketsSoldOutException, EventNotFoundException, TicketNotFoundException,
+     * and others were all lumped into one @ExceptionHandler list returning the same
+     * generic "Business Logic Error" title. A client couldn't distinguish "sold out"
+     * from "event not found" by the error name alone.
+     *
+     * AFTER: Each exception gets its own specific error code and tailored messages.
+     */
+    @ExceptionHandler(TicketsSoldOutException.class)
+    public ResponseEntity<ErrorDto> handleTicketsSoldOutException(
+            TicketsSoldOutException ex, HttpServletRequest request) {
+        log.info("Tickets sold out: {}", request.getRequestURI());
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("TICKETS_SOLD_OUT");
+        errorDto.setMessage(ex.getMessage() != null ? ex.getMessage()
+                : "All tickets for this type are sold out.");
+        errorDto.setStatusCode(400);
+        errorDto.setStatusDescription("BAD REQUEST - Tickets unavailable");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        errorDto.setPossibleCauses(Arrays.asList(
+                "All tickets for this ticket type have been purchased",
+                "Requested quantity exceeds remaining availability",
+                "Another user purchased the last tickets moments before your request"
+        ));
+        errorDto.setSolutions(Arrays.asList(
+                "Try purchasing fewer tickets",
+                "Check other ticket types for this event",
+                "Contact the event organizer to increase availability"
+        ));
+        return new ResponseEntity<>(errorDto, HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler(EventNotFoundException.class)
+    public ResponseEntity<ErrorDto> handleEventNotFoundException(
+            EventNotFoundException ex, HttpServletRequest request) {
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("EVENT_NOT_FOUND");
+        errorDto.setMessage(sanitizeErrorMessage(ex.getMessage()));
+        errorDto.setStatusCode(404);
+        errorDto.setStatusDescription("NOT FOUND - Event does not exist");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        errorDto.setPossibleCauses(Arrays.asList(
+                "The event ID in the URL does not exist",
+                "The event belongs to a different organizer (permission denied)",
+                "The event has been deleted"
+        ));
+        errorDto.setSolutions(Arrays.asList(
+                "Verify the event ID is correct",
+                "Use GET /api/v1/events to list your events",
+                "Ensure you are the organizer of this event"
+        ));
+        return new ResponseEntity<>(errorDto, HttpStatus.NOT_FOUND);
+    }
+
+    @ExceptionHandler(TicketNotFoundException.class)
+    public ResponseEntity<ErrorDto> handleTicketNotFoundException(
+            TicketNotFoundException ex, HttpServletRequest request) {
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("TICKET_NOT_FOUND");
+        errorDto.setMessage(sanitizeErrorMessage(ex.getMessage()));
+        errorDto.setStatusCode(404);
+        errorDto.setStatusDescription("NOT FOUND - Ticket does not exist");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        errorDto.setPossibleCauses(Arrays.asList(
+                "The ticket ID does not exist",
+                "This ticket belongs to a different user"
+        ));
+        errorDto.setSolutions(Arrays.asList(
+                "Use GET /api/v1/tickets to list your tickets",
+                "Ensure the ticket ID is correct"
+        ));
+        return new ResponseEntity<>(errorDto, HttpStatus.NOT_FOUND);
+    }
+
+    @ExceptionHandler(TicketTypeNotFoundException.class)
+    public ResponseEntity<ErrorDto> handleTicketTypeNotFoundException(
+            TicketTypeNotFoundException ex, HttpServletRequest request) {
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("TICKET_TYPE_NOT_FOUND");
+        errorDto.setMessage(sanitizeErrorMessage(ex.getMessage()));
+        errorDto.setStatusCode(404);
+        errorDto.setStatusDescription("NOT FOUND - Ticket type does not exist");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        return new ResponseEntity<>(errorDto, HttpStatus.NOT_FOUND);
+    }
+
+    @ExceptionHandler(UserNotFoundException.class)
+    public ResponseEntity<ErrorDto> handleUserNotFoundException(
+            UserNotFoundException ex, HttpServletRequest request) {
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("USER_NOT_FOUND");
+        errorDto.setMessage(sanitizeErrorMessage(ex.getMessage()));
+        errorDto.setStatusCode(404);
+        errorDto.setStatusDescription("NOT FOUND - User does not exist");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        return new ResponseEntity<>(errorDto, HttpStatus.NOT_FOUND);
+    }
+
+    @ExceptionHandler(EventUpdateException.class)
+    public ResponseEntity<ErrorDto> handleEventUpdateException(
+            EventUpdateException ex, HttpServletRequest request) {
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("EVENT_UPDATE_ERROR");
+        errorDto.setMessage(ex.getMessage());
+        errorDto.setStatusCode(400);
+        errorDto.setStatusDescription("BAD REQUEST - Event update not allowed");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        return new ResponseEntity<>(errorDto, HttpStatus.BAD_REQUEST);
+    }
+
+    // ============= INVITE CODE ERRORS =============
+
+    /**
+     * FIX: InviteCodeNotFoundException now gets its own 404 handler.
+     *
+     * BEFORE: Was caught by the generic business logic handler as "Business Logic Error" 400.
+     * A code that doesn't exist is a 404, not a 400.
+     * And the error code "Business Logic Error" gives zero information about invite codes.
+     */
+    @ExceptionHandler(InviteCodeNotFoundException.class)
+    public ResponseEntity<ErrorDto> handleInviteCodeNotFoundException(
+            InviteCodeNotFoundException ex, HttpServletRequest request) {
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("INVITE_CODE_NOT_FOUND");
+        errorDto.setMessage("The invite code you provided does not exist.");
+        errorDto.setStatusCode(404);
+        errorDto.setStatusDescription("NOT FOUND - Invite code not found");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        errorDto.setPossibleCauses(Arrays.asList(
+                "The invite code was typed incorrectly",
+                "The invite code has never been generated"
+        ));
+        errorDto.setSolutions(Arrays.asList(
+                "Double-check the invite code — format is XXXX-XXXX-XXXX-XXXX",
+                "Ask the person who invited you to resend the code"
+        ));
+        return new ResponseEntity<>(errorDto, HttpStatus.NOT_FOUND);
+    }
+
+    @ExceptionHandler(InvalidInviteCodeException.class)
+    public ResponseEntity<ErrorDto> handleInvalidInviteCodeException(
+            InvalidInviteCodeException ex, HttpServletRequest request) {
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("INVALID_INVITE_CODE");
+        // FIX: use the specific message from the exception — it already says
+        // "already been redeemed" / "has expired" / "has been revoked"
+        errorDto.setMessage(ex.getMessage());
+        errorDto.setStatusCode(400);
+        errorDto.setStatusDescription("BAD REQUEST - Invite code cannot be used");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        errorDto.setPossibleCauses(Arrays.asList(
+                "Invite code has already been used (REDEEMED)",
+                "Invite code has expired",
+                "Invite code was revoked by the creator"
+        ));
+        errorDto.setSolutions(Arrays.asList(
+                "Ask for a new invite code",
+                "Register without an invite code to get a standard ATTENDEE account"
+        ));
+        return new ResponseEntity<>(errorDto, HttpStatus.BAD_REQUEST);
+    }
+
+    // ============= REGISTRATION ERRORS =============
+
+    @ExceptionHandler(EmailAlreadyInUseException.class)
+    public ResponseEntity<ErrorDto> handleEmailAlreadyInUseException(
+            EmailAlreadyInUseException ex, HttpServletRequest request) {
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("EMAIL_ALREADY_REGISTERED");
+        errorDto.setMessage("An account with this email address already exists.");
+        errorDto.setStatusCode(409);
+        errorDto.setStatusDescription("CONFLICT - Email already registered");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        errorDto.setPossibleCauses(Arrays.asList(
+                "You have already registered with this email address",
+                "Someone else is using this email"
+        ));
+        errorDto.setSolutions(Arrays.asList(
+                "Log in instead — go to Keycloak and obtain a token",
+                "Use password reset if you forgot your credentials",
+                "Register with a different email address"
+        ));
+        return new ResponseEntity<>(errorDto, HttpStatus.CONFLICT);
+    }
+
+    /**
+     * FIX: RegistrationException now shows specific failure reason instead of generic message.
+     *
+     * BEFORE: Every RegistrationException returned "Unable to complete user registration"
+     * with no indication of which step failed. The 10-step registration flow can fail at
+     * Keycloak creation, role assignment, DB save, or staff assignment — all showing the same response.
+     *
+     * AFTER: The specific failure reason from the exception message is included in the response.
+     * This tells the client (and the developer debugging it) exactly which step failed:
+     * - "Failed to assign role: ..." → Keycloak role assignment issue
+     * - "Failed to create user record: ..." → DB issue
+     * - "Failed to assign staff to event: ..." → Event assignment issue
+     * - "User already registered" → Already exists check
+     */
+    @ExceptionHandler(RegistrationException.class)
+    public ResponseEntity<ErrorDto> handleRegistrationException(
+            RegistrationException ex, HttpServletRequest request) {
+        log.error("Registration failed: {}", ex.getMessage());
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("REGISTRATION_FAILED");
+        // FIX: include the specific reason, not a blanket generic message
+        errorDto.setMessage(sanitizeErrorMessage(ex.getMessage()));
+        errorDto.setStatusCode(422);
+        errorDto.setStatusDescription("UNPROCESSABLE ENTITY - Registration could not be completed");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        errorDto.setPossibleCauses(Arrays.asList(
+                "Keycloak server may be temporarily unavailable",
+                "Role assignment failed in Keycloak",
+                "Database error while saving user record",
+                "Staff event assignment failed"
+        ));
+        errorDto.setSolutions(Arrays.asList(
+                "Try again in a few seconds",
+                "If using an invite code, verify the invite code is valid",
+                "Contact the administrator if the problem persists"
+        ));
+        return new ResponseEntity<>(errorDto, HttpStatus.UNPROCESSABLE_ENTITY);
+    }
+
+    @ExceptionHandler(KeycloakUserCreationException.class)
+    public ResponseEntity<ErrorDto> handleKeycloakUserCreationException(
+            KeycloakUserCreationException ex, HttpServletRequest request) {
+        log.error("Keycloak user creation failed: {}", ex.getMessage());
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("KEYCLOAK_USER_CREATION_FAILED");
+        errorDto.setMessage("Failed to create your account. This may indicate the email is already registered in the authentication system.");
+        errorDto.setStatusCode(409);
+        errorDto.setStatusDescription("CONFLICT - Account creation failed");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        errorDto.setPossibleCauses(Arrays.asList(
+                "Email is already registered in the authentication system",
+                "Keycloak server is unavailable"
+        ));
+        errorDto.setSolutions(Arrays.asList(
+                "Try logging in — your account may already exist",
+                "Try a different email address",
+                "Contact the administrator if the problem persists"
+        ));
+        return new ResponseEntity<>(errorDto, HttpStatus.CONFLICT);
+    }
+
+    // ============= 401 UNAUTHORIZED =============
+
+    @ExceptionHandler({AuthenticationException.class, BadCredentialsException.class})
+    public ResponseEntity<ErrorDto> handleAuthenticationException(
+            Exception ex, HttpServletRequest request) {
+        log.warn("Authentication failed: {}", request.getRequestURI());
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("AUTHENTICATION_FAILED");
+        errorDto.setMessage("Invalid or missing authentication token. Please obtain a new token from Keycloak.");
+        errorDto.setStatusCode(401);
+        errorDto.setStatusDescription("UNAUTHORIZED - Authentication required");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        errorDto.setPossibleCauses(Arrays.asList(
+                "Missing Authorization header",
+                "JWT token has expired",
+                "Token format is incorrect — should be: Bearer <token>",
+                "Token was issued by a different realm"
+        ));
+        errorDto.setSolutions(Arrays.asList(
+                "Get a new token: POST /realms/event-ticket-platform/protocol/openid-connect/token",
+                "Set header: Authorization: Bearer <your-token>",
+                "Ensure the token is from the correct realm: event-ticket-platform"
+        ));
+        return new ResponseEntity<>(errorDto, HttpStatus.UNAUTHORIZED);
+    }
+
+    // ============= 403 FORBIDDEN =============
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ErrorDto> handleAccessDeniedException(
+            AccessDeniedException ex, HttpServletRequest request) {
+        log.warn("Access denied: {} {}", request.getMethod(), request.getRequestURI());
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("ACCESS_DENIED");
+        errorDto.setMessage(ex.getMessage());
+        errorDto.setStatusCode(403);
+        errorDto.setStatusDescription("FORBIDDEN - You are not authorized to perform this action");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        errorDto.setPossibleCauses(Arrays.asList(
+                "Your account does not have the required role for this endpoint",
+                "You are trying to access a resource owned by another user",
+                "Your account is pending admin approval",
+                "Your account has been rejected"
+        ));
+        errorDto.setSolutions(Arrays.asList(
+                "Verify your JWT token contains the required role",
+                "Ensure you are only accessing your own resources",
+                "Contact an administrator if you need elevated access"
+        ));
+        return new ResponseEntity<>(errorDto, HttpStatus.FORBIDDEN);
+    }
+
+    // ============= 404 NOT FOUND =============
+
+    @ExceptionHandler(QrCodeNotFoundException.class)
+    public ResponseEntity<ErrorDto> handleQrCodeNotFoundException(
+            QrCodeNotFoundException ex, HttpServletRequest request) {
+        log.warn("QR code not found: {}", request.getRequestURI());
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("QR_CODE_NOT_FOUND");
+        errorDto.setMessage("QR code not found or is no longer active.");
+        errorDto.setStatusCode(404);
+        errorDto.setStatusDescription("NOT FOUND - QR code does not exist");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        errorDto.setPossibleCauses(Arrays.asList(
+                "The ticket was cancelled — QR code deactivated",
+                "Invalid QR code ID"
+        ));
+        errorDto.setSolutions(Arrays.asList(
+                "Check the ticket status is PURCHASED (not CANCELLED)",
+                "Re-download the QR code from: GET /api/v1/tickets/{ticketId}/qr-codes/png"
+        ));
+        return new ResponseEntity<>(errorDto, HttpStatus.NOT_FOUND);
+    }
+
+    @ExceptionHandler(NoHandlerFoundException.class)
+    public ResponseEntity<ErrorDto> handleNoHandlerFoundException(
+            NoHandlerFoundException ex, HttpServletRequest request) {
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("ENDPOINT_NOT_FOUND");
+        errorDto.setMessage("The requested API endpoint does not exist: " + request.getMethod() + " " + request.getRequestURI());
+        errorDto.setStatusCode(404);
+        errorDto.setStatusDescription("NOT FOUND - Endpoint does not exist");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        errorDto.setPossibleCauses(Arrays.asList(
+                "Incorrect API path — typo in URL",
+                "Missing path variables (e.g. {eventId})",
+                "Wrong HTTP method (GET vs POST vs PUT vs DELETE)"
+        ));
+        return new ResponseEntity<>(errorDto, HttpStatus.NOT_FOUND);
+    }
+
+    // ============= 405 METHOD NOT ALLOWED =============
+
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ErrorDto> handleMethodNotAllowed(
+            HttpRequestMethodNotSupportedException ex, HttpServletRequest request) {
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("METHOD_NOT_ALLOWED");
+        errorDto.setMessage("HTTP method " + request.getMethod() + " is not supported for this endpoint.");
+        errorDto.setStatusCode(405);
+        errorDto.setStatusDescription("METHOD NOT ALLOWED");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        return new ResponseEntity<>(errorDto, HttpStatus.METHOD_NOT_ALLOWED);
+    }
+
+    // ============= 409 CONFLICT =============
+
     @ExceptionHandler(InvalidBusinessStateException.class)
     public ResponseEntity<ErrorDto> handleInvalidBusinessStateException(
             InvalidBusinessStateException ex, HttpServletRequest request) {
-        log.error("Invalid business state", ex);
+        log.warn("Business state conflict: {}", ex.getMessage());
         ErrorDto errorDto = new ErrorDto();
-        errorDto.setError("INVALID_BUSINESS_STATE");
+        errorDto.setError("BUSINESS_RULE_VIOLATION");
         errorDto.setMessage(ex.getMessage());
         errorDto.setStatusCode(409);
-        errorDto.setStatusDescription("CONFLICT - Invalid business state");
+        errorDto.setStatusDescription("CONFLICT - Business rule violation");
         errorDto.setTimestamp(LocalDateTime.now().toString());
         errorDto.setPath(request.getRequestURI());
         return new ResponseEntity<>(errorDto, HttpStatus.CONFLICT);
     }
 
-    @ExceptionHandler(SystemUserNotFoundException.class)
-    public ResponseEntity<ErrorDto> handleSystemUserNotFoundException(
-            SystemUserNotFoundException ex, HttpServletRequest request) {
-        log.error("System user not found", ex);
-        ErrorDto errorDto = new ErrorDto();
-        errorDto.setError("SYSTEM_USER_NOT_FOUND");
-        errorDto.setMessage(ex.getMessage());
-        errorDto.setStatusCode(500);
-        errorDto.setStatusDescription("INTERNAL SERVER ERROR - System user missing");
-        errorDto.setTimestamp(LocalDateTime.now().toString());
-        errorDto.setPath(request.getRequestURI());
-        return new ResponseEntity<>(errorDto, HttpStatus.INTERNAL_SERVER_ERROR);
-    }
-
     @ExceptionHandler(com.event.tickets.exceptions.InvalidApprovalStateException.class)
     public ResponseEntity<ErrorDto> handleInvalidApprovalStateException(
             com.event.tickets.exceptions.InvalidApprovalStateException ex, HttpServletRequest request) {
-        log.error("Invalid approval state", ex);
         ErrorDto errorDto = new ErrorDto();
         errorDto.setError("INVALID_APPROVAL_STATE");
         errorDto.setMessage(ex.getMessage());
@@ -708,31 +559,22 @@ public class GlobalExceptionHandler {
                 "Attempting to reject a user who is already REJECTED",
                 "Only PENDING users can be approved or rejected"
         ));
-        errorDto.setSolutions(Arrays.asList(
-                "Check the user's current approval status before attempting state change",
-                "Use GET /api/v1/admin/approvals to see current status"
-        ));
         return new ResponseEntity<>(errorDto, HttpStatus.CONFLICT);
     }
 
     @ExceptionHandler(com.event.tickets.exceptions.TicketTypeDeleteNotAllowedException.class)
     public ResponseEntity<ErrorDto> handleTicketTypeDeleteNotAllowedException(
             com.event.tickets.exceptions.TicketTypeDeleteNotAllowedException ex, HttpServletRequest request) {
-        log.error("Ticket type delete not allowed", ex);
         ErrorDto errorDto = new ErrorDto();
         errorDto.setError("TICKET_TYPE_DELETE_NOT_ALLOWED");
         errorDto.setMessage(ex.getMessage());
         errorDto.setStatusCode(409);
-        errorDto.setStatusDescription("CONFLICT - Cannot delete ticket type with sold tickets");
+        errorDto.setStatusDescription("CONFLICT - Cannot delete ticket type with active sold tickets");
         errorDto.setTimestamp(LocalDateTime.now().toString());
         errorDto.setPath(request.getRequestURI());
-        errorDto.setPossibleCauses(Arrays.asList(
-                "Ticket type has one or more tickets already sold/purchased",
-                "Cannot delete a ticket type once tickets have been issued"
-        ));
         errorDto.setSolutions(Arrays.asList(
-                "Set totalAvailable to 0 to prevent further sales instead of deleting",
-                "Only ticket types with zero sold tickets can be deleted"
+                "Set totalAvailable to 0 to stop new sales without deleting",
+                "Cancel the event first to cancel all tickets, then delete the ticket type"
         ));
         return new ResponseEntity<>(errorDto, HttpStatus.CONFLICT);
     }
@@ -740,30 +582,102 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(com.event.tickets.exceptions.DiscountAlreadyExistsException.class)
     public ResponseEntity<ErrorDto> handleDiscountAlreadyExistsException(
             com.event.tickets.exceptions.DiscountAlreadyExistsException ex, HttpServletRequest request) {
-        log.error("Discount already exists", ex);
         ErrorDto errorDto = new ErrorDto();
         errorDto.setError("DISCOUNT_ALREADY_EXISTS");
         errorDto.setMessage(ex.getMessage());
         errorDto.setStatusCode(409);
-        errorDto.setStatusDescription("CONFLICT - Active discount already exists for this ticket type");
+        errorDto.setStatusDescription("CONFLICT - Active discount already exists");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        errorDto.setSolutions(Arrays.asList(
+                "Deactivate the existing discount before creating a new one",
+                "Update the existing discount using PUT instead"
+        ));
+        return new ResponseEntity<>(errorDto, HttpStatus.CONFLICT);
+    }
+
+    // FIX: DataIntegrityViolationException → 409 (not 500, and does NOT leak SQL)
+    @ExceptionHandler(org.springframework.dao.DataIntegrityViolationException.class)
+    public ResponseEntity<ErrorDto> handleDataIntegrityViolationException(
+            org.springframework.dao.DataIntegrityViolationException ex, HttpServletRequest request) {
+        log.warn("Data integrity violation: {}", request.getRequestURI());
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("DATA_CONFLICT");
+        errorDto.setMessage("The request conflicts with existing data. A resource with the same unique identifier may already exist.");
+        errorDto.setStatusCode(409);
+        errorDto.setStatusDescription("CONFLICT - Data integrity violation");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        return new ResponseEntity<>(errorDto, HttpStatus.CONFLICT);
+    }
+
+    // ============= 500 INTERNAL SERVER ERROR =============
+
+    @ExceptionHandler({QrCodeGenerationException.class, KeycloakOperationException.class})
+    public ResponseEntity<ErrorDto> handleInternalServerError(
+            Exception ex, HttpServletRequest request) {
+        log.error("Internal server error at {}: {}", request.getRequestURI(), ex.getMessage(), ex);
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("INTERNAL_SERVER_ERROR");
+        errorDto.setMessage(sanitizeErrorMessage(ex.getMessage()));
+        errorDto.setStatusCode(500);
+        errorDto.setStatusDescription("INTERNAL SERVER ERROR");
         errorDto.setTimestamp(LocalDateTime.now().toString());
         errorDto.setPath(request.getRequestURI());
         errorDto.setPossibleCauses(Arrays.asList(
-                "Only one active discount per ticket type is allowed",
-                "An active discount already exists for this ticket type"
+                "QR code generation failure",
+                "Keycloak Admin API unavailable",
+                "Check application logs for detailed error"
         ));
-        errorDto.setSolutions(Arrays.asList(
-                "Deactivate the existing discount before creating a new one",
-                "Use PUT to update the existing discount instead",
-                "Use GET /discounts to view existing discounts for this ticket type"
-        ));
-        return new ResponseEntity<>(errorDto, HttpStatus.CONFLICT);
+        return new ResponseEntity<>(errorDto, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    @ExceptionHandler(SystemUserNotFoundException.class)
+    public ResponseEntity<ErrorDto> handleSystemUserNotFoundException(
+            SystemUserNotFoundException ex, HttpServletRequest request) {
+        log.error("System user not found: {}", ex.getMessage());
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("SYSTEM_CONFIGURATION_ERROR");
+        errorDto.setMessage("A required system resource is missing. Please contact the administrator.");
+        errorDto.setStatusCode(500);
+        errorDto.setStatusDescription("INTERNAL SERVER ERROR - System configuration error");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        return new ResponseEntity<>(errorDto, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    @ExceptionHandler({com.event.tickets.exceptions.KeycloakUserDeletionException.class,
+            com.event.tickets.exceptions.KeycloakUserUpdateException.class})
+    public ResponseEntity<ErrorDto> handleKeycloakUserOperationException(
+            RuntimeException ex, HttpServletRequest request) {
+        log.error("Keycloak user operation failed: {}", ex.getMessage());
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("KEYCLOAK_OPERATION_FAILED");
+        errorDto.setMessage("A user management operation failed. Please check Keycloak connectivity and try again.");
+        errorDto.setStatusCode(500);
+        errorDto.setStatusDescription("INTERNAL SERVER ERROR - Keycloak operation failed");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        return new ResponseEntity<>(errorDto, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    @ExceptionHandler(com.event.tickets.exceptions.ReportGenerationException.class)
+    public ResponseEntity<ErrorDto> handleReportGenerationException(
+            com.event.tickets.exceptions.ReportGenerationException ex, HttpServletRequest request) {
+        log.error("Report generation failed: {}", ex.getMessage());
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("REPORT_GENERATION_FAILED");
+        errorDto.setMessage("Failed to generate the report. Please try again.");
+        errorDto.setStatusCode(500);
+        errorDto.setStatusDescription("INTERNAL SERVER ERROR - Report generation failed");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        return new ResponseEntity<>(errorDto, HttpStatus.INTERNAL_SERVER_ERROR);
     }
 
     @ExceptionHandler(com.event.tickets.exceptions.DiscountNotFoundException.class)
     public ResponseEntity<ErrorDto> handleDiscountNotFoundException(
             com.event.tickets.exceptions.DiscountNotFoundException ex, HttpServletRequest request) {
-        log.error("Discount not found", ex);
         ErrorDto errorDto = new ErrorDto();
         errorDto.setError("DISCOUNT_NOT_FOUND");
         errorDto.setMessage(ex.getMessage());
@@ -774,28 +688,34 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(errorDto, HttpStatus.NOT_FOUND);
     }
 
-    @ExceptionHandler(com.event.tickets.exceptions.ReportGenerationException.class)
-    public ResponseEntity<ErrorDto> handleReportGenerationException(
-            com.event.tickets.exceptions.ReportGenerationException ex, HttpServletRequest request) {
-        log.error("Report generation failed", ex);
+    // ============= CATCH-ALL =============
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ErrorDto> handleGenericException(
+            Exception ex, HttpServletRequest request) {
+        log.error("Unhandled exception at {}: {}", request.getRequestURI(), ex.getMessage(), ex);
         ErrorDto errorDto = new ErrorDto();
-        errorDto.setError("REPORT_GENERATION_FAILED");
-        errorDto.setMessage("Failed to generate the requested report");
+        errorDto.setError("UNEXPECTED_ERROR");
+        errorDto.setMessage("An unexpected error occurred. Please try again or contact support.");
         errorDto.setStatusCode(500);
-        errorDto.setStatusDescription("INTERNAL SERVER ERROR - Report generation failed");
+        errorDto.setStatusDescription("INTERNAL SERVER ERROR");
         errorDto.setTimestamp(LocalDateTime.now().toString());
         errorDto.setPath(request.getRequestURI());
-        errorDto.setPossibleCauses(Arrays.asList(
-                "SERVER ISSUE: Error building Excel/PDF document",
-                "SERVER ISSUE: Out of memory for large datasets",
-                "DATA ISSUE: Unexpected data format in event records"
-        ));
-        errorDto.setSolutions(Arrays.asList(
-                "Try again - may be a transient issue",
-                "Check application logs for detailed error",
-                "Contact system administrator if issue persists"
-        ));
         return new ResponseEntity<>(errorDto, HttpStatus.INTERNAL_SERVER_ERROR);
     }
 
+    // ============= HELPER =============
+
+    private String sanitizeErrorMessage(String message) {
+        if (message == null) return "An error occurred";
+        if ("dev".equals(activeProfile) || "local".equals(activeProfile)) return message;
+
+        String sanitized = message;
+        sanitized = sanitized.replaceAll("(?i)user with id '[a-f0-9-]{36}'", "user");
+        sanitized = sanitized.replaceAll("(?i)event with id '[a-f0-9-]{36}'", "event");
+        sanitized = sanitized.replaceAll("(?i)at [a-z0-9._]+\\([^)]+\\)", "");
+        sanitized = sanitized.replaceAll("(?i)SQL.*?;", "database query");
+        if (sanitized.length() > 300) sanitized = sanitized.substring(0, 300) + "...";
+        return sanitized;
+    }
 }

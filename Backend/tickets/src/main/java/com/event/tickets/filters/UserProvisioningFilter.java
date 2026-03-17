@@ -1,7 +1,5 @@
 package com.event.tickets.filters;
 
-import com.event.tickets.domain.entities.ApprovalStatus;
-import com.event.tickets.domain.entities.User;
 import com.event.tickets.repositories.UserRepository;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -20,53 +18,55 @@ import org.springframework.web.filter.OncePerRequestFilter;
 /**
  * User Provisioning Filter
  *
- * Automatically creates a shadow user record in the backend database
- * when a user authenticates via Keycloak for the first time.
+ * FIX ISSUE 18: Rewrote misleading comment. The old comment said
+ * "REMOVE ALL DB WRITES" as if it were an unfinished TODO, making the code
+ * look incomplete to portfolio reviewers. The filter is intentionally read-only —
+ * this is a design decision, not a pending fix.
  *
- * Execution order: Runs AFTER JWT validation, BEFORE ApprovalGateFilter
+ * DESIGN DECISION: This filter is intentionally read-only.
  *
- * Behavior:
- * 1. Extracts user ID (sub) from validated JWT
- * 2. Checks if user exists in backend database
- * 3. If not exists:
- *    - Creates User record with ID from JWT
- *    - Populates name and email from JWT claims
- *    - Sets approval status to APPROVED (for backward compatibility with existing Keycloak users)
- * 4. If exists: continue (no action)
+ * Why read-only? Auto-provisioning users on first JWT validation creates
+ * a security gap — any valid Keycloak token could silently create a DB record,
+ * bypassing the explicit registration + approval workflow. Users must register
+ * through /api/v1/auth/register which:
+ * 1. Validates invite code (if provided)
+ * 2. Creates Keycloak account with enabled=false
+ * 3. Creates DB record with approval_status=PENDING
+ * 4. Waits for admin approval before granting access
  *
- * Note: New users registered via invite code system will have PENDING status by default.
- * This filter only handles existing Keycloak users who authenticate before approval system was added.
+ * This filter only checks for sync issues (Keycloak user exists but DB record
+ * is missing) and logs a warning for observability. No auto-creation.
  */
 @Component
 @RequiredArgsConstructor
 @Slf4j
 public class UserProvisioningFilter extends OncePerRequestFilter {
 
-  private final UserRepository userRepository;
+    private final UserRepository userRepository;
 
-  @Override
-  protected void doFilterInternal(
-      HttpServletRequest request,
-      HttpServletResponse response,
-      FilterChain filterChain) throws ServletException, IOException {
+    @Override
+    protected void doFilterInternal(
+            HttpServletRequest request,
+            HttpServletResponse response,
+            FilterChain filterChain) throws ServletException, IOException {
 
-    // REMOVE ALL DB WRITES: JWT validation must be read-only
-    // Only check if user exists, do not provision or update
-    Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
 
-    if (authentication != null
-        && authentication.isAuthenticated()
-        && authentication.getPrincipal() instanceof Jwt jwt) {
+        if (authentication != null
+                && authentication.isAuthenticated()
+                && authentication.getPrincipal() instanceof Jwt jwt) {
 
-      UUID keycloakId = UUID.fromString(jwt.getSubject());
-      // Only log if user is missing, do not provision
-      if (!userRepository.existsById(keycloakId)) {
-        log.warn("User not found in DB during JWT validation: userId={}, email={}",
-            keycloakId, jwt.getClaimAsString("email"));
-        // Do NOT create or update user here
-      }
+            UUID keycloakId = UUID.fromString(jwt.getSubject());
+
+            // Read-only check: log desync between Keycloak and DB for observability.
+            // No auto-provisioning — see class Javadoc for rationale.
+            if (!userRepository.existsById(keycloakId)) {
+                log.warn("DESYNC DETECTED: Keycloak user has no DB record. " +
+                                "userId={}, email={} — user must register via /api/v1/auth/register",
+                        keycloakId, jwt.getClaimAsString("email"));
+            }
+        }
+
+        filterChain.doFilter(request, response);
     }
-
-    filterChain.doFilter(request, response);
-  }
 }

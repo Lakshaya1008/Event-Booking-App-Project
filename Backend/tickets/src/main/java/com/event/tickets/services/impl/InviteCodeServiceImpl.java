@@ -39,16 +39,6 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
 
-/**
- * Invite Code Service Implementation
- *
- * FIX #1: The STAFF+eventId null check was inside an if(eventId != null) block,
- * making it dead code — event could never be null inside that block.
- * The validation is now placed BEFORE the null check so it actually fires.
- *
- * FIX #17: generateUniqueCode() had a check-then-act race condition. Now wraps
- * the save() call in a retry loop that catches DataIntegrityViolationException.
- */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -76,9 +66,6 @@ public class InviteCodeServiceImpl implements InviteCodeService {
                 .orElseThrow(() -> new UserNotFoundException(
                         String.format("Creator with ID '%s' not found", creatorId)));
 
-        // FIX #1: Validate STAFF+eventId BEFORE the null check.
-        // Previously this was inside if(eventId != null) { ... if(event == null) }
-        // which was dead code — event could never be null inside that block.
         if ("STAFF".equals(roleName) && eventId == null) {
             throw new InvalidInputException("Event ID is required for STAFF role invites");
         }
@@ -90,7 +77,6 @@ public class InviteCodeServiceImpl implements InviteCodeService {
                             String.format("Event with ID '%s' not found", eventId)));
         }
 
-        // FIX #17: wrap save in retry loop to handle concurrent code collisions
         String code = generateRandomCode();
         LocalDateTime expiresAt = LocalDateTime.now().plusHours(expirationHours);
 
@@ -150,37 +136,32 @@ public class InviteCodeServiceImpl implements InviteCodeService {
                                 inviteCode.getRoleName(), e.getMessage()), e);
             }
 
-            // FIX #2: Prevent duplicate ADMIN role assignment
             if ("ADMIN".equals(inviteCode.getRoleName())) {
                 try {
                     List<String> currentRoles = keycloakAdminService.getUserRoles(userId);
-                    if (currentRoles != null && currentRoles.stream().filter(r -> "ADMIN".equals(r)).count() > 1) {
-                        log.warn("SECURITY: User '{}' attempted to redeem multiple ADMIN codes. " +
-                                "Second assignment was idempotent but this indicates attack or user error.", userId);
-                        // Keycloak doesn't duplicate roles, but audit this attempt
-                        emitFailedInviteRedemption(user, inviteCode,
-                            "DUPLICATE_ADMIN_GRANT_ATTEMPTED");
-                        throw new InvalidBusinessStateException(
-                            "User already has ADMIN role. Cannot assign again.");
+                    // FIX ISSUE 5: Was `count() > 1` — impossible since Keycloak returns unique roles.
+                    // The intent is to detect if user ALREADY has ADMIN before this redemption.
+                    // Since assignRoleToUser() was just called above (idempotent in Keycloak),
+                    // we check if there's more than 1 ADMIN in the list would never trigger.
+                    // The correct check is: was the user already an ADMIN before this code?
+                    // We can't retroactively check that, so instead we audit it and warn.
+                    // The real protection is: mark the invite code as REDEEMED (done below),
+                    // which prevents the same code being used twice.
+                    if (currentRoles != null && currentRoles.stream().anyMatch("ADMIN"::equals)) {
+                        log.warn("HIGH-SEVERITY: ADMIN role granted to user '{}' via invite code '{}'",
+                                userId, inviteCode.getCode());
+                        emitAdminRoleGrantedAudit(user, inviteCode);
                     }
                 } catch (InvalidBusinessStateException e) {
                     throw e;
                 } catch (Exception e) {
-                    log.warn("Could not verify ADMIN role count during redemption, proceeding cautiously", e);
-                    // Don't fail here - Keycloak role is idempotent anyway
+                    log.warn("Could not verify ADMIN role during redemption, proceeding", e);
                 }
-
-                log.warn("HIGH-SEVERITY: ADMIN role granted to user '{}' via invite code '{}'",
-                        userId, inviteCode.getCode());
-                emitAdminRoleGrantedAudit(user, inviteCode);
             }
 
             String eventName = null;
             if ("STAFF".equals(inviteCode.getRoleName()) && inviteCode.getEvent() != null) {
                 Event event = inviteCode.getEvent();
-                // L-02 FIX: check for duplicate before adding — redeeming two STAFF codes
-                // for the same event would silently add the same user twice to the staff list,
-                // causing duplicate entries that break Set-based equality checks.
                 boolean alreadyStaff = event.getStaff().stream()
                         .anyMatch(s -> s.getId().equals(user.getId()));
                 if (!alreadyStaff) {
@@ -202,6 +183,9 @@ public class InviteCodeServiceImpl implements InviteCodeService {
             log.info("Successfully redeemed invite code '{}' for user '{}'", code, user.getName());
 
             List<String> currentRoles = keycloakAdminService.getUserRoles(userId);
+
+            // FIX ISSUE 13: emit INVITE_REDEEMED audit on success (was missing for non-ADMIN redemptions)
+            emitInviteRedeemedAudit(user, inviteCode);
 
             return new RedeemInviteCodeResponseDto(
                     "Invite code redeemed successfully",
@@ -257,6 +241,8 @@ public class InviteCodeServiceImpl implements InviteCodeService {
         return inviteCodeRepository.findByEventId(eventId, pageable).map(this::mapToResponseDto);
     }
 
+    // FIX ISSUE 21: Added @Override — method was missing from InviteCodeService interface
+    @Override
     public Page<InviteCodeResponseDto> listAllInviteCodes(Pageable pageable) {
         return inviteCodeRepository.findAll(pageable).map(this::mapToResponseDto);
     }
@@ -270,6 +256,23 @@ public class InviteCodeServiceImpl implements InviteCodeService {
     }
 
     // ── private helpers ───────────────────────────────────────────────────────
+
+    private void emitInviteRedeemedAudit(User user, InviteCode inviteCode) {
+        try {
+            AuditLog auditLog = AuditLog.builder()
+                    .action(AuditAction.INVITE_REDEEMED)  // FIX ISSUE 13: was never emitted on success
+                    .actor(user).targetUser(user)
+                    .event(inviteCode.getEvent())
+                    .resourceType("INVITE_CODE").resourceId(inviteCode.getId())
+                    .details(String.format("code=%s,role=%s", inviteCode.getCode(), inviteCode.getRoleName()))
+                    .ipAddress(extractClientIp(getCurrentRequest()))
+                    .userAgent(extractUserAgent(getCurrentRequest()))
+                    .build();
+            auditLogService.saveAuditLog(auditLog);
+        } catch (Exception e) {
+            log.error("Failed to emit INVITE_REDEEMED audit: {}", e.getMessage());
+        }
+    }
 
     private void emitAdminRoleGrantedAudit(User newAdmin, InviteCode inviteCode) {
         try {
