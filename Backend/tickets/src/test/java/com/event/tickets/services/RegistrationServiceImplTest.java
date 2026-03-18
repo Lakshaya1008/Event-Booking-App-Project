@@ -11,9 +11,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataIntegrityViolationException;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -24,6 +26,20 @@ import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
+/**
+ * CHANGES FROM PREVIOUS VERSION:
+ *
+ * FIX 1 — Added @Mock AuditLogService auditLogService.
+ *   RegistrationServiceImpl calls auditLogService.saveAuditLog() inside emitAuditEvent().
+ *   Without this mock, Mockito @InjectMocks leaves it null. The try/catch around the
+ *   audit call was swallowing the NPE silently — tests passed but audit coverage was broken.
+ *
+ * FIX 2 — Added DataIntegrityViolation race condition test.
+ *   NEW: registersWithDuplicateEmailRaceCondition_throwsEmailAlreadyInUse
+ *   Tests that when userRepository.save() throws DataIntegrityViolationException
+ *   (concurrent same-email registration), Keycloak is rolled back and
+ *   EmailAlreadyInUseException is returned — not a 500.
+ */
 @ExtendWith(MockitoExtension.class)
 @DisplayName("RegistrationServiceImpl")
 class RegistrationServiceImplTest {
@@ -34,6 +50,7 @@ class RegistrationServiceImplTest {
     @Mock private KeycloakAdminService keycloakAdminService;
     @Mock private SystemUserProvider systemUserProvider;
     @Mock private EmailService emailService;
+    @Mock private AuditLogService auditLogService;  // FIX 1: was missing — silent NPE
 
     @InjectMocks
     private RegistrationServiceImpl service;
@@ -57,7 +74,7 @@ class RegistrationServiceImplTest {
         when(systemUserProvider.getSystemUser()).thenReturn(systemUser);
     }
 
-    // ── register — happy paths ────────────────────────────────────────────────
+    // ── Happy paths ───────────────────────────────────────────────────────────
 
     @Nested
     @DisplayName("register — happy paths")
@@ -76,7 +93,6 @@ class RegistrationServiceImplTest {
             savedUser.setName(request.getName());
             savedUser.setApprovalStatus(ApprovalStatus.PENDING);
             when(userRepository.save(any())).thenReturn(savedUser);
-            when(userRepository.saveAndFlush(any())).thenReturn(savedUser);
             doNothing().when(emailService).sendRegistrationEmail(any(), any());
         }
 
@@ -101,16 +117,23 @@ class RegistrationServiceImplTest {
         @DisplayName("user is created with PENDING approval status")
         void userCreatedAsPending() {
             service.register(request);
-
             verify(userRepository).save(argThat(u ->
                     u.getApprovalStatus() == ApprovalStatus.PENDING));
         }
+
+        @Test
+        @DisplayName("audit REGISTRATION_SUCCESS is emitted on success")
+        void auditSuccessEmitted() {
+            service.register(request);
+            // auditLogService.saveAuditLog() called at least twice (ATTEMPT + SUCCESS)
+            verify(auditLogService, atLeast(2)).saveAuditLog(any());
+        }
     }
 
-    // ── FIX #2 — STAFF event assignment ──────────────────────────────────────
+    // ── STAFF event assignment ────────────────────────────────────────────────
 
     @Nested
-    @DisplayName("FIX #2 — STAFF event assignment actually executes")
+    @DisplayName("STAFF event assignment (FIX #2)")
     class StaffAssignment {
 
         @Test
@@ -145,24 +168,23 @@ class RegistrationServiceImplTest {
             savedUser.setName(request.getName());
             savedUser.setApprovalStatus(ApprovalStatus.PENDING);
             when(userRepository.save(any())).thenReturn(savedUser);
-            when(userRepository.saveAndFlush(any())).thenReturn(savedUser);
             when(eventRepository.findById(eventId)).thenReturn(Optional.of(staffEvent));
             when(eventRepository.save(any())).thenReturn(staffEvent);
             doNothing().when(emailService).sendRegistrationEmail(any(), any());
 
             service.register(request);
 
-            // FIX #2: event.staff must actually contain the new user
+            // event.staff must contain the new user
             verify(eventRepository).save(argThat(e ->
                     !e.getStaff().isEmpty() &&
-                    e.getStaff().stream().anyMatch(u -> u.getId().equals(keycloakUserId))));
+                            e.getStaff().stream().anyMatch(u -> u.getId().equals(keycloakUserId))));
         }
     }
 
-    // ── FIX #12 — Keycloak rollback safety ───────────────────────────────────
+    // ── Rollback safety ───────────────────────────────────────────────────────
 
     @Nested
-    @DisplayName("FIX #12 — no double rollback of Keycloak user")
+    @DisplayName("Keycloak rollback safety (FIX #12)")
     class RollbackSafety {
 
         @Test
@@ -177,7 +199,6 @@ class RegistrationServiceImplTest {
             assertThatThrownBy(() -> service.register(request))
                     .isInstanceOf(RegistrationException.class);
 
-            // Keycloak user must be deleted
             verify(keycloakAdminService).deleteUser(keycloakUserId);
         }
 
@@ -193,7 +214,6 @@ class RegistrationServiceImplTest {
             assertThatThrownBy(() -> service.register(request))
                     .isInstanceOf(RegistrationException.class);
 
-            // FIX #12: exactly ONE deleteUser call — not two (no double rollback)
             verify(keycloakAdminService, times(1)).deleteUser(keycloakUserId);
         }
 
@@ -208,6 +228,90 @@ class RegistrationServiceImplTest {
             verify(keycloakAdminService, never()).createUser(any(), any(), any());
             verify(keycloakAdminService, never()).deleteUser(any());
         }
+
+        @Test
+        @DisplayName("FIX 2 — DataIntegrityViolation on DB save: Keycloak rolled back, EmailAlreadyInUseException thrown")
+        void dataIntegrityViolation_keycloakRolledBack_emailExceptionThrown() {
+            // Setup: both existsByEmail and Keycloak checks pass (race condition window)
+            when(userRepository.existsByEmail(request.getEmail())).thenReturn(false);
+            when(keycloakAdminService.getUserIdByEmail(request.getEmail())).thenReturn(null);
+            when(keycloakAdminService.createUser(any(), any(), any())).thenReturn(keycloakUserId);
+            doNothing().when(keycloakAdminService).assignRoleToUser(any(), any());
+            // DB unique constraint fires — concurrent registration won the race
+            when(userRepository.save(any()))
+                    .thenThrow(new DataIntegrityViolationException("unique constraint: users_email_key"));
+
+            // Must throw EmailAlreadyInUseException — not a generic 500
+            assertThatThrownBy(() -> service.register(request))
+                    .isInstanceOf(EmailAlreadyInUseException.class)
+                    .hasMessageContaining("already in use");
+
+            // Keycloak user must be rolled back
+            verify(keycloakAdminService).deleteUser(keycloakUserId);
+
+            // deleteUser must be called exactly ONCE (not twice via outer catch)
+            verify(keycloakAdminService, times(1)).deleteUser(keycloakUserId);
+        }
+    }
+
+    // ── Email normalization ───────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("Email normalization (FIX #1-2)")
+    class EmailNormalization {
+
+        @BeforeEach
+        void mockSuccess() {
+            when(userRepository.existsByEmail(any())).thenReturn(false);
+            when(keycloakAdminService.getUserIdByEmail(any())).thenReturn(null);
+            when(keycloakAdminService.createUser(any(), any(), any()))
+                    .thenAnswer(inv -> UUID.randomUUID());
+            doNothing().when(keycloakAdminService).assignRoleToUser(any(), any());
+            when(userRepository.save(any())).thenAnswer(inv -> {
+                User u = inv.getArgument(0);
+                u.setId(UUID.randomUUID());
+                return u;
+            });
+            doNothing().when(emailService).sendRegistrationEmail(any(), any());
+        }
+
+        @Test
+        @DisplayName("uppercase email is normalized to lowercase")
+        void emailNormalized_toUpperCase() {
+            request.setEmail("John@Example.COM");
+            service.register(request);
+            ArgumentCaptor<String> emailCaptor = ArgumentCaptor.forClass(String.class);
+            verify(userRepository).existsByEmail(emailCaptor.capture());
+            assertThat(emailCaptor.getValue()).isEqualTo("john@example.com");
+        }
+
+        @Test
+        @DisplayName("email with whitespace is trimmed and lowercased")
+        void emailTrimmed_andLowercased() {
+            request.setEmail("  John@Example.COM  ");
+            service.register(request);
+            ArgumentCaptor<String> emailCaptor = ArgumentCaptor.forClass(String.class);
+            verify(userRepository).existsByEmail(emailCaptor.capture());
+            assertThat(emailCaptor.getValue()).isEqualTo("john@example.com");
+        }
+
+        @Test
+        @DisplayName("stored user email is normalized lowercase")
+        void storedUserEmail_isNormalized() {
+            request.setEmail("Test@Example.COM");
+            service.register(request);
+            ArgumentCaptor<User> userCaptor = ArgumentCaptor.forClass(User.class);
+            verify(userRepository).save(userCaptor.capture());
+            assertThat(userCaptor.getValue().getEmail()).isEqualTo("test@example.com");
+        }
+
+        @Test
+        @DisplayName("duplicate email detection is case-insensitive")
+        void duplicateDetection_caseInsensitive() {
+            request.setEmail("John@Example.COM");
+            when(userRepository.existsByEmail("john@example.com")).thenReturn(true);
+            assertThatThrownBy(() -> service.register(request))
+                    .isInstanceOf(EmailAlreadyInUseException.class);
+        }
     }
 }
-

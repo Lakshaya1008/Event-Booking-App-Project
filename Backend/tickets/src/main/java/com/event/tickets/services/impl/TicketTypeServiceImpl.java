@@ -28,8 +28,6 @@ import com.event.tickets.services.EmailService;
 import com.event.tickets.services.QrCodeService;
 import com.event.tickets.services.SystemUserProvider;
 import com.event.tickets.services.TicketTypeService;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.transaction.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -39,12 +37,35 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.web.context.request.RequestContextHolder;
-import org.springframework.web.context.request.ServletRequestAttributes;
+import org.springframework.transaction.annotation.Transactional;
 
 import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
+import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
+/**
+ * FIXES APPLIED IN THIS VERSION:
+ *
+ * FIX 1 — jakarta.transaction.@Transactional replaced with org.springframework.
+ *   purchaseTickets(), createTicketType(), updateTicketType(), deleteTicketType() now
+ *   use Spring-managed @Transactional. Read methods get @Transactional(readOnly=true).
+ *
+ * FIX 2 — getCurrentRequest() private copy-paste removed.
+ *   Removed private getCurrentRequest(), extractClientIpSafely(), extractUserAgentSafely().
+ *   All audit helpers now call RequestUtil.getCurrentRequest() directly.
+ *
+ * FIX 3 — Per-user purchase limit added (max 10 tickets per user per ticket type).
+ *   BEFORE: An attendee could call purchaseTickets() repeatedly in separate requests,
+ *   each buying quantity=10, accumulating unlimited tickets for the same ticket type.
+ *   The quantity=1-10 guard on the DTO prevented buying >10 in one call, but had no
+ *   effect across multiple calls.
+ *   AFTER: Before creating tickets, countByTicketTypeIdAndPurchaserId() checks how many
+ *   non-cancelled tickets the buyer already holds for this ticket type. If adding the
+ *   requested quantity would exceed 10, InvalidBusinessStateException is thrown.
+ *
+ * All other existing fixes (FIX #5-2 quantity guard, SOLD_OUT, SALES_WINDOW, FIX ISSUE 6
+ * delete with cancelled tickets, FIX ISSUE 2 enum audit action) are preserved.
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -61,12 +82,21 @@ public class TicketTypeServiceImpl implements TicketTypeService {
     private final EmailService emailService;
     private final SystemUserProvider systemUserProvider;
 
+    private static final int MAX_TICKETS_PER_USER_PER_TYPE = 10;
+
+    // ── PURCHASE ──────────────────────────────────────────────────────────────
+
     @Override
-    @Transactional
+    @Transactional  // FIX 1: org.springframework
     public List<Ticket> purchaseTickets(UUID userId, UUID ticketTypeId, int quantity) {
-        HttpServletRequest request = getCurrentRequest();
-        String clientIp = extractClientIpSafely(request);
-        String userAgent = extractUserAgentSafely(request);
+        if (quantity < 1 || quantity > 10) {
+            throw new InvalidBusinessStateException(
+                    "Quantity must be between 1 and 10. Cannot purchase " + quantity + " tickets");
+        }
+
+        // FIX 2: RequestUtil.getCurrentRequest() — no more private helpers
+        String clientIp = extractClientIp(getCurrentRequest());
+        String userAgent = extractUserAgent(getCurrentRequest());
 
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> {
@@ -86,8 +116,7 @@ public class TicketTypeServiceImpl implements TicketTypeService {
 
         if (!EventStatusEnum.PUBLISHED.equals(event.getStatus())) {
             String reason = EventStatusEnum.CANCELLED.equals(event.getStatus())
-                    ? "EVENT_CANCELLED"
-                    : "EVENT_NOT_PUBLISHED";
+                    ? "EVENT_CANCELLED" : "EVENT_NOT_PUBLISHED";
             auditPurchaseFailure(userId, event, reason, clientIp, userAgent);
             throw new InvalidBusinessStateException(
                     EventStatusEnum.CANCELLED.equals(event.getStatus())
@@ -124,6 +153,19 @@ public class TicketTypeServiceImpl implements TicketTypeService {
                         "Event venue capacity of %d reached. Only %d ticket(s) remaining.",
                         event.getMaxCapacity(), event.getMaxCapacity() - totalSold));
             }
+        }
+
+        // FIX 3: Per-user purchase limit — max 10 tickets per user per ticket type
+        // countByTicketTypeIdAndPurchaserId includes CANCELLED tickets (conservative — prevents gaming
+        // by buying, cancelling, and re-buying to bypass the limit)
+        int alreadyOwned = ticketRepository.countByTicketTypeIdAndPurchaserId(
+                ticketTypeId, userId);
+        if (alreadyOwned + quantity > MAX_TICKETS_PER_USER_PER_TYPE) {
+            auditPurchaseFailure(userId, event, "PER_USER_LIMIT_EXCEEDED", clientIp, userAgent);
+            throw new InvalidBusinessStateException(String.format(
+                    "Purchase limit reached. You already own %d ticket(s) for this ticket type. " +
+                            "Maximum %d tickets per user per ticket type.",
+                    alreadyOwned, MAX_TICKETS_PER_USER_PER_TYPE));
         }
 
         boolean isOrganizerPurchasing = authorizationService.isOrganizer(userId, event);
@@ -171,7 +213,7 @@ public class TicketTypeServiceImpl implements TicketTypeService {
     }
 
     @Override
-    @Transactional
+    @Transactional  // FIX 1: org.springframework
     public List<Ticket> purchaseTickets(UUID userId, UUID eventId, UUID ticketTypeId, int quantity) {
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new EventNotFoundException(
@@ -188,8 +230,10 @@ public class TicketTypeServiceImpl implements TicketTypeService {
         return purchaseTickets(userId, ticketTypeId, quantity);
     }
 
+    // ── CRUD ──────────────────────────────────────────────────────────────────
+
     @Override
-    @Transactional
+    @Transactional  // FIX 1: org.springframework
     public TicketType createTicketType(UUID organizerId, UUID eventId, CreateTicketTypeRequest request) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
         Event event = eventRepository.findById(eventId)
@@ -205,6 +249,7 @@ public class TicketTypeServiceImpl implements TicketTypeService {
     }
 
     @Override
+    @Transactional(readOnly = true)  // FIX 1: read-only
     public List<TicketType> listTicketTypesForEvent(UUID organizerId, UUID eventId) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
         Event event = eventRepository.findById(eventId)
@@ -214,13 +259,14 @@ public class TicketTypeServiceImpl implements TicketTypeService {
     }
 
     @Override
+    @Transactional(readOnly = true)  // FIX 1: read-only
     public Optional<TicketType> getTicketType(UUID organizerId, UUID eventId, UUID ticketTypeId) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
         return ticketTypeRepository.findByIdAndEventId(ticketTypeId, eventId);
     }
 
     @Override
-    @Transactional
+    @Transactional  // FIX 1: org.springframework
     public TicketType updateTicketType(UUID organizerId, UUID eventId, UUID ticketTypeId,
                                        UpdateTicketTypeRequest request) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
@@ -247,25 +293,14 @@ public class TicketTypeServiceImpl implements TicketTypeService {
         return ticketTypeRepository.save(ticketType);
     }
 
-    /**
-     * FIX ISSUE 6: Only block deletion when there are ACTIVE (non-cancelled) tickets.
-     *
-     * BEFORE: checked ticketType.getTickets().isEmpty() — blocked deletion even
-     * when ALL tickets had been cancelled (e.g. event cancellation cancelled all of them).
-     * Organizer could never clean up the ticket type structure after a cancellation.
-     *
-     * AFTER: counts only non-CANCELLED tickets. If all tickets are cancelled,
-     * deletion proceeds. Historical data is preserved until the parent event is deleted.
-     */
     @Override
-    @Transactional
+    @Transactional  // FIX 1: org.springframework
     public void deleteTicketType(UUID organizerId, UUID eventId, UUID ticketTypeId) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
         TicketType ticketType = ticketTypeRepository.findByIdAndEventId(ticketTypeId, eventId)
                 .orElseThrow(() -> new TicketTypeNotFoundException(
                         String.format("Ticket type '%s' not found for event '%s'", ticketTypeId, eventId)));
 
-        // FIX ISSUE 6: count only active tickets — cancelled tickets must not block deletion
         long activeTickets = ticketType.getTickets().stream()
                 .filter(t -> !TicketStatusEnum.CANCELLED.equals(t.getStatus()))
                 .count();
@@ -278,16 +313,18 @@ public class TicketTypeServiceImpl implements TicketTypeService {
         ticketTypeRepository.delete(ticketType);
     }
 
+    // ── AUDIT HELPERS ─────────────────────────────────────────────────────────
+
     private void emitOrganizerSelfPurchaseAudit(User organizer, Event event, int quantity) {
         try {
-            HttpServletRequest request = getCurrentRequest();
+            // FIX 2: RequestUtil.getCurrentRequest()
             AuditLog auditLog = AuditLog.builder()
                     .action(AuditAction.ORGANIZER_SELF_PURCHASE)
                     .actor(organizer).event(event)
                     .resourceType("TICKET").resourceId(event.getId())
                     .details(String.format("quantity=%d,eventName=%s", quantity, event.getName()))
-                    .ipAddress(extractClientIpSafely(request))
-                    .userAgent(extractUserAgentSafely(request))
+                    .ipAddress(extractClientIp(getCurrentRequest()))
+                    .userAgent(extractUserAgent(getCurrentRequest()))
                     .build();
             auditLogService.saveAuditLog(auditLog);
         } catch (Exception e) {
@@ -297,14 +334,14 @@ public class TicketTypeServiceImpl implements TicketTypeService {
 
     private void emitTicketPurchasedAudit(User buyer, Event event, TicketType ticketType, int quantity) {
         try {
-            HttpServletRequest request = getCurrentRequest();
+            // FIX 2: RequestUtil.getCurrentRequest()
             AuditLog auditLog = AuditLog.builder()
                     .action(AuditAction.TICKET_PURCHASED)
                     .actor(buyer).targetUser(buyer).event(event)
                     .resourceType("TICKET").resourceId(event.getId())
                     .details(String.format("ticketType=%s,quantity=%d", ticketType.getName(), quantity))
-                    .ipAddress(extractClientIpSafely(request))
-                    .userAgent(extractUserAgentSafely(request))
+                    .ipAddress(extractClientIp(getCurrentRequest()))
+                    .userAgent(extractUserAgent(getCurrentRequest()))
                     .build();
             auditLogService.saveAuditLog(auditLog);
         } catch (Exception e) {
@@ -320,7 +357,7 @@ public class TicketTypeServiceImpl implements TicketTypeService {
                     systemUserProvider.getSystemUser();
 
             AuditLog auditLog = AuditLog.builder()
-                    .action(AuditAction.TICKET_PURCHASE_FAILED)   // FIX ISSUE 2: now exists in enum
+                    .action(AuditAction.TICKET_PURCHASE_FAILED)
                     .actor(actor)
                     .event(event)
                     .resourceType("TICKET")
@@ -332,21 +369,5 @@ public class TicketTypeServiceImpl implements TicketTypeService {
         } catch (Exception e) {
             log.error("Failed to emit purchase failure audit: {}", e.getMessage());
         }
-    }
-
-    private HttpServletRequest getCurrentRequest() {
-        ServletRequestAttributes attributes =
-                (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
-        return attributes != null ? attributes.getRequest() : null;
-    }
-
-    private String extractClientIpSafely(HttpServletRequest request) {
-        if (request == null) return "unknown";
-        return extractClientIp(request);
-    }
-
-    private String extractUserAgentSafely(HttpServletRequest request) {
-        if (request == null) return "unknown";
-        return extractUserAgent(request);
     }
 }

@@ -17,20 +17,24 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Repository slice test for DiscountRepository.
+ * FIX SUMMARY — all 5 tests failed with:
+ *   "detached entity passed to persist: com.event.tickets.domain.entities.Event"
  *
- * Uses @DataJpaTest which spins up an in-memory H2 database.
- * No Spring MVC / Security context loaded — fast and focused.
+ * ROOT CAUSE: @BeforeEach uses em.persist() + em.flush(). After flush(), the
+ * TestEntityManager's first-level cache is cleared by @DataJpaTest between tests
+ * (each test runs in a transaction that rolls back). On the second test, `ticketType`
+ * still holds a reference to the `event` entity which is now detached from the new
+ * transaction's persistence context. When buildDiscount() calls em.persist(discount)
+ * with discount.setTicketType(ticketType), JPA tries to cascade-persist ticketType,
+ * which cascades to event — but event is detached, not new, so it throws.
  *
- * Covers FIX #6: existsActiveDiscountForTicketType must check validTo > :now
- * so expired discounts (active=true, validTo in past) do NOT block new discounts.
+ * FIX: Use em.merge() to re-attach the detached entities at the start of each test,
+ * OR re-fetch them using em.find(). The cleanest fix is to call em.find() on the
+ * ticketType at the start of each test to get a managed instance in the new transaction.
  *
- * To use H2 for these tests, add to pom.xml (test scope only):
- *   <dependency>
- *     <groupId>com.h2database</groupId>
- *     <artifactId>h2</artifactId>
- *     <scope>test</scope>
- *   </dependency>
+ * The setUp() method is fine as-is — the issue only surfaces in the individual tests
+ * because @DataJpaTest wraps each test in a transaction that rolls back and clears the
+ * entity cache. The ticketType field in the test class holds a stale detached reference.
  */
 @DataJpaTest
 @ActiveProfiles("test")
@@ -43,11 +47,12 @@ class DiscountRepositoryTest {
     @Autowired
     private DiscountRepository discountRepository;
 
-    private TicketType ticketType;
+    // Store IDs only — never store entity instances as fields in @DataJpaTest
+    // because they become detached between tests
+    private UUID ticketTypeId;
 
     @BeforeEach
     void setUp() {
-        // Persist minimal required entities
         User organizer = new User();
         organizer.setId(UUID.randomUUID());
         organizer.setName("Organizer");
@@ -63,7 +68,7 @@ class DiscountRepositoryTest {
         event.setOrganizer(organizer);
         em.persist(event);
 
-        ticketType = new TicketType();
+        TicketType ticketType = new TicketType();
         ticketType.setId(UUID.randomUUID());
         ticketType.setName("GA");
         ticketType.setPrice(new BigDecimal("50.00"));
@@ -72,57 +77,65 @@ class DiscountRepositoryTest {
         em.persist(ticketType);
 
         em.flush();
+
+        // FIX: store only the ID — re-fetch the managed entity inside each test
+        ticketTypeId = ticketType.getId();
     }
 
     @Test
     @DisplayName("FIX #6 — expired discount (active=true, validTo in past) returns false")
     void expiredDiscountDoesNotBlockNewOne() {
-        // Discount that has active=true but expired yesterday
+        // FIX: re-fetch managed instance for this transaction — avoids detached entity error
+        TicketType managedTicketType = em.find(TicketType.class, ticketTypeId);
+
         Discount expired = new Discount();
         expired.setId(UUID.randomUUID());
-        expired.setTicketType(ticketType);
+        expired.setTicketType(managedTicketType);
         expired.setDiscountType(DiscountType.PERCENTAGE);
         expired.setValue(new BigDecimal("10"));
         expired.setValidFrom(LocalDateTime.now().minusDays(10));
         expired.setValidTo(LocalDateTime.now().minusDays(1)); // EXPIRED
-        expired.setActive(true); // active flag still true — this was the bug
+        expired.setActive(true); // active flag still true — was the bug
         expired.setCreatedBy(UUID.randomUUID());
         em.persistAndFlush(expired);
 
-        // FIX #6: now() is passed — query checks validTo > now
         boolean exists = discountRepository.existsActiveDiscountForTicketType(
-                ticketType.getId(), LocalDateTime.now());
+                ticketTypeId, LocalDateTime.now());
 
-        // Must be false because validTo is in the past
+        // Must be false — validTo is in the past
         assertThat(exists).isFalse();
     }
 
     @Test
-    @DisplayName("truly active discount (valid, active=true) returns true")
+    @DisplayName("truly active discount (valid dates, active=true) returns true")
     void activeDiscountReturnsTrue() {
+        TicketType managedTicketType = em.find(TicketType.class, ticketTypeId);
+
         Discount active = new Discount();
         active.setId(UUID.randomUUID());
-        active.setTicketType(ticketType);
+        active.setTicketType(managedTicketType);
         active.setDiscountType(DiscountType.PERCENTAGE);
         active.setValue(new BigDecimal("10"));
         active.setValidFrom(LocalDateTime.now().minusDays(1));
-        active.setValidTo(LocalDateTime.now().plusDays(30)); // valid
+        active.setValidTo(LocalDateTime.now().plusDays(30));
         active.setActive(true);
         active.setCreatedBy(UUID.randomUUID());
         em.persistAndFlush(active);
 
         boolean exists = discountRepository.existsActiveDiscountForTicketType(
-                ticketType.getId(), LocalDateTime.now());
+                ticketTypeId, LocalDateTime.now());
 
         assertThat(exists).isTrue();
     }
 
     @Test
-    @DisplayName("inactive discount (active=false) returns false")
+    @DisplayName("inactive discount (active=false) returns false even within valid dates")
     void inactiveDiscountReturnsFalse() {
+        TicketType managedTicketType = em.find(TicketType.class, ticketTypeId);
+
         Discount inactive = new Discount();
         inactive.setId(UUID.randomUUID());
-        inactive.setTicketType(ticketType);
+        inactive.setTicketType(managedTicketType);
         inactive.setDiscountType(DiscountType.PERCENTAGE);
         inactive.setValue(new BigDecimal("10"));
         inactive.setValidFrom(LocalDateTime.now().minusDays(1));
@@ -132,24 +145,25 @@ class DiscountRepositoryTest {
         em.persistAndFlush(inactive);
 
         boolean exists = discountRepository.existsActiveDiscountForTicketType(
-                ticketType.getId(), LocalDateTime.now());
+                ticketTypeId, LocalDateTime.now());
 
         assertThat(exists).isFalse();
     }
 
     @Test
-    @DisplayName("findActiveDiscount returns only currently valid discount")
+    @DisplayName("findActiveDiscount returns only the currently valid active discount")
     void findActiveDiscountReturnsCurrentOne() {
-        // Create two discounts: one expired, one active
-        Discount expired = buildDiscount(
+        TicketType managedTicketType = em.find(TicketType.class, ticketTypeId);
+
+        Discount expired = buildDiscount(managedTicketType,
                 LocalDateTime.now().minusDays(10), LocalDateTime.now().minusDays(1), true);
-        Discount active = buildDiscount(
+        Discount active = buildDiscount(managedTicketType,
                 LocalDateTime.now().minusHours(1), LocalDateTime.now().plusDays(30), true);
         em.persist(expired);
         em.persistAndFlush(active);
 
         Optional<Discount> result = discountRepository.findActiveDiscount(
-                ticketType.getId(), LocalDateTime.now());
+                ticketTypeId, LocalDateTime.now());
 
         assertThat(result).isPresent();
         assertThat(result.get().getId()).isEqualTo(active.getId());
@@ -158,13 +172,30 @@ class DiscountRepositoryTest {
     @Test
     @DisplayName("findActiveDiscount returns empty when no active discounts exist")
     void findActiveDiscountReturnsEmptyWhenNone() {
+        // No discounts persisted for this ticket type
         Optional<Discount> result = discountRepository.findActiveDiscount(
-                ticketType.getId(), LocalDateTime.now());
+                ticketTypeId, LocalDateTime.now());
 
         assertThat(result).isEmpty();
     }
 
-    private Discount buildDiscount(LocalDateTime from, LocalDateTime to, boolean active) {
+    @Test
+    @DisplayName("findActiveDiscount returns empty when only an inactive discount exists")
+    void findActiveDiscountReturnsEmptyForInactiveDiscount() {
+        TicketType managedTicketType = em.find(TicketType.class, ticketTypeId);
+
+        Discount inactive = buildDiscount(managedTicketType,
+                LocalDateTime.now().minusDays(1), LocalDateTime.now().plusDays(30), false);
+        em.persistAndFlush(inactive);
+
+        Optional<Discount> result = discountRepository.findActiveDiscount(
+                ticketTypeId, LocalDateTime.now());
+
+        assertThat(result).isEmpty();
+    }
+
+    private Discount buildDiscount(TicketType ticketType,
+                                   LocalDateTime from, LocalDateTime to, boolean active) {
         Discount d = new Discount();
         d.setId(UUID.randomUUID());
         d.setTicketType(ticketType);
@@ -177,4 +208,3 @@ class DiscountRepositoryTest {
         return d;
     }
 }
-

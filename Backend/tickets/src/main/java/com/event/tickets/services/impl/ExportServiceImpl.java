@@ -15,8 +15,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.stereotype.Service;
-import org.springframework.web.context.request.RequestContextHolder;
-import org.springframework.web.context.request.ServletRequestAttributes;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -29,21 +27,22 @@ import java.util.UUID;
 
 import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
+import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
 /**
- * C-06 FIX: sanitizeForFilename SIOOBE eliminated.
- * The regex calls (.replaceAll) can SHORTEN the string, but .substring()
- * was still using input.length() (the ORIGINAL length) as the upper bound.
- * If input was "Summer Fest!!!" (15 chars) and the regex stripped it to
- * "summer fest" (11 chars), substring(0, min(15, 50)) would attempt to
- * read indices 11–14 on an 11-char string → StringIndexOutOfBoundsException.
- * Fix: capture the SANITIZED result first, then apply min(sanitized.length(), 50).
+ * FIXES APPLIED IN THIS VERSION:
  *
- * H-12 FIX: Excel cells now receive BigDecimal values directly via
- * setCellValue(double) using bigDecimal.doubleValue() ONLY for the POI call —
- * but the underlying dashboard data stays BigDecimal throughout. POI's
- * setCellValue() requires a Java double; the conversion is unavoidable at the
- * rendering boundary. All arithmetic above this layer remains BigDecimal-safe.
+ * FIX 1 — getCurrentRequest() private copy-paste removed.
+ *   Replaced with static import of RequestUtil.getCurrentRequest().
+ *   The two imports that supported the private helper
+ *   (org.springframework.web.context.request.RequestContextHolder and
+ *   org.springframework.web.context.request.ServletRequestAttributes) are removed.
+ *   jakarta.servlet.http.HttpServletRequest is still needed as the parameter type
+ *   passed to extractClientIp() / extractUserAgent().
+ *
+ * All prior fixes preserved:
+ *   C-05/C-06 FIX: sanitizeForFilename uses sanitized.length() not input.length()
+ *   H-12 FIX: BigDecimal.doubleValue() only at POI rendering boundary
  */
 @Service
 @RequiredArgsConstructor
@@ -109,8 +108,6 @@ public class ExportServiceImpl implements ExportService {
             Row totalTicketsRow = sheet.createRow(rowNum++);
             totalTicketsRow.createCell(0).setCellValue("Total Tickets Sold:");
             Cell totalTicketsCell = totalTicketsRow.createCell(1);
-            // H-12 FIX: POI requires double at the rendering layer — BigDecimal arithmetic
-            // already completed above. intValue() is used for counts; doubleValue() for currency.
             totalTicketsCell.setCellValue((Integer) salesData.get("totalTicketsSold"));
             totalTicketsCell.setCellStyle(numberStyle);
 
@@ -178,8 +175,14 @@ public class ExportServiceImpl implements ExportService {
                 revenueFinalCell.setCellStyle(currencyStyle);
 
                 Cell remainingCell = dataRow.createCell(6);
-                remainingCell.setCellValue((Integer) typeStats.get("remaining"));
-                remainingCell.setCellStyle(numberStyle);
+                // remaining is nullable (null = unlimited) — guard against NPE
+                Object remaining = typeStats.get("remaining");
+                if (remaining != null) {
+                    remainingCell.setCellValue((Integer) remaining);
+                    remainingCell.setCellStyle(numberStyle);
+                } else {
+                    remainingCell.setCellValue("Unlimited");
+                }
             }
 
             for (int i = 0; i < headers.length; i++) {
@@ -228,8 +231,7 @@ public class ExportServiceImpl implements ExportService {
      * C-05/C-06 FIX: Capture the sanitized string FIRST, then apply substring
      * on its actual length — not on input.length(). The regex operations can
      * shorten the string (stripping special chars), so using input.length() as
-     * the upper bound caused SIOOBE whenever the sanitized result was shorter
-     * than the cap (50 chars).
+     * the upper bound caused SIOOBE whenever the sanitized result was shorter.
      */
     private String sanitizeForFilename(String input) {
         if (input == null) return "unknown";
@@ -237,12 +239,12 @@ public class ExportServiceImpl implements ExportService {
                 .replaceAll("[^a-z0-9\\s-]", "")
                 .replaceAll("\\s+", "_")
                 .replaceAll("-+", "_");
-        // FIX: use sanitized.length(), not input.length()
         return sanitized.substring(0, Math.min(sanitized.length(), 50));
     }
 
     private void auditSalesReportExport(UUID organizerId, UUID eventId) {
         try {
+            // FIX 1: RequestUtil.getCurrentRequest() — no more private copy-paste
             HttpServletRequest request = getCurrentRequest();
             User actor = userRepository.findById(organizerId)
                     .orElseGet(systemUserProvider::getSystemUser);
@@ -260,11 +262,5 @@ public class ExportServiceImpl implements ExportService {
             log.error("Failed to audit sales report export: organizerId={}, eventId={}",
                     organizerId, eventId, ex);
         }
-    }
-
-    private HttpServletRequest getCurrentRequest() {
-        ServletRequestAttributes attributes =
-                (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
-        return attributes != null ? attributes.getRequest() : null;
     }
 }

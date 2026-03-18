@@ -22,30 +22,42 @@ import com.event.tickets.services.EmailService;
 import com.event.tickets.services.KeycloakAdminService;
 import com.event.tickets.services.RegistrationService;
 import com.event.tickets.services.SystemUserProvider;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.transaction.Transactional;
 import java.time.LocalDateTime;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
-import org.springframework.web.context.request.RequestContextHolder;
-import org.springframework.web.context.request.ServletRequestAttributes;
+import org.springframework.transaction.annotation.Transactional;
 
 import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
+import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
 /**
- * Registration Service Implementation
+ * FIXES APPLIED IN THIS VERSION:
  *
- * FIX #2: STAFF event assignment was a TODO/no-op. Users got the Keycloak role
- * but were never added to the event.staff list. Now actually executes.
+ * FIX 1 — jakarta.transaction.@Transactional replaced with org.springframework.
+ *   The Spring-managed annotation enables:
+ *   - rollbackFor = Exception.class (explicit rollback on any checked exception)
+ *   - TestContext integration (TransactionalTestExecutionListener works correctly)
+ *   - readOnly=true on query methods (minor: not applicable here since register() writes)
+ *   The previous jakarta annotation was a functional inconsistency — it works in
+ *   Spring Boot via bridge, but signals the developer didn't consciously choose.
  *
- * FIX #12: Outer catch block double-rolled-back Keycloak after inner catches
- * had already done it. Inner catches now null keycloakUserId after rollback
- * so the outer catch skips the second deleteUser() call.
+ * FIX 2 — DataIntegrityViolationException catch on userRepository.save().
+ *   BEFORE: existsByEmail() → createUser() was not atomic.
+ *   Two concurrent registration requests with the same email could both call
+ *   existsByEmail() → get false → both proceed to keycloakAdminService.createUser().
+ *   The second Keycloak call returns 409 (caught as KeycloakUserCreationException).
+ *   But if both somehow reach userRepository.save(), the DB unique constraint on
+ *   users.email throws DataIntegrityViolationException which was uncaught — it
+ *   bubbled up as a generic 500, AND the Keycloak user was left orphaned.
+ *   AFTER: DataIntegrityViolationException is caught at userRepository.save(),
+ *   Keycloak is rolled back, and EmailAlreadyInUseException is thrown cleanly.
  *
- * EMAIL: sends registration confirmation after successful registration.
+ * FIX 3 — getCurrentRequest() centralised via RequestUtil.
+ *   Removed the private copy-paste helper; delegates to RequestUtil.
  */
 @Service
 @RequiredArgsConstructor
@@ -61,11 +73,10 @@ public class RegistrationServiceImpl implements RegistrationService {
     private final EmailService emailService;
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public RegisterResponseDto register(RegisterRequestDto request) {
-        HttpServletRequest httpRequest = getCurrentRequest();
-        String clientIp = extractClientIp(httpRequest);
-        String userAgent = extractUserAgent(httpRequest);
+        String clientIp = extractClientIp(getCurrentRequest());
+        String userAgent = extractUserAgent(getCurrentRequest());
 
         log.info("Starting registration: email={}, inviteCode={}",
                 request.getEmail(), request.getInviteCode() != null ? "PROVIDED" : "NONE");
@@ -75,22 +86,25 @@ public class RegistrationServiceImpl implements RegistrationService {
                         (request.getInviteCode() != null ? request.getInviteCode() : "NONE"),
                 clientIp, userAgent);
 
-        // FIX #12: keycloakUserId is nulled after each inner rollback so the
-        // outer catch never attempts a second deleteUser() call
+        // keycloakUserId is nulled after each inner rollback so the outer catch
+        // never attempts a second deleteUser() call (FIX #12 — preserved)
         UUID keycloakUserId = null;
         InviteCode inviteCode = null;
         String assignedRole = "ATTENDEE";
         UUID eventId = null;
 
         try {
-            // Step 1: Email uniqueness
-            if (userRepository.existsByEmail(request.getEmail())) {
+            // Step 1: Normalize email (case-insensitive, RFC 5321)
+            String normalizedEmail = request.getEmail().toLowerCase().trim();
+
+            // Step 2: Email uniqueness — first check
+            if (userRepository.existsByEmail(normalizedEmail)) {
                 emitAuditEvent(null, null, null, AuditAction.REGISTRATION_FAILED,
-                        "email=" + request.getEmail() + ",reason=EMAIL_ALREADY_EXISTS", clientIp, userAgent);
-                throw new EmailAlreadyInUseException("Email already in use: " + request.getEmail());
+                        "email=" + normalizedEmail + ",reason=EMAIL_ALREADY_EXISTS", clientIp, userAgent);
+                throw new EmailAlreadyInUseException("Email already in use: " + normalizedEmail);
             }
 
-            // Step 2: Validate invite code
+            // Step 3: Validate invite code
             if (request.getInviteCode() != null) {
                 inviteCode = validateAndGetInviteCode(request.getInviteCode());
                 assignedRole = inviteCode.getRoleName();
@@ -98,8 +112,8 @@ public class RegistrationServiceImpl implements RegistrationService {
                 log.info("Invite code validated: role={}, eventId={}", assignedRole, eventId);
             }
 
-            // Step 3: Check Keycloak for existing user
-            UUID existingKeycloakUserId = keycloakAdminService.getUserIdByEmail(request.getEmail());
+            // Step 4: Check Keycloak for existing user
+            UUID existingKeycloakUserId = keycloakAdminService.getUserIdByEmail(normalizedEmail);
             if (existingKeycloakUserId != null) {
                 if (userRepository.existsById(existingKeycloakUserId)) {
                     throw new RegistrationException("User already registered");
@@ -110,51 +124,59 @@ public class RegistrationServiceImpl implements RegistrationService {
             } else {
                 try {
                     keycloakUserId = keycloakAdminService.createUser(
-                            request.getEmail(), request.getPassword(), request.getName());
+                            normalizedEmail, request.getPassword(), request.getName());
                     log.info("Keycloak user created: userId={}", keycloakUserId);
                 } catch (Exception e) {
                     emitAuditEvent(null, null, null, AuditAction.REGISTRATION_FAILED,
-                            "email=" + request.getEmail() + ",reason=KEYCLOAK_CREATION_FAILED", clientIp, userAgent);
+                            "email=" + normalizedEmail + ",reason=KEYCLOAK_CREATION_FAILED", clientIp, userAgent);
                     throw new KeycloakUserCreationException("Failed to create user in Keycloak: " + e.getMessage(), e);
                 }
             }
 
-            // Step 4: Assign role in Keycloak
+            // Step 5: Assign role in Keycloak
             try {
                 keycloakAdminService.assignRoleToUser(keycloakUserId, assignedRole);
                 log.info("Role assigned: userId={}, role={}", keycloakUserId, assignedRole);
             } catch (Exception e) {
                 rollbackKeycloakUser(keycloakUserId);
-                keycloakUserId = null; // FIX #12: prevent outer catch re-rolling back
+                keycloakUserId = null;
                 emitAuditEvent(null, null, null, AuditAction.REGISTRATION_FAILED,
-                        "email=" + request.getEmail() + ",reason=ROLE_ASSIGNMENT_FAILED", clientIp, userAgent);
+                        "email=" + normalizedEmail + ",reason=ROLE_ASSIGNMENT_FAILED", clientIp, userAgent);
                 throw new RegistrationException("Failed to assign role: " + e.getMessage(), e);
             }
 
-            // Step 5: Create user in DB
+            // Step 6: Create user in DB
             User user = new User();
             user.setId(keycloakUserId);
-            user.setEmail(request.getEmail());
+            user.setEmail(normalizedEmail);
             user.setName(request.getName());
             user.setApprovalStatus(ApprovalStatus.PENDING);
 
             try {
                 user = userRepository.save(user);
                 log.info("User record created: userId={}, email={}", user.getId(), user.getEmail());
+            } catch (DataIntegrityViolationException e) {
+                // FIX 2: Race condition — another thread registered same email between
+                // our existsByEmail() check and this save. DB unique constraint fires.
+                // Roll back Keycloak and return a clean EmailAlreadyInUseException.
+                rollbackKeycloakUser(keycloakUserId);
+                keycloakUserId = null;
+                emitAuditEvent(null, null, null, AuditAction.REGISTRATION_FAILED,
+                        "email=" + normalizedEmail + ",reason=EMAIL_RACE_CONDITION", clientIp, userAgent);
+                log.warn("Email duplicate race condition detected: email={}", normalizedEmail);
+                throw new EmailAlreadyInUseException("Email already in use: " + normalizedEmail);
             } catch (Exception e) {
                 rollbackKeycloakUser(keycloakUserId);
-                keycloakUserId = null; // FIX #12
+                keycloakUserId = null;
                 emitAuditEvent(null, null, null, AuditAction.REGISTRATION_FAILED,
                         "email=" + request.getEmail() + ",reason=DB_PERSISTENCE_FAILED", clientIp, userAgent);
                 throw new RegistrationException("Failed to create user record: " + e.getMessage(), e);
             }
 
-            // Step 6: FIX #2 — STAFF event assignment now actually executes
-            // Previously this was a TODO/no-op — users got the role in Keycloak but
-            // were never added to the event.staff list, so staff access didn't work.
+            // Step 7: STAFF event assignment (FIX #2 — preserved)
             if ("STAFF".equals(assignedRole) && eventId != null) {
                 final User savedUser = user;
-                final UUID inviteEventId = eventId; // FIX: capture for lambda
+                final UUID inviteEventId = eventId;
                 try {
                     Event event = eventRepository.findById(inviteEventId)
                             .orElseThrow(() -> new RegistrationException("Event not found: " + inviteEventId));
@@ -169,14 +191,14 @@ public class RegistrationServiceImpl implements RegistrationService {
                 } catch (Exception e) {
                     userRepository.delete(savedUser);
                     rollbackKeycloakUser(keycloakUserId);
-                    keycloakUserId = null; // FIX #12
+                    keycloakUserId = null;
                     emitAuditEvent(null, null, null, AuditAction.REGISTRATION_FAILED,
                             "email=" + request.getEmail() + ",reason=STAFF_ASSIGNMENT_FAILED", clientIp, userAgent);
                     throw new RegistrationException("Failed to assign staff to event: " + e.getMessage(), e);
                 }
             }
 
-            // Step 7: Mark invite as redeemed
+            // Step 8: Mark invite as redeemed
             if (inviteCode != null) {
                 try {
                     inviteCode.setStatus(InviteCodeStatus.REDEEMED);
@@ -190,23 +212,19 @@ public class RegistrationServiceImpl implements RegistrationService {
                 }
             }
 
-            // Step 8: Audit success
+            // Step 9: Audit success
             Event eventForAudit = null;
             if (eventId != null) {
                 eventForAudit = new Event();
                 eventForAudit.setId(eventId);
             }
-            // L-01 FIX: removed redundant saveAndFlush(user).
-            // user was already persisted at step 5 via userRepository.save(user).
-            // No fields were modified between step 5 and here, so this was issuing
-            // a no-op UPDATE + unnecessary flush on every registration.
             emitAuditEvent(user, user, eventForAudit, AuditAction.REGISTRATION_SUCCESS,
                     "email=" + request.getEmail() + ",role=" + assignedRole, clientIp, userAgent);
 
-            // Step 9: Send confirmation email
+            // Step 10: Send confirmation email (fire-and-forget — never propagates)
             emailService.sendRegistrationEmail(user.getEmail(), user.getName());
 
-            // Step 10: Build response
+            // Step 11: Build response
             RegisterResponseDto response = new RegisterResponseDto();
             response.setMessage("Registration successful! Your account is pending admin approval.");
             response.setEmail(user.getEmail());
@@ -219,7 +237,7 @@ public class RegistrationServiceImpl implements RegistrationService {
             return response;
 
         } catch (Exception e) {
-            // FIX #12: only rollback if inner catches have NOT already done so
+            // Only rollback Keycloak if inner catches have NOT already done so (FIX #12)
             if (keycloakUserId != null) {
                 try {
                     rollbackKeycloakUser(keycloakUserId);
@@ -235,6 +253,8 @@ public class RegistrationServiceImpl implements RegistrationService {
             throw new RegistrationException("Registration failed: " + e.getMessage(), e);
         }
     }
+
+    // ── PRIVATE HELPERS ───────────────────────────────────────────────────────
 
     private InviteCode validateAndGetInviteCode(String code) {
         InviteCode inviteCode = inviteCodeRepository.findByCode(code)
@@ -273,11 +293,5 @@ public class RegistrationServiceImpl implements RegistrationService {
         } catch (Exception e) {
             log.error("Failed to emit audit: action={}, error={}", action, e.getMessage());
         }
-    }
-
-    private HttpServletRequest getCurrentRequest() {
-        ServletRequestAttributes attributes =
-                (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
-        return attributes != null ? attributes.getRequest() : null;
     }
 }

@@ -50,6 +50,16 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
      * - Actuator endpoints are individually secured in SecurityConfig
      * - Swagger UI is read-only documentation
      * - Business endpoints (/api/v1/**) still require APPROVED status
+     *
+     * FIX ISSUE #5: Security Policy Documentation
+     * These bypass paths are safe to access regardless of approval status:
+     * - /actuator/*: Infrastructure health checks (minimal info, secured individually)
+     * - /swagger-ui, /api-docs: Read-only API documentation (no data access)
+     * - /api/v1/auth/register: Users must register before approval (explicit enrollment)
+     * - /api/v1/invites/redeem: Part of invitation workflow (precedes approval)
+     *
+     * All sensitive business logic endpoints (/api/v1/events, /api/v1/tickets, etc.)
+     * still require APPROVED status and are NOT bypassed.
      */
     private static final String[] APPROVAL_BYPASS_PATHS = {
             "/api/v1/auth/register",

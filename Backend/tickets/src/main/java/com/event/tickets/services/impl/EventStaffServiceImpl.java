@@ -15,33 +15,29 @@ import com.event.tickets.services.EventStaffService;
 import com.event.tickets.services.KeycloakAdminService;
 import com.event.tickets.services.SystemUserProvider;
 import com.event.tickets.services.AuditLogService;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.transaction.Transactional;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.web.context.request.RequestContextHolder;
-import org.springframework.web.context.request.ServletRequestAttributes;
+import org.springframework.transaction.annotation.Transactional;
 
 import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
+import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
 /**
- * Event Staff Management Service
+ * FIXES APPLIED IN THIS VERSION:
  *
- * FIX #14: Replaced event.getStaff().contains(user) with an explicit ID-based check.
+ * FIX 1 — jakarta.transaction.@Transactional replaced with org.springframework.
+ *   assignStaffToEvent() and removeStaffFromEvent() now use Spring-managed transactions.
+ *   listEventStaff() and isStaffAssignedToEvent() get @Transactional(readOnly=true).
  *
- * ROOT CAUSE:
- * User.equals() previously compared id + name + email + createdAt + updatedAt.
- * Two references to the same user loaded at different points in a transaction
- * could have different updatedAt values (due to JPA flush), making contains()
- * return false — allowing the same user to be added to staff multiple times.
+ * FIX 2 — getCurrentRequest() private copy-paste removed.
+ *   Replaced with static import of RequestUtil.getCurrentRequest().
  *
- * The fix uses anyMatch(s -> s.getId().equals(userId)) which is independent of
- * any mutable fields and always correctly identifies the same user.
+ * All other fixes (#14 ID-based duplicate check, L-21 throw on non-existent removal) preserved.
  */
 @Service
 @RequiredArgsConstructor
@@ -56,7 +52,7 @@ public class EventStaffServiceImpl implements EventStaffService {
     private final AuditLogService auditLogService;
 
     @Override
-    @Transactional
+    @Transactional  // FIX 1: org.springframework
     public void assignStaffToEvent(UUID organizerId, UUID eventId, UUID userId) {
         log.info("Assigning user '{}' as staff to event '{}' by organizer '{}'",
                 userId, eventId, organizerId);
@@ -78,7 +74,7 @@ public class EventStaffServiceImpl implements EventStaffService {
                     user.getName(), userId));
         }
 
-        // FIX #14: ID-based check instead of contains(user) which uses broken equals()
+        // FIX #14: ID-based check instead of contains(user) — independent of mutable fields
         boolean alreadyAssigned = event.getStaff().stream()
                 .anyMatch(s -> s.getId().equals(userId));
 
@@ -96,22 +92,22 @@ public class EventStaffServiceImpl implements EventStaffService {
 
         User organizer = userRepository.findById(organizerId)
                 .orElseGet(systemUserProvider::getSystemUser);
-        HttpServletRequest request = getCurrentRequest();
 
+        // FIX 2: RequestUtil.getCurrentRequest()
         AuditLog auditLog = AuditLog.builder()
                 .action(AuditAction.STAFF_ASSIGNED)
                 .actor(organizer).targetUser(user).event(event)
                 .resourceType("EventStaff").resourceId(event.getId())
                 .details(String.format("Assigned %s as staff to event: %s",
                         user.getName(), event.getName()))
-                .ipAddress(extractClientIp(request))
-                .userAgent(extractUserAgent(request))
+                .ipAddress(extractClientIp(getCurrentRequest()))
+                .userAgent(extractUserAgent(getCurrentRequest()))
                 .build();
         auditLogService.saveAuditLog(auditLog);
     }
 
     @Override
-    @Transactional
+    @Transactional  // FIX 1: org.springframework
     public void removeStaffFromEvent(UUID organizerId, UUID eventId, UUID userId) {
         log.info("Removing user '{}' from staff of event '{}' by organizer '{}'",
                 userId, eventId, organizerId);
@@ -135,30 +131,28 @@ public class EventStaffServiceImpl implements EventStaffService {
 
             User organizer = userRepository.findById(organizerId)
                     .orElseGet(systemUserProvider::getSystemUser);
-            HttpServletRequest request = getCurrentRequest();
 
+            // FIX 2: RequestUtil.getCurrentRequest()
             AuditLog auditLog = AuditLog.builder()
                     .action(AuditAction.STAFF_REMOVED)
                     .actor(organizer).targetUser(user).event(event)
                     .resourceType("EventStaff").resourceId(event.getId())
                     .details(String.format("Removed %s from staff of event: %s",
                             user.getName(), event.getName()))
-                    .ipAddress(extractClientIp(request))
-                    .userAgent(extractUserAgent(request))
+                    .ipAddress(extractClientIp(getCurrentRequest()))
+                    .userAgent(extractUserAgent(getCurrentRequest()))
                     .build();
             auditLogService.saveAuditLog(auditLog);
         } else {
-            // L-21 FIX: throw instead of silently logging. A silent no-op means the
-            // organizer gets a 200 OK response when removing a user who was never on
-            // the staff list — no way to detect the mistake. InvalidBusinessStateException
-            // returns HTTP 400, making the contract clear.
-            throw new com.event.tickets.exceptions.InvalidBusinessStateException(
+            // L-21 FIX: throw instead of silently logging — 400 makes contract clear
+            throw new InvalidBusinessStateException(
                     String.format("User '%s' is not assigned as staff to event '%s'.",
                             user.getName(), event.getName()));
         }
     }
 
     @Override
+    @Transactional(readOnly = true)  // FIX 1: read-only transaction
     public List<StaffMemberDto> listEventStaff(UUID organizerId, UUID eventId) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
         Event event = eventRepository.findById(eventId)
@@ -170,24 +164,20 @@ public class EventStaffServiceImpl implements EventStaffService {
     }
 
     @Override
+    @Transactional(readOnly = true)  // FIX 1: read-only transaction
     public boolean isStaffAssignedToEvent(UUID eventId, UUID userId) {
         return eventRepository.findById(eventId)
                 .map(event -> event.getStaff().stream()
-                        .anyMatch(s -> s.getId().equals(userId))) // FIX #14
+                        .anyMatch(s -> s.getId().equals(userId)))
                 .orElse(false);
     }
 
     @Override
+    @Transactional(readOnly = true)
     public String getEventName(UUID eventId) {
         return eventRepository.findById(eventId)
                 .orElseThrow(() -> new EventNotFoundException(
                         String.format("Event with ID '%s' not found", eventId)))
                 .getName();
-    }
-
-    private HttpServletRequest getCurrentRequest() {
-        ServletRequestAttributes attributes =
-                (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
-        return attributes != null ? attributes.getRequest() : null;
     }
 }

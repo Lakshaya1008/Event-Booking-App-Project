@@ -37,11 +37,10 @@ import javax.imageio.ImageIO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.web.context.request.RequestContextHolder;
-import org.springframework.web.context.request.ServletRequestAttributes;
 
 import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
+import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
 /**
  * QR Code Service Implementation
@@ -260,9 +259,5 @@ public class QrCodeServiceImpl implements QrCodeService {
         }
     }
 
-    private HttpServletRequest getCurrentRequest() {
-        ServletRequestAttributes attributes =
-                (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
-        return attributes != null ? attributes.getRequest() : null;
-    }
+
 }

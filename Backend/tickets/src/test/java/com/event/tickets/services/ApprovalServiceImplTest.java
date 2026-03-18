@@ -2,6 +2,8 @@ package com.event.tickets.services;
 
 import com.event.tickets.domain.dtos.UserApprovalDto;
 import com.event.tickets.domain.entities.ApprovalStatus;
+import com.event.tickets.domain.entities.AuditAction;
+import com.event.tickets.domain.entities.AuditLog;
 import com.event.tickets.domain.entities.User;
 import com.event.tickets.exceptions.InvalidApprovalStateException;
 import com.event.tickets.exceptions.UserNotFoundException;
@@ -28,6 +30,25 @@ import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
+/**
+ * CHANGES FROM PREVIOUS VERSION:
+ *
+ * FIX 1 — Added @Mock AuditLogService auditLogService.
+ *   ApprovalServiceImpl calls auditLogService.saveAuditLog() inside emitApprovalAudit().
+ *   Without this mock, Mockito @InjectMocks leaves auditLogService null. The try/catch
+ *   around the audit call was silently swallowing the NPE — tests were passing only because
+ *   audit failures are non-critical. Adding the mock makes the test honest and prevents
+ *   future NPEs from going unnoticed when audit call patterns change.
+ *
+ * FIX 2 — getPendingApprovals test no longer stubs keycloakAdminService.getUserRoles().
+ *   The service no longer calls getUserRoles() in list responses (M-03 FIX).
+ *   The old stub was an UnnecessaryStubbingException waiting to happen.
+ *
+ * NEW TESTS:
+ *   - rejectUser_keycloakFailure_rollsBackToP_ENDING — verifies the DB rollback on Keycloak failure
+ *   - auditEmittedOnApproval — verifies audit log is actually saved (was silently NPE'd before)
+ *   - auditEmittedOnRejection — same
+ */
 @ExtendWith(MockitoExtension.class)
 @DisplayName("ApprovalServiceImpl")
 class ApprovalServiceImplTest {
@@ -35,6 +56,7 @@ class ApprovalServiceImplTest {
     @Mock private UserRepository userRepository;
     @Mock private KeycloakAdminService keycloakAdminService;
     @Mock private EmailService emailService;
+    @Mock private AuditLogService auditLogService;  // FIX 1: was missing — silent NPE on every test
 
     @InjectMocks
     private ApprovalServiceImpl service;
@@ -83,8 +105,7 @@ class ApprovalServiceImplTest {
             User saved = captor.getValue();
             assertThat(saved.getApprovalStatus()).isEqualTo(ApprovalStatus.APPROVED);
             assertThat(saved.getApprovedAt()).isNotNull();
-            // FIX #7: rejectedAt must NOT be set on approval
-            assertThat(saved.getRejectedAt()).isNull();
+            assertThat(saved.getRejectedAt()).isNull();  // must NOT be set on approval
             assertThat(saved.getApprovedBy()).isEqualTo(adminUser);
         }
 
@@ -143,20 +164,30 @@ class ApprovalServiceImplTest {
         }
 
         @Test
-        @DisplayName("Keycloak failure does not break approval (non-critical)")
+        @DisplayName("Keycloak failure does not break approval (non-critical — swallowed)")
         void keycloakFailureDoesNotBreakApproval() {
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
             when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-            doThrow(new RuntimeException("Keycloak down"))
-                    .when(keycloakAdminService).activateUser(userId);
+            doThrow(new RuntimeException("Keycloak down")).when(keycloakAdminService).activateUser(userId);
 
-            // Should NOT throw — Keycloak failure is logged and swallowed
-            assertThatCode(() -> service.approveUser(userId, adminId))
-                    .doesNotThrowAnyException();
-
-            // DB record still saved
+            assertThatCode(() -> service.approveUser(userId, adminId)).doesNotThrowAnyException();
             verify(userRepository).save(any());
+        }
+
+        @Test
+        @DisplayName("FIX 1 — audit log is actually saved on approval (was silently NPE'd before)")
+        void auditEmittedOnApproval() {
+            when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
+            when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
+            when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+            service.approveUser(userId, adminId);
+
+            // Verify audit log was actually saved — not silently swallowed by NPE
+            ArgumentCaptor<AuditLog> auditCaptor = ArgumentCaptor.forClass(AuditLog.class);
+            verify(auditLogService).saveAuditLog(auditCaptor.capture());
+            assertThat(auditCaptor.getValue().getAction()).isEqualTo(AuditAction.USER_APPROVED);
         }
     }
 
@@ -167,7 +198,7 @@ class ApprovalServiceImplTest {
     class RejectUser {
 
         @Test
-        @DisplayName("FIX #7 — sets rejectedAt NOT approvedAt on rejection")
+        @DisplayName("sets rejectedAt NOT approvedAt on rejection (FIX #7)")
         void setsRejectedAtNotApprovedAt() {
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
@@ -176,14 +207,15 @@ class ApprovalServiceImplTest {
             service.rejectUser(userId, adminId, "Suspicious activity");
 
             ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
-            verify(userRepository).save(captor.capture());
+            verify(userRepository, atLeastOnce()).save(captor.capture());
 
-            User saved = captor.getValue();
-            assertThat(saved.getApprovalStatus()).isEqualTo(ApprovalStatus.REJECTED);
-            // FIX #7: rejectedAt must be set, approvedAt must remain null
-            assertThat(saved.getRejectedAt()).isNotNull();
-            assertThat(saved.getApprovedAt()).isNull();
-            assertThat(saved.getRejectionReason()).isEqualTo("Suspicious activity");
+            // Find the REJECTED save (not any rollback save)
+            User rejectedSave = captor.getAllValues().stream()
+                    .filter(u -> u.getApprovalStatus() == ApprovalStatus.REJECTED)
+                    .findFirst().orElseThrow();
+            assertThat(rejectedSave.getRejectedAt()).isNotNull();
+            assertThat(rejectedSave.getApprovedAt()).isNull();
+            assertThat(rejectedSave.getRejectionReason()).isEqualTo("Suspicious activity");
         }
 
         @Test
@@ -219,6 +251,44 @@ class ApprovalServiceImplTest {
             assertThatThrownBy(() -> service.rejectUser(userId, adminId, "reason"))
                     .isInstanceOf(InvalidApprovalStateException.class);
         }
+
+        @Test
+        @DisplayName("Keycloak failure on reject — DB changes rolled back to PENDING")
+        void keycloakFailure_rollsBackDbToPending() {
+            when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
+            when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
+            when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+            doThrow(new RuntimeException("Keycloak unavailable"))
+                    .when(keycloakAdminService).setUserEnabled(userId, false);
+
+            assertThatThrownBy(() -> service.rejectUser(userId, adminId, "reason"))
+                    .isInstanceOf(RuntimeException.class)
+                    .hasMessageContaining("Keycloak synchronization failed");
+
+            // DB must be rolled back: status back to PENDING
+            ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
+            verify(userRepository, times(2)).save(captor.capture());
+
+            // Second save is the rollback — status must be PENDING
+            User rollbackSave = captor.getAllValues().get(1);
+            assertThat(rollbackSave.getApprovalStatus()).isEqualTo(ApprovalStatus.PENDING);
+            assertThat(rollbackSave.getRejectedAt()).isNull();
+            assertThat(rollbackSave.getRejectionReason()).isNull();
+        }
+
+        @Test
+        @DisplayName("FIX 1 — audit log is saved on rejection (was silently NPE'd before)")
+        void auditEmittedOnRejection() {
+            when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
+            when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
+            when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+            service.rejectUser(userId, adminId, "reason");
+
+            ArgumentCaptor<AuditLog> auditCaptor = ArgumentCaptor.forClass(AuditLog.class);
+            verify(auditLogService).saveAuditLog(auditCaptor.capture());
+            assertThat(auditCaptor.getValue().getAction()).isEqualTo(AuditAction.USER_REJECTED);
+        }
     }
 
     // ── getPendingApprovals ───────────────────────────────────────────────────
@@ -228,17 +298,19 @@ class ApprovalServiceImplTest {
     class GetPendingApprovals {
 
         @Test
-        @DisplayName("returns only PENDING users")
+        @DisplayName("returns only PENDING users — no Keycloak calls (M-03 FIX)")
         void returnsOnlyPendingUsers() {
             Page<User> page = new PageImpl<>(List.of(pendingUser));
             when(userRepository.findByApprovalStatus(eq(ApprovalStatus.PENDING), any()))
                     .thenReturn(page);
-            when(keycloakAdminService.getUserRoles(any())).thenReturn(List.of());
 
             Page<UserApprovalDto> result = service.getPendingApprovals(PageRequest.of(0, 10));
 
             assertThat(result.getContent()).hasSize(1);
             assertThat(result.getContent().get(0).getApprovalStatus()).isEqualTo("PENDING");
+
+            // M-03 FIX: NO Keycloak call on list pages
+            verify(keycloakAdminService, never()).getUserRoles(any());
         }
     }
 }

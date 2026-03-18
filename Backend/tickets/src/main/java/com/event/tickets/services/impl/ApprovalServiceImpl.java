@@ -24,18 +24,22 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * M-03 FIX: N+1 Keycloak calls eliminated from getPendingApprovals and getAllUsersWithApprovalStatus.
+ * FIXES APPLIED IN THIS VERSION:
  *
- * Previously toUserApprovalDto() called keycloakAdminService.getUserRoles(userId) for every user
- * on the page — a separate HTTP round-trip to Keycloak per user. A page of 20 users triggered
- * 20 Keycloak API calls, making the admin approval list extremely slow and Keycloak-rate-limit-prone.
+ * FIX 1 — @Transactional(readOnly=true) added to getPendingApprovals() and getAllUsersWithApprovalStatus().
+ *   These are pure read operations. Without readOnly=true, Hibernate tracks every entity loaded from
+ *   the DB for dirty checking — unnecessary overhead since no writes occur. readOnly=true tells Hibernate
+ *   to skip dirty checking, reducing memory usage and slightly improving query performance at scale.
+ *   Previously these had no @Transactional at all, meaning they ran without a transaction context
+ *   (Hibernate opens/closes a connection per lazy load — wasteful).
  *
- * Fix: roles are omitted from list responses (they're expensive and rarely needed when scanning
- * pending approvals). A separate GET /admin/users/{userId}/roles endpoint exists for the rare
- * case where an admin needs the role list for a specific user.
- *
- * The toUserApprovalDtoWithRoles() method is kept for the single-user approve/reject responses
- * where one Keycloak call is acceptable.
+ * NOTE on approveUser() Keycloak sync gap:
+ *   approveUser() saves APPROVED to DB then calls keycloakAdminService.activateUser().
+ *   If Keycloak is down, the exception is swallowed — DB shows APPROVED but user cannot log in.
+ *   This is a known architectural gap. The production-grade fix requires a keycloak_sync_pending
+ *   field on User + @Scheduled retry job. That change touches the User entity and requires a
+ *   DB migration — it is tracked as a separate work item and documented in the audit report.
+ *   For now the current behavior (log + swallow) is intentional and documented.
  */
 @Service
 @RequiredArgsConstructor
@@ -48,9 +52,9 @@ public class ApprovalServiceImpl implements ApprovalService {
     private final EmailService emailService;
 
     @Override
+    @Transactional(readOnly = true)  // FIX 1: read-only — skip dirty checking
     public Page<UserApprovalDto> getPendingApprovals(Pageable pageable) {
         log.debug("Fetching pending approvals, page: {}", pageable.getPageNumber());
-        // M-03 FIX: toUserApprovalDtoNoRoles avoids N+1 Keycloak calls on list pages
         return userRepository.findByApprovalStatus(ApprovalStatus.PENDING, pageable)
                 .map(this::toUserApprovalDtoNoRoles);
     }
@@ -79,12 +83,17 @@ public class ApprovalServiceImpl implements ApprovalService {
         user.setApprovedBy(admin);
         userRepository.save(user);
 
+        // Non-critical: Keycloak failure is logged but does not roll back the DB approval.
+        // If Keycloak is down, the user will be APPROVED in DB but disabled in Keycloak.
+        // Production fix: add keycloak_sync_pending flag + @Scheduled retry job.
         try {
             keycloakAdminService.activateUser(userId);
         } catch (Exception e) {
-            log.error("Keycloak activation failed for user {}: {} — DB already updated", userId, e.getMessage());
+            log.error("Keycloak activation failed for user {}: {} — DB already updated. " +
+                    "User may not be able to log in until Keycloak is synced.", userId, e.getMessage());
         }
 
+        // Non-critical: email failure does not affect approval outcome
         try {
             emailService.sendApprovalEmail(user.getEmail(), user.getName());
         } catch (Exception e) {
@@ -122,9 +131,20 @@ public class ApprovalServiceImpl implements ApprovalService {
         try {
             keycloakAdminService.setUserEnabled(userId, false);
         } catch (Exception e) {
-            log.error("Keycloak disable failed for user {}: {}", userId, e.getMessage());
+            // CRITICAL: Keycloak sync failed after DB update.
+            // ROLLBACK: Revert DB changes to maintain consistency.
+            log.error("CRITICAL: Keycloak disable failed for user {}: {}. Rolling back DB changes.",
+                    userId, e.getMessage());
+            user.setApprovalStatus(ApprovalStatus.PENDING);
+            user.setRejectedAt(null);
+            user.setRejectionReason(null);
+            userRepository.save(user);
+            throw new RuntimeException(
+                    "Keycloak synchronization failed. Rejection rolled back to PENDING. " +
+                            "Please retry rejection after Keycloak is restored.", e);
         }
 
+        // Non-critical: email failure is logged but user remains rejected
         try {
             emailService.sendRejectionEmail(user.getEmail(), user.getName(), reason);
         } catch (Exception e) {
@@ -136,17 +156,17 @@ public class ApprovalServiceImpl implements ApprovalService {
     }
 
     @Override
+    @Transactional(readOnly = true)  // FIX 1: read-only
     public Page<UserApprovalDto> getAllUsersWithApprovalStatus(Pageable pageable) {
-        // M-03 FIX: no Keycloak call per user — roles not included in list pages
         return userRepository.findAll(pageable).map(this::toUserApprovalDtoNoRoles);
     }
 
-    // ── private helpers ───────────────────────────────────────────────────────
+    // ── PRIVATE HELPERS ───────────────────────────────────────────────────────
 
     /**
-     * M-03 FIX: List pages use this — NO Keycloak round-trip.
-     * Roles are omitted. Use the AdminGovernanceController GET /admin/users/{id}/roles
-     * endpoint when role data is needed for a specific user.
+     * List response DTO — no Keycloak call (M-03 FIX).
+     * Roles are omitted from list pages. Use GET /admin/users/{id}/roles
+     * for per-user role data when needed.
      */
     private UserApprovalDto toUserApprovalDtoNoRoles(User user) {
         UserApprovalDto dto = new UserApprovalDto();
@@ -161,7 +181,7 @@ public class ApprovalServiceImpl implements ApprovalService {
         if (user.getApprovedBy() != null) {
             dto.setApprovedByName(user.getApprovedBy().getName());
         }
-        dto.setRoles(Collections.emptyList()); // roles fetched separately on demand
+        dto.setRoles(Collections.emptyList());
         return dto;
     }
 

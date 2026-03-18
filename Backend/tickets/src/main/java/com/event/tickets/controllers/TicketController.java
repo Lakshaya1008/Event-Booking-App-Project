@@ -60,7 +60,19 @@ public class TicketController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /** Legacy endpoint — maintained for backward compatibility. */
+    /**
+     * GET QR CODE (Binary Download - Legacy)
+     *
+     * MAINTAINED FOR BACKWARD COMPATIBILITY.
+     * This endpoint returns QR code as binary PNG image.
+     *
+     * RECOMMENDED ALTERNATIVES (preferred):
+     * - For viewing in browser: GET /api/v1/tickets/{ticketId}/qr-codes/view
+     * - For file download: GET /api/v1/tickets/{ticketId}/qr-codes/png
+     * - For full ticket data: GET /api/v1/tickets/{ticketId}
+     *
+     * This endpoint will remain supported indefinitely.
+     */
     @GetMapping(path = "/{ticketId}/qr-codes")
     @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
     public ResponseEntity<byte[]> getTicketQrCode(

@@ -21,8 +21,6 @@ import com.event.tickets.services.AuditLogService;
 import com.event.tickets.services.InviteCodeService;
 import com.event.tickets.services.KeycloakAdminService;
 import com.event.tickets.services.SystemUserProvider;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.transaction.Transactional;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -33,12 +31,33 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
-import org.springframework.web.context.request.RequestContextHolder;
-import org.springframework.web.context.request.ServletRequestAttributes;
+import org.springframework.transaction.annotation.Transactional;
 
 import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
+import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
+/**
+ * FIXES APPLIED IN THIS VERSION:
+ *
+ * FIX 1 — checkAndMarkExpired() result is persisted before validateCodeForRedemption().
+ *   BEFORE: checkAndMarkExpired() mutated inviteCode.status in memory to EXPIRED,
+ *   but inviteCodeRepository.save() was only called after validateCodeForRedemption().
+ *   In a concurrent scenario two threads could both read the same PENDING code,
+ *   both call checkAndMarkExpired() (in-memory only), both proceed to validateCodeForRedemption(),
+ *   and both pass the PENDING check — because neither thread had persisted the EXPIRED state.
+ *   A user could redeem a code that expired milliseconds ago.
+ *   AFTER: if checkAndMarkExpired() transitions the code to EXPIRED, we persist it
+ *   immediately before calling validateCodeForRedemption(). The second concurrent
+ *   thread will either read EXPIRED from the DB or lose the optimistic lock (@Version).
+ *
+ * FIX 2 — @Transactional import standardised to org.springframework.
+ *   jakarta.transaction.@Transactional removed. All annotations are now
+ *   org.springframework.transaction.annotation.@Transactional for consistency.
+ *
+ * FIX 3 — getCurrentRequest() now uses RequestUtil.getCurrentRequest().
+ *   Removed private helper; delegates to the centralised utility.
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -54,6 +73,11 @@ public class InviteCodeServiceImpl implements InviteCodeService {
     private static final String CODE_CHARACTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     private static final int CODE_LENGTH = 16;
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+
+    private static final int MAX_INVITES_PER_EVENT = 100;
+    private static final int MAX_INVITES_PER_ORGANIZER = 500;
+
+    // ── GENERATE ──────────────────────────────────────────────────────────────
 
     @Override
     @Transactional
@@ -75,6 +99,18 @@ public class InviteCodeServiceImpl implements InviteCodeService {
             event = eventRepository.findById(eventId)
                     .orElseThrow(() -> new EventNotFoundException(
                             String.format("Event with ID '%s' not found", eventId)));
+
+            long inviteCountForEvent = inviteCodeRepository.countByEventIdAndStatus(eventId, InviteCodeStatus.PENDING);
+            if (inviteCountForEvent >= MAX_INVITES_PER_EVENT) {
+                throw new InvalidBusinessStateException(
+                        String.format("Event has reached maximum invite codes limit (%d)", MAX_INVITES_PER_EVENT));
+            }
+        }
+
+        long inviteCountByCreator = inviteCodeRepository.countByCreatedByIdAndStatus(creatorId, InviteCodeStatus.PENDING);
+        if (inviteCountByCreator >= MAX_INVITES_PER_ORGANIZER) {
+            throw new InvalidBusinessStateException(
+                    String.format("You have reached the maximum invite codes limit (%d)", MAX_INVITES_PER_ORGANIZER));
         }
 
         String code = generateRandomCode();
@@ -108,6 +144,8 @@ public class InviteCodeServiceImpl implements InviteCodeService {
         return mapToResponseDto(inviteCode);
     }
 
+    // ── REDEEM ────────────────────────────────────────────────────────────────
+
     @Override
     @Transactional
     public RedeemInviteCodeResponseDto redeemInviteCode(UUID userId, String code) {
@@ -122,9 +160,20 @@ public class InviteCodeServiceImpl implements InviteCodeService {
                     .orElseThrow(() -> new InviteCodeNotFoundException(
                             String.format("Invite code '%s' not found", code)));
 
+            // FIX 1: Persist the EXPIRED status immediately if the code just expired.
+            // Without this save, a concurrent redemption reads PENDING from the DB and
+            // bypasses the EXPIRED check in validateCodeForRedemption().
+            InviteCodeStatus statusBeforeCheck = inviteCode.getStatus();
             inviteCode.checkAndMarkExpired();
+            if (inviteCode.getStatus() == InviteCodeStatus.EXPIRED
+                    && statusBeforeCheck != InviteCodeStatus.EXPIRED) {
+                inviteCodeRepository.save(inviteCode);
+                log.info("Persisted EXPIRED status for code '{}' before validation", inviteCode.getCode());
+            }
+
             validateCodeForRedemption(inviteCode);
 
+            // Assign role in Keycloak
             try {
                 keycloakAdminService.assignRoleToUser(userId, inviteCode.getRoleName());
                 log.info("Assigned role '{}' to user '{}'", inviteCode.getRoleName(), userId);
@@ -136,17 +185,10 @@ public class InviteCodeServiceImpl implements InviteCodeService {
                                 inviteCode.getRoleName(), e.getMessage()), e);
             }
 
+            // High-severity audit for ADMIN role grants
             if ("ADMIN".equals(inviteCode.getRoleName())) {
                 try {
                     List<String> currentRoles = keycloakAdminService.getUserRoles(userId);
-                    // FIX ISSUE 5: Was `count() > 1` — impossible since Keycloak returns unique roles.
-                    // The intent is to detect if user ALREADY has ADMIN before this redemption.
-                    // Since assignRoleToUser() was just called above (idempotent in Keycloak),
-                    // we check if there's more than 1 ADMIN in the list would never trigger.
-                    // The correct check is: was the user already an ADMIN before this code?
-                    // We can't retroactively check that, so instead we audit it and warn.
-                    // The real protection is: mark the invite code as REDEEMED (done below),
-                    // which prevents the same code being used twice.
                     if (currentRoles != null && currentRoles.stream().anyMatch("ADMIN"::equals)) {
                         log.warn("HIGH-SEVERITY: ADMIN role granted to user '{}' via invite code '{}'",
                                 userId, inviteCode.getCode());
@@ -159,22 +201,24 @@ public class InviteCodeServiceImpl implements InviteCodeService {
                 }
             }
 
+            // Assign to event staff list if STAFF code
             String eventName = null;
             if ("STAFF".equals(inviteCode.getRoleName()) && inviteCode.getEvent() != null) {
-                Event event = inviteCode.getEvent();
-                boolean alreadyStaff = event.getStaff().stream()
+                Event staffEvent = inviteCode.getEvent();
+                boolean alreadyStaff = staffEvent.getStaff().stream()
                         .anyMatch(s -> s.getId().equals(user.getId()));
                 if (!alreadyStaff) {
-                    event.getStaff().add(user);
+                    staffEvent.getStaff().add(user);
                 } else {
                     log.warn("User '{}' is already staff of event '{}' — skipping duplicate add",
-                            user.getName(), event.getName());
+                            user.getName(), staffEvent.getName());
                 }
-                eventRepository.save(event);
-                eventName = event.getName();
-                log.info("Assigned user '{}' as staff to event '{}'", user.getName(), event.getName());
+                eventRepository.save(staffEvent);
+                eventName = staffEvent.getName();
+                log.info("Assigned user '{}' as staff to event '{}'", user.getName(), staffEvent.getName());
             }
 
+            // Mark code as redeemed
             inviteCode.setStatus(InviteCodeStatus.REDEEMED);
             inviteCode.setRedeemedBy(user);
             inviteCode.setRedeemedAt(LocalDateTime.now());
@@ -183,8 +227,6 @@ public class InviteCodeServiceImpl implements InviteCodeService {
             log.info("Successfully redeemed invite code '{}' for user '{}'", code, user.getName());
 
             List<String> currentRoles = keycloakAdminService.getUserRoles(userId);
-
-            // FIX ISSUE 13: emit INVITE_REDEEMED audit on success (was missing for non-ADMIN redemptions)
             emitInviteRedeemedAudit(user, inviteCode);
 
             return new RedeemInviteCodeResponseDto(
@@ -198,6 +240,8 @@ public class InviteCodeServiceImpl implements InviteCodeService {
             throw e;
         }
     }
+
+    // ── REVOKE ────────────────────────────────────────────────────────────────
 
     @Override
     @Transactional
@@ -221,7 +265,10 @@ public class InviteCodeServiceImpl implements InviteCodeService {
         log.info("Revoked invite code '{}'", inviteCode.getCode());
     }
 
+    // ── GET / LIST ────────────────────────────────────────────────────────────
+
     @Override
+    @Transactional(readOnly = true)
     public InviteCodeResponseDto getInviteCode(UUID codeId) {
         InviteCode inviteCode = inviteCodeRepository.findById(codeId)
                 .orElseThrow(() -> new InviteCodeNotFoundException(
@@ -232,17 +279,19 @@ public class InviteCodeServiceImpl implements InviteCodeService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public Page<InviteCodeResponseDto> listInviteCodesByCreator(UUID creatorId, Pageable pageable) {
         return inviteCodeRepository.findByCreatedById(creatorId, pageable).map(this::mapToResponseDto);
     }
 
     @Override
+    @Transactional(readOnly = true)
     public Page<InviteCodeResponseDto> listInviteCodesByEvent(UUID eventId, Pageable pageable) {
         return inviteCodeRepository.findByEventId(eventId, pageable).map(this::mapToResponseDto);
     }
 
-    // FIX ISSUE 21: Added @Override — method was missing from InviteCodeService interface
     @Override
+    @Transactional(readOnly = true)
     public Page<InviteCodeResponseDto> listAllInviteCodes(Pageable pageable) {
         return inviteCodeRepository.findAll(pageable).map(this::mapToResponseDto);
     }
@@ -255,12 +304,52 @@ public class InviteCodeServiceImpl implements InviteCodeService {
         return count;
     }
 
-    // ── private helpers ───────────────────────────────────────────────────────
+    // ── PRIVATE HELPERS ───────────────────────────────────────────────────────
+
+    private void validateCodeForRedemption(InviteCode inviteCode) {
+        if (inviteCode.getStatus() == InviteCodeStatus.REDEEMED)
+            throw new InvalidInviteCodeException(String.format(
+                    "Invite code '%s' has already been redeemed by %s on %s",
+                    inviteCode.getCode(), inviteCode.getRedeemedBy().getName(), inviteCode.getRedeemedAt()));
+        if (inviteCode.getStatus() == InviteCodeStatus.EXPIRED)
+            throw new InvalidInviteCodeException(String.format(
+                    "Invite code '%s' expired on %s", inviteCode.getCode(), inviteCode.getExpiresAt()));
+        if (inviteCode.getStatus() == InviteCodeStatus.REVOKED)
+            throw new InvalidInviteCodeException(String.format(
+                    "Invite code '%s' has been revoked. Reason: %s",
+                    inviteCode.getCode(), inviteCode.getRevokedReason()));
+        if (!inviteCode.isValid())
+            throw new InvalidInviteCodeException(String.format(
+                    "Invite code '%s' is not valid for redemption", inviteCode.getCode()));
+    }
+
+    private String generateRandomCode() {
+        StringBuilder code = new StringBuilder(CODE_LENGTH);
+        for (int i = 0; i < CODE_LENGTH; i++) {
+            code.append(CODE_CHARACTERS.charAt(SECURE_RANDOM.nextInt(CODE_CHARACTERS.length())));
+            if ((i + 1) % 4 == 0 && i < CODE_LENGTH - 1) code.append('-');
+        }
+        return code.toString();
+    }
+
+    private InviteCodeResponseDto mapToResponseDto(InviteCode inviteCode) {
+        return InviteCodeResponseDto.builder()
+                .id(inviteCode.getId()).code(inviteCode.getCode())
+                .roleName(inviteCode.getRoleName())
+                .eventId(inviteCode.getEvent() != null ? inviteCode.getEvent().getId() : null)
+                .eventName(inviteCode.getEvent() != null ? inviteCode.getEvent().getName() : null)
+                .status(inviteCode.getStatus().name())
+                .createdBy(inviteCode.getCreatedBy().getName())
+                .createdAt(inviteCode.getCreatedAt()).expiresAt(inviteCode.getExpiresAt())
+                .redeemedBy(inviteCode.getRedeemedBy() != null ? inviteCode.getRedeemedBy().getName() : null)
+                .redeemedAt(inviteCode.getRedeemedAt())
+                .build();
+    }
 
     private void emitInviteRedeemedAudit(User user, InviteCode inviteCode) {
         try {
             AuditLog auditLog = AuditLog.builder()
-                    .action(AuditAction.INVITE_REDEEMED)  // FIX ISSUE 13: was never emitted on success
+                    .action(AuditAction.INVITE_REDEEMED)
                     .actor(user).targetUser(user)
                     .event(inviteCode.getEvent())
                     .resourceType("INVITE_CODE").resourceId(inviteCode.getId())
@@ -309,51 +398,5 @@ public class InviteCodeServiceImpl implements InviteCodeService {
         } catch (Exception e) {
             log.error("Failed to emit FAILED_INVITE_REDEMPTION audit: {}", e.getMessage());
         }
-    }
-
-    private String generateRandomCode() {
-        StringBuilder code = new StringBuilder(CODE_LENGTH);
-        for (int i = 0; i < CODE_LENGTH; i++) {
-            code.append(CODE_CHARACTERS.charAt(SECURE_RANDOM.nextInt(CODE_CHARACTERS.length())));
-            if ((i + 1) % 4 == 0 && i < CODE_LENGTH - 1) code.append('-');
-        }
-        return code.toString();
-    }
-
-    private void validateCodeForRedemption(InviteCode inviteCode) {
-        if (inviteCode.getStatus() == InviteCodeStatus.REDEEMED)
-            throw new InvalidInviteCodeException(String.format(
-                    "Invite code '%s' has already been redeemed by %s on %s",
-                    inviteCode.getCode(), inviteCode.getRedeemedBy().getName(), inviteCode.getRedeemedAt()));
-        if (inviteCode.getStatus() == InviteCodeStatus.EXPIRED)
-            throw new InvalidInviteCodeException(String.format(
-                    "Invite code '%s' expired on %s", inviteCode.getCode(), inviteCode.getExpiresAt()));
-        if (inviteCode.getStatus() == InviteCodeStatus.REVOKED)
-            throw new InvalidInviteCodeException(String.format(
-                    "Invite code '%s' has been revoked. Reason: %s",
-                    inviteCode.getCode(), inviteCode.getRevokedReason()));
-        if (!inviteCode.isValid())
-            throw new InvalidInviteCodeException(String.format(
-                    "Invite code '%s' is not valid for redemption", inviteCode.getCode()));
-    }
-
-    private InviteCodeResponseDto mapToResponseDto(InviteCode inviteCode) {
-        return InviteCodeResponseDto.builder()
-                .id(inviteCode.getId()).code(inviteCode.getCode())
-                .roleName(inviteCode.getRoleName())
-                .eventId(inviteCode.getEvent() != null ? inviteCode.getEvent().getId() : null)
-                .eventName(inviteCode.getEvent() != null ? inviteCode.getEvent().getName() : null)
-                .status(inviteCode.getStatus().name())
-                .createdBy(inviteCode.getCreatedBy().getName())
-                .createdAt(inviteCode.getCreatedAt()).expiresAt(inviteCode.getExpiresAt())
-                .redeemedBy(inviteCode.getRedeemedBy() != null ? inviteCode.getRedeemedBy().getName() : null)
-                .redeemedAt(inviteCode.getRedeemedAt())
-                .build();
-    }
-
-    private HttpServletRequest getCurrentRequest() {
-        ServletRequestAttributes attributes =
-                (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
-        return attributes != null ? attributes.getRequest() : null;
     }
 }

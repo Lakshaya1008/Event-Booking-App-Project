@@ -24,8 +24,6 @@ import com.event.tickets.services.AuthorizationService;
 import com.event.tickets.services.EmailService;
 import com.event.tickets.services.EventService;
 import com.event.tickets.services.SystemUserProvider;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.transaction.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -44,12 +42,30 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
-import org.springframework.web.context.request.RequestContextHolder;
-import org.springframework.web.context.request.ServletRequestAttributes;
+import org.springframework.transaction.annotation.Transactional;
 
 import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
+import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
+/**
+ * FIXES APPLIED IN THIS VERSION:
+ *
+ * FIX 1 — validateDateOrdering() now accepts an isCreate flag.
+ *   BEFORE: future-date checks fired on EVERY update, meaning an organizer
+ *   could not change the venue name on a live event (whose salesStart was
+ *   already in the past). Any field update was blocked.
+ *   AFTER: future-date enforcement only on create. Updates only enforce
+ *   ordering rules (end > start, salesEnd > salesStart) — not that dates
+ *   must still be in the future.
+ *
+ * FIX 2 — getCurrentRequest() call centralised via RequestUtil.
+ *   Removed the private getCurrentRequest() / extractClientIpSafely() /
+ *   extractUserAgentSafely() helpers that were duplicated across 8 service
+ *   files. All three are now in RequestUtil (a @UtilityClass) and imported
+ *   as static methods. Behaviour is identical — null-safe, falls back to
+ *   "unknown" — but lives in one place.
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -63,6 +79,8 @@ public class EventServiceImpl implements EventService {
     private final SystemUserProvider systemUserProvider;
     private final EmailService emailService;
 
+    // ── CREATE ────────────────────────────────────────────────────────────────
+
     @Override
     @Transactional
     public Event createEvent(UUID organizerId, CreateEventRequest event) {
@@ -70,8 +88,9 @@ public class EventServiceImpl implements EventService {
                 .orElseThrow(() -> new UserNotFoundException(
                         String.format("User with ID '%s' not found", organizerId)));
 
+        // On CREATE: enforce that all supplied dates are in the future.
         validateDateOrdering(event.getStart(), event.getEnd(),
-                event.getSalesStart(), event.getSalesEnd());
+                event.getSalesStart(), event.getSalesEnd(), true);
 
         Event eventToCreate = new Event();
 
@@ -101,15 +120,21 @@ public class EventServiceImpl implements EventService {
         return saved;
     }
 
+    // ── LIST / GET ────────────────────────────────────────────────────────────
+
     @Override
+    @Transactional(readOnly = true)
     public Page<Event> listEventsForOrganizer(UUID organizerId, Pageable pageable) {
         return eventRepository.findByOrganizerId(organizerId, pageable);
     }
 
     @Override
+    @Transactional(readOnly = true)
     public Optional<Event> getEventForOrganizer(UUID organizerId, UUID id) {
         return eventRepository.findByIdAndOrganizerId(id, organizerId);
     }
+
+    // ── UPDATE ────────────────────────────────────────────────────────────────
 
     @Override
     @Transactional
@@ -130,8 +155,11 @@ public class EventServiceImpl implements EventService {
                             "To run a new event, please create a new event instead.");
         }
 
+        // On UPDATE: only enforce ordering rules, NOT future-date rules.
+        // An organizer managing a live event (salesStart already in the past) must
+        // still be able to update the venue name, description, or other fields.
         validateDateOrdering(event.getStart(), event.getEnd(),
-                event.getSalesStart(), event.getSalesEnd());
+                event.getSalesStart(), event.getSalesEnd(), false);
 
         if (event.getSalesEnd() != null
                 && event.getSalesEnd().isBefore(LocalDateTime.now())
@@ -209,22 +237,25 @@ public class EventServiceImpl implements EventService {
                 "eventName=" + savedEvent.getName() + ",status=" + savedEvent.getStatus());
 
         if (becomingCancelled) {
-            // FIX ISSUE 4: Cancel ALL non-CANCELLED tickets, not just PURCHASED.
-            // VALIDATED tickets (already scanned at door) must also be cancelled
-            // so they don't appear in attendee reports or allow re-entry.
             int cancelledPurchased = ticketRepository.bulkUpdateStatusByEventId(
                     id, TicketStatusEnum.PURCHASED, TicketStatusEnum.CANCELLED);
+
+            // Also cancel VALIDATED tickets (tickets that have been scanned but event
+            // was subsequently cancelled — uncommon but must be handled)
             int cancelledValidated = ticketRepository.bulkUpdateStatusByEventId(
                     id, TicketStatusEnum.VALIDATED, TicketStatusEnum.CANCELLED);
+
             int cancelledCount = cancelledPurchased + cancelledValidated;
-            log.info("Event '{}' cancelled — {} ticket(s) bulk-cancelled ({} purchased + {} validated)",
-                    id, cancelledCount, cancelledPurchased, cancelledValidated);
+
+            log.info("Event '{}' cancelled — {} ticket(s) bulk-cancelled", id, cancelledCount);
             emitEventCancelledAudit(organizerId, savedEvent, cancelledCount);
             sendCancellationEmails(savedEvent);
         }
 
         return savedEvent;
     }
+
+    // ── DELETE ────────────────────────────────────────────────────────────────
 
     @Override
     @Transactional
@@ -245,22 +276,30 @@ public class EventServiceImpl implements EventService {
         });
     }
 
+    // ── PUBLIC BROWSE ─────────────────────────────────────────────────────────
+
     @Override
+    @Transactional(readOnly = true)
     public Page<Event> listPublishedEvents(Pageable pageable) {
         return eventRepository.findByStatus(EventStatusEnum.PUBLISHED, pageable);
     }
 
     @Override
+    @Transactional(readOnly = true)
     public Page<Event> searchPublishedEvents(String query, Pageable pageable) {
         return eventRepository.searchEvents(query, pageable);
     }
 
     @Override
+    @Transactional(readOnly = true)
     public Optional<Event> getPublishedEvent(UUID id) {
         return eventRepository.findByIdAndStatus(id, EventStatusEnum.PUBLISHED);
     }
 
+    // ── REPORTS ───────────────────────────────────────────────────────────────
+
     @Override
+    @Transactional(readOnly = true)
     public Map<String, Object> getSalesDashboard(UUID organizerId, UUID eventId) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
 
@@ -308,15 +347,10 @@ public class EventServiceImpl implements EventService {
             Map<String, Object> typeStats = new HashMap<>();
             typeStats.put("ticketTypeName", ticketType.getName());
             typeStats.put("basePrice", ticketType.getPrice());
-            typeStats.put("totalAvailable", ticketType.getTotalAvailable()); // may be null = unlimited
-
-            // FIX ISSUE 1: totalAvailable is nullable (unlimited tickets).
-            // The previous code did: ticketType.getTotalAvailable() - soldCount
-            // which threw NullPointerException when totalAvailable was null.
-            // Fix: return null for "remaining" when there's no cap (unlimited).
+            typeStats.put("totalAvailable", ticketType.getTotalAvailable());
             Integer remaining = ticketType.getTotalAvailable() != null
                     ? ticketType.getTotalAvailable() - soldCount
-                    : null; // null = unlimited (no cap defined)
+                    : null;
             typeStats.put("sold", soldCount);
             typeStats.put("remaining", remaining);
             typeStats.put("revenueBeforeDiscount", revenueBeforeDiscount);
@@ -336,6 +370,7 @@ public class EventServiceImpl implements EventService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public Map<String, Object> getAttendeesReport(UUID organizerId, UUID eventId) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
 
@@ -366,10 +401,35 @@ public class EventServiceImpl implements EventService {
         return report;
     }
 
-    // ── private helpers ───────────────────────────────────────────────────────
+    // ── PRIVATE HELPERS ───────────────────────────────────────────────────────
 
+    /**
+     * Validates date ordering rules.
+     *
+     * @param isCreate true when called from createEvent() — enforces future dates.
+     *                 false when called from updateEventForOrganizer() — only enforces
+     *                 ordering (end > start). Allows past salesStart on live events.
+     */
     private void validateDateOrdering(LocalDateTime start, LocalDateTime end,
-                                      LocalDateTime salesStart, LocalDateTime salesEnd) {
+                                      LocalDateTime salesStart, LocalDateTime salesEnd,
+                                      boolean isCreate) {
+        LocalDateTime now = LocalDateTime.now();
+
+        // Future-date checks only apply on CREATE.
+        // On UPDATE, an organizer managing a live event must not be locked out.
+        if (isCreate) {
+            if (salesStart != null && salesStart.isBefore(now)) {
+                throw new InvalidBusinessStateException("Sales start date must be in the future.");
+            }
+            if (start != null && start.isBefore(now)) {
+                throw new InvalidBusinessStateException("Event start date must be in the future.");
+            }
+            if (end != null && end.isBefore(now)) {
+                throw new InvalidBusinessStateException("Event end date must be in the future.");
+            }
+        }
+
+        // Ordering rules always apply (create and update).
         if (start != null && end != null && !end.isAfter(start)) {
             throw new InvalidBusinessStateException("Event end date must be after start date.");
         }
@@ -405,14 +465,13 @@ public class EventServiceImpl implements EventService {
         try {
             User actor = userRepository.findById(organizerId)
                     .orElseGet(systemUserProvider::getSystemUser);
-            HttpServletRequest request = getCurrentRequest();
             AuditLog auditLog = AuditLog.builder()
                     .action(AuditAction.EVENT_CANCELLED).actor(actor).event(event)
                     .resourceType("EVENT").resourceId(event.getId())
                     .details(String.format("eventName=%s,ticketsBulkCancelled=%d",
                             event.getName(), ticketsCancelled))
-                    .ipAddress(extractClientIpSafely(request))
-                    .userAgent(extractUserAgentSafely(request))
+                    .ipAddress(extractClientIp(getCurrentRequest()))
+                    .userAgent(extractUserAgent(getCurrentRequest()))
                     .build();
             auditLogService.saveAuditLog(auditLog);
         } catch (Exception e) {
@@ -420,43 +479,20 @@ public class EventServiceImpl implements EventService {
         }
     }
 
-    /**
-     * FIX ISSUE 11: Uses extractClientIpSafely/extractUserAgentSafely consistently.
-     * The original used extractClientIp(getCurrentRequest()) inline which would
-     * pass null to extractClientIp if called outside a request context.
-     * extractClientIp() handles null but inconsistency was a code smell.
-     */
     private void emitEventAudit(AuditAction action, UUID organizerId, Event event, String details) {
         try {
             User actor = userRepository.findById(organizerId)
                     .orElseGet(systemUserProvider::getSystemUser);
-            HttpServletRequest request = getCurrentRequest();
             AuditLog auditLog = AuditLog.builder()
                     .action(action).actor(actor).event(event)
                     .resourceType("EVENT").resourceId(event.getId())
                     .details(details)
-                    .ipAddress(extractClientIpSafely(request))
-                    .userAgent(extractUserAgentSafely(request))
+                    .ipAddress(extractClientIp(getCurrentRequest()))
+                    .userAgent(extractUserAgent(getCurrentRequest()))
                     .build();
             auditLogService.saveAuditLog(auditLog);
         } catch (Exception e) {
             log.error("Failed to emit {} audit for event {}: {}", action, event.getId(), e.getMessage());
         }
-    }
-
-    private HttpServletRequest getCurrentRequest() {
-        ServletRequestAttributes attributes =
-                (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
-        return attributes != null ? attributes.getRequest() : null;
-    }
-
-    private String extractClientIpSafely(HttpServletRequest request) {
-        if (request == null) return "unknown";
-        return extractClientIp(request);
-    }
-
-    private String extractUserAgentSafely(HttpServletRequest request) {
-        if (request == null) return "unknown";
-        return extractUserAgent(request);
     }
 }

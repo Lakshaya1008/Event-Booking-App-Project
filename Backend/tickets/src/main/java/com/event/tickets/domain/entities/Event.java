@@ -15,6 +15,7 @@ import jakarta.persistence.ManyToMany;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -101,6 +102,16 @@ public class Event {
     @LastModifiedDate
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
+
+    /**
+     * FIX #9: Optimistic locking to prevent lost updates on concurrent edits.
+     * When two organizers edit the same event simultaneously, the second update
+     * will fail with OptimisticLockingFailureException. Client must retry.
+     * Version is incremented on every update by Hibernate.
+     */
+    @Version
+    @Column(name = "version")
+    private Long version;
 
     @Override
     public boolean equals(Object o) {

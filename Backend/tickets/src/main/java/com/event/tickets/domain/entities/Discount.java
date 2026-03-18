@@ -82,7 +82,7 @@ public class Discount {
    *
    * Must be positive. For PERCENTAGE, must be <= 100 (enforced by CHECK constraint).
    */
-  @Column(name = "value", nullable = false, precision = 10, scale = 2)
+  @Column(name = "discount_value", nullable = false, precision = 10, scale = 2)
   private BigDecimal value;
 
   /**

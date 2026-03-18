@@ -12,8 +12,9 @@ import com.event.tickets.repositories.UserRepository;
 import com.event.tickets.services.AuditLogService;
 import com.event.tickets.services.KeycloakAdminService;
 import com.event.tickets.services.SystemUserProvider;
+import io.github.resilience4j.retry.annotation.Retry;
 import jakarta.servlet.http.HttpServletRequest;
-import jakarta.transaction.Transactional;
+import org.springframework.transaction.annotation.Transactional;
 import jakarta.ws.rs.NotFoundException;
 import java.util.Collections;
 import java.util.List;
@@ -31,11 +32,10 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
-import org.springframework.web.context.request.RequestContextHolder;
-import org.springframework.web.context.request.ServletRequestAttributes;
 
 import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
+import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
 /**
  * Keycloak Admin Service Implementation
@@ -69,8 +69,15 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
 
     @Override
     @Transactional
+    @Retry(name = "keycloak")
     public void assignRoleToUser(UUID userId, String roleName) {
         log.info("Assigning role '{}' to user '{}'", roleName, userId);
+
+        // FIX #12-1: Validate role name against whitelist
+        if (!isValidRole(roleName)) {
+            throw new KeycloakOperationException(
+                    String.format("Invalid role name: %s. Valid roles are: ADMIN, ORGANIZER, ATTENDEE, STAFF", roleName));
+        }
 
         try {
 
@@ -582,13 +589,33 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
         return null;
     }
 
+
+
+    @Override
+    public int getUserCount() {
+        try {
+            RealmResource realmResource = keycloakAdminClient.realm(realm);
+            // Get count of users in realm; this is a lightweight API call
+            int count = (int) realmResource.users().count();
+            log.debug("FIX #29: Keycloak user count = {}", count);
+            return count;
+        } catch (Exception e) {
+            log.error("FIX #29: Failed to get user count from Keycloak: {}", e.getMessage());
+            throw e;  // Let health indicator catch this
+        }
+    }
+
     /**
-     * Gets current HTTP request.
-     * For audit logging purposes.
+     * FIX #12-1: Validate role name against whitelist of valid roles.
+     * Prevents assigning invalid role names to users.
      */
-    private HttpServletRequest getCurrentRequest() {
-        ServletRequestAttributes attributes =
-                (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
-        return attributes != null ? attributes.getRequest() : null;
+    private boolean isValidRole(String roleName) {
+        if (roleName == null) {
+            return false;
+        }
+        return roleName.equals("ADMIN") ||
+                roleName.equals("ORGANIZER") ||
+                roleName.equals("ATTENDEE") ||
+                roleName.equals("STAFF");
     }
 }

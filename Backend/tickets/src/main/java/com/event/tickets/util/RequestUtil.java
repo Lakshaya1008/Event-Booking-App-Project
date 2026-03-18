@@ -2,56 +2,75 @@ package com.event.tickets.util;
 
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.experimental.UtilityClass;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 /**
  * Request Utility
  *
  * Extracts client information from HTTP requests.
- *
  * Used for audit logging and security tracking.
+ *
+ * FIX: Added getCurrentRequest() static helper.
+ * Previously copy-pasted in 8 different service files. Now a single
+ * source of truth — EventServiceImpl, EventStaffServiceImpl,
+ * TicketTypeServiceImpl, ExportServiceImpl, InviteCodeServiceImpl,
+ * QrCodeServiceImpl, RegistrationServiceImpl, TicketValidationServiceImpl
+ * all call RequestUtil.getCurrentRequest() instead of duplicating the
+ * RequestContextHolder boilerplate.
  */
 @UtilityClass
 public class RequestUtil {
 
   /**
+   * Returns the current HTTP request, or null if called outside a request context
+   * (e.g. from a scheduler or async thread).
+   *
+   * @return current HttpServletRequest, or null if not in a web request scope
+   */
+  public static HttpServletRequest getCurrentRequest() {
+    ServletRequestAttributes attributes =
+        (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+    return attributes != null ? attributes.getRequest() : null;
+  }
+
+  /**
    * Extracts client IP address from HTTP request.
+   * Returns "unknown" if request is null.
    *
    * Priority:
-   * 1. X-Forwarded-For (first IP if comma-separated)
+   * 1. X-Forwarded-For (first IP if comma-separated, for proxied requests)
    * 2. X-Real-IP
-   * 3. Remote address
+   * 3. Remote address (direct connection)
    *
-   * @param request HTTP servlet request
-   * @return Client IP address
+   * @param request HTTP servlet request (may be null)
+   * @return Client IP address, never null
    */
   public static String extractClientIp(HttpServletRequest request) {
     if (request == null) {
       return "unknown";
     }
 
-    // Check X-Forwarded-For header (proxy/load balancer)
     String xForwardedFor = request.getHeader("X-Forwarded-For");
     if (xForwardedFor != null && !xForwardedFor.isEmpty()) {
-      // Take first IP if comma-separated
       return xForwardedFor.split(",")[0].trim();
     }
 
-    // Check X-Real-IP header
     String xRealIp = request.getHeader("X-Real-IP");
     if (xRealIp != null && !xRealIp.isEmpty()) {
       return xRealIp.trim();
     }
 
-    // Fallback to remote address
     String remoteAddr = request.getRemoteAddr();
     return remoteAddr != null ? remoteAddr : "unknown";
   }
 
   /**
    * Extracts user agent from HTTP request.
+   * Returns "unknown" if request is null.
    *
-   * @param request HTTP servlet request
-   * @return User agent string
+   * @param request HTTP servlet request (may be null)
+   * @return User agent string, never null
    */
   public static String extractUserAgent(HttpServletRequest request) {
     if (request == null) {

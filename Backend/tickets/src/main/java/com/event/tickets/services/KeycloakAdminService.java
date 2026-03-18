@@ -157,4 +157,16 @@ public interface KeycloakAdminService {
      * @throws com.event.tickets.exceptions.KeycloakUserUpdateException if update fails
      */
     void activateUser(UUID userId);
+
+    /**
+     * FIX #29: Gets the total number of users in the realm.
+     * Used for health checks to verify Keycloak connectivity.
+     *
+     * This is a lightweight operation used by the health indicator
+     * to verify that Keycloak Admin API is accessible.
+     *
+     * @return The number of users in the realm (0 if realm is empty)
+     * @throws Exception if Keycloak API call fails (no connectivity)
+     */
+    int getUserCount();
 }
