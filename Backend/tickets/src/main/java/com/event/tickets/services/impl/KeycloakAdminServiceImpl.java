@@ -597,10 +597,10 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
             RealmResource realmResource = keycloakAdminClient.realm(realm);
             // Get count of users in realm; this is a lightweight API call
             int count = (int) realmResource.users().count();
-            log.debug("Keycloak user count = {}", count);
+            log.debug("FIX #29: Keycloak user count = {}", count);
             return count;
         } catch (Exception e) {
-            log.error("Failed to get user count from Keycloak: {}", e.getMessage());
+            log.error("FIX #29: Failed to get user count from Keycloak: {}", e.getMessage());
             throw e;  // Let health indicator catch this
         }
     }
