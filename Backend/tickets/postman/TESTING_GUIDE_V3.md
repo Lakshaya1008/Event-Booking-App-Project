@@ -1,2074 +1,873 @@
-# Event Booking App — Complete Testing Guide
-
-**Last Updated:** March 18, 2026
-**Version:** 3.0
-**Base URL:** `http://localhost:8081`
+# Event Booking Platform — Testing Guide
+**Base URL:** `http://localhost:8081` | **Keycloak:** `http://localhost:9090`
 
 ---
 
-## How to Use This Guide
+# SECTION 1 — KEYCLOAK SETUP
 
-Each section covers one endpoint with:
-- Method + URL
-- Required role and auth
-- Every valid and invalid payload with exact JSON
-- Every expected response with exact JSON
-
-**Conventions:**
-
-| Symbol | Meaning |
-|--------|---------|
-| ✅ | Valid — expect 2xx success |
-| ❌ | Invalid — expect 4xx error |
-| ⚠️ | Boundary value test |
-| `{{var}}` | Postman environment variable |
-
-**Postman Variables to set:**
-
-```
-base_url         = http://localhost:8081
-keycloak_url     = http://localhost:9090
-realm            = event-ticket-platform
-client_id        = event-ticket-platform-app
-client_secret    = (from Keycloak Credentials tab)
-```
+Complete this section once before running any tests.
 
 ---
 
-## Step 0 — Get Tokens First
+## Step 1 — Start Docker Services
 
-Run each of these before testing any other endpoint. Save the `access_token` from each.
-
-### Get Admin Token
+```bash
+# From the project root (where docker-compose.yml is)
+docker-compose up -d
 ```
-Method:  POST
-URL:     {{keycloak_url}}/realms/{{realm}}/protocol/openid-connect/token
-Body:    x-www-form-urlencoded
 
-grant_type    = password
-client_id     = {{client_id}}
-client_secret = {{client_secret}}
-username      = admin@test.com
-password      = Admin123!
-```
-**Expected 200 — save `access_token` as `admin_token`**
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| Spring Boot App | http://localhost:8081 | — |
+| Keycloak Admin UI | http://localhost:9090 | admin / admin |
+| PostgreSQL | localhost:5432 | postgres / postgres123 |
+| Adminer (DB UI) | http://localhost:8888 | System: PostgreSQL, Server: db, User: postgres, Pass: postgres123 |
+
+Wait **30 seconds** after starting before accessing Keycloak.
 
 ---
 
-### Get Organizer Token
-```
-username      = organizer@test.com
-password      = Password1
-```
-**Save as `organizer_token`**
+## Step 2 — Create the Realm
+
+1. Open **http://localhost:9090**
+2. Log in: **admin / admin**
+3. Top-left dropdown (shows "Keycloak") → click **Create Realm**
+4. **Realm name:** `event-ticket-platform`
+5. **Enabled:** Toggle ON
+6. Click **Create**
+
+All remaining steps are done inside the `event-ticket-platform` realm.
 
 ---
 
-### Get Attendee Token
-```
-username      = attendee@test.com
-password      = Password1
-```
-**Save as `attendee_token`**
+## Step 3 — Create the Client
+
+1. Left menu → **Clients** → **Create client**
+2. **Client ID:** `event-ticket-platform-app`
+3. **Client type:** `OpenID Connect`
+4. Click **Next**
+5. **Client authentication:** Toggle **ON** (makes it confidential — required)
+6. **Authorization:** Toggle **OFF**
+7. Under Authentication flow check only:
+    - ✅ **Standard flow**
+    - ✅ **Direct access grants**
+8. Click **Next**
+9. **Valid redirect URIs:** `http://localhost:8081/*`
+10. **Web origins:** `http://localhost:8081`
+11. Click **Save**
+
+**Get the client secret (needed for every token request):**
+1. On the client page → click **Credentials** tab
+2. Copy the **Client secret** value
+3. Save it — you will use it in every token request
 
 ---
 
-### Get Staff Token
-```
-username      = staff@test.com
-password      = Password1
-```
-**Save as `staff_token`**
+## Step 4 — Create Realm Roles
+
+Left menu → **Realm roles** → **Create role**
+
+Create all four roles one at a time:
+
+| Role Name |
+|-----------|
+| `ADMIN` |
+| `ORGANIZER` |
+| `ATTENDEE` |
+| `STAFF` |
+
+For each: enter the role name → click **Save**.
 
 ---
 
+## Step 5 — Create Test Users in Keycloak
+
+For **each user** in the table, follow these steps:
+
+**Create the user:**
+1. Left menu → **Users** → **Add user**
+2. **Username:** use the email address
+3. **Email:** as shown
+4. **First name:** any value
+5. **Email verified:** Toggle **ON**
+6. **Enabled:** Toggle **ON**
+7. Click **Create**
+
+**Set the password:**
+1. Go to **Credentials** tab
+2. Click **Set password**
+3. Enter the password
+4. **Temporary:** Toggle **OFF**
+5. Click **Save password** → **Confirm**
+
+**Assign the realm role:**
+1. Go to **Role mapping** tab
+2. Click **Assign role**
+3. Select **Filter by realm roles** from the dropdown
+4. Check the role → click **Assign**
+
+| Email | Password | Realm Role |
+|-------|----------|-----------|
+| admin@test.com | Admin123! | ADMIN |
+| organizer@test.com | Organizer1! | ORGANIZER |
+| organizer2@test.com | Organizer1! | ORGANIZER |
+| staff@test.com | Staff1! | STAFF |
+| attendee@test.com | Attendee1! | *(none — assigned via registration)* |
+
+> **Password requirement:** The API requires uppercase + lowercase + digit + special character from `!@#$%^&*`. `Password1!` format is required. `Password1` (no special char) will be **rejected with 400**.
+
 ---
 
-## 1. POST /api/v1/auth/register
+## Step 6 — Register Users via the API
+
+Keycloak holds authentication. The Spring Boot app holds the `approval_status`. You must register each user via the API so the DB record is created — without it the `ApprovalGateFilter` blocks everyone.
+
+Run each of these:
 
 ```
-Method:       POST
-URL:          {{base_url}}/api/v1/auth/register
-Auth:         None required
-Role:         Public
-Approval:     Bypassed
+POST http://localhost:8081/api/v1/auth/register
 Content-Type: application/json
 ```
 
----
-
-✅ **Minimum valid — gets ATTENDEE role:**
-```json
-{
-  "email": "attendee@test.com",
-  "password": "Password1",
-  "name": "Test Attendee"
-}
-```
-**Expected 201:**
-```json
-{
-  "message": "Registration successful! Your account is pending admin approval.",
-  "email": "attendee@test.com",
-  "requiresApproval": true,
-  "assignedRole": "ATTENDEE",
-  "instructions": "You will receive an email once your account has been reviewed."
-}
-```
-
----
-
-✅ **With invite code (role depends on invite):**
-```json
-{
-  "email": "organizer@test.com",
-  "password": "Password1",
-  "name": "Test Organizer",
-  "inviteCode": "{{organizer_invite_code}}"
-}
-```
-**Expected 201 — `assignedRole` matches the invite code's role**
-
----
-
-⚠️ **name exactly 2 chars (min boundary):**
-```json
-{ "email": "u1@test.com", "password": "Password1", "name": "Jo" }
-```
-**Expected 201**
-
-⚠️ **name exactly 100 chars (max boundary):**
-```json
-{ "email": "u2@test.com", "password": "Password1", "name": "Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
-```
-**Expected 201**
-
-⚠️ **password exactly 8 chars (min boundary):**
-```json
-{ "email": "u3@test.com", "password": "Passw0rd", "name": "Test" }
-```
-**Expected 201**
-
----
-
-❌ **Empty body — all 3 required fields missing:**
-```json
-{}
-```
-**Expected 400 — `validationErrors` lists ALL three at once:**
-```json
-{ "error": "Validation Error", "statusCode": 400, "validationErrors": ["email: Email is required", "password: Password is required", "name: Name is required"] }
-```
-
----
-
-❌ **Missing email:**
-```json
-{ "password": "Password1", "name": "Test" }
-```
-**Expected 400**
-
----
-
-❌ **Missing password:**
-```json
-{ "email": "u@test.com", "name": "Test" }
-```
-**Expected 400**
-
----
-
-❌ **Missing name:**
-```json
-{ "email": "u@test.com", "password": "Password1" }
-```
-**Expected 400**
-
----
-
-❌ **Invalid email format:**
-```json
-{ "email": "notanemail", "password": "Password1", "name": "Test" }
-```
-**Expected 400**
-
----
-
-⚠️ **Email too long — 256 chars:**
-```json
-{ "email": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@x.com", "password": "Password1", "name": "Test" }
-```
-**Expected 400**
-
----
-
-⚠️ **Password 7 chars — one below minimum:**
-```json
-{ "email": "u@test.com", "password": "Pass1rd", "name": "Test" }
-```
-**Expected 400**
-
----
-
-❌ **Password no uppercase:**
-```json
-{ "email": "u@test.com", "password": "password1", "name": "Test" }
-```
-**Expected 400**
-
----
-
-❌ **Password no lowercase:**
-```json
-{ "email": "u@test.com", "password": "PASSWORD1", "name": "Test" }
-```
-**Expected 400**
-
----
-
-❌ **Password no digit:**
-```json
-{ "email": "u@test.com", "password": "PasswordX", "name": "Test" }
-```
-**Expected 400**
-
----
-
-⚠️ **name 1 char — below minimum:**
-```json
-{ "email": "u@test.com", "password": "Password1", "name": "A" }
-```
-**Expected 400**
-
----
-
-❌ **name whitespace only (@NotBlank):**
-```json
-{ "email": "u@test.com", "password": "Password1", "name": "   " }
-```
-**Expected 400**
-
----
-
-❌ **inviteCode wrong format (lowercase):**
-```json
-{ "email": "u@test.com", "password": "Password1", "name": "Test", "inviteCode": "abcd-1234-efgh-5678" }
-```
-**Expected 400**
-
----
-
-❌ **inviteCode valid format but not in database:**
-```json
-{ "email": "u@test.com", "password": "Password1", "name": "Test", "inviteCode": "ZZZZ-9999-ZZZZ-9999" }
-```
-**Expected 404 INVITE_CODE_NOT_FOUND**
-
----
-
-❌ **inviteCode already redeemed:**
-```json
-{ "email": "u@test.com", "password": "Password1", "name": "Test", "inviteCode": "{{redeemed_code}}" }
-```
-**Expected 400 INVALID_INVITE_CODE — message: "has already been redeemed"**
-
----
-
-❌ **Duplicate email (register same email twice):**
-```json
-{ "email": "attendee@test.com", "password": "Password1", "name": "Test" }
-```
-**Expected 409 EMAIL_ALREADY_REGISTERED**
-
----
-
----
-
-## 2. POST /api/v1/invites — Generate Invite Code
-
-```
-Method:       POST
-URL:          {{base_url}}/api/v1/invites
-Auth:         Bearer {{admin_token}} or {{organizer_token}}
-Role:         ADMIN or ORGANIZER
-Approval:     Required
-Content-Type: application/json
-```
-
----
-
-✅ **ADMIN creates ATTENDEE invite:**
-```json
-{ "roleName": "ATTENDEE", "expirationHours": 24 }
-```
-**Expected 201:**
-```json
-{
-  "id": "uuid",
-  "code": "ABCD-1234-EFGH-5678",
-  "roleName": "ATTENDEE",
-  "eventId": null,
-  "eventName": null,
-  "status": "PENDING",
-  "createdBy": "admin@test.com",
-  "createdAt": "...",
-  "expiresAt": "...",
-  "redeemedBy": null,
-  "redeemedAt": null
-}
-```
-
----
-
-✅ **ADMIN creates ORGANIZER invite:**
-```json
-{ "roleName": "ORGANIZER", "expirationHours": 72 }
-```
-**Expected 201**
-
----
-
-✅ **ADMIN creates ADMIN invite:**
-```json
-{ "roleName": "ADMIN", "expirationHours": 24 }
-```
-**Expected 201**
-
----
-
-✅ **ORGANIZER creates STAFF invite for own event:**
-```json
-{ "roleName": "STAFF", "eventId": "{{event_id}}", "expirationHours": 48 }
-```
-**Expected 201**
-
----
-
-⚠️ **expirationHours=1 (min boundary):**
-```json
-{ "roleName": "ATTENDEE", "expirationHours": 1 }
-```
-**Expected 201**
-
----
-
-❌ **Missing roleName:**
-```json
-{ "expirationHours": 24 }
-```
-**Expected 400**
-
----
-
-❌ **Missing expirationHours:**
-```json
-{ "roleName": "ATTENDEE" }
-```
-**Expected 400**
-
----
-
-❌ **Invalid roleName:**
-```json
-{ "roleName": "SUPERUSER", "expirationHours": 24 }
-```
-**Expected 400**
-
----
-
-⚠️ **expirationHours=0 — must be @Positive (> 0):**
-```json
-{ "roleName": "ATTENDEE", "expirationHours": 0 }
-```
-**Expected 400**
-
----
-
-❌ **STAFF without eventId:**
-```json
-{ "roleName": "STAFF", "expirationHours": 24 }
-```
-**Expected 400 — message: "Event ID is required for STAFF role invites"**
-
----
-
-❌ **Non-STAFF role with eventId:**
-```json
-{ "roleName": "ORGANIZER", "eventId": "{{event_id}}", "expirationHours": 24 }
-```
-**Expected 400 — message: "Event ID should only be provided for STAFF invites"**
-
----
-
-❌ **ORGANIZER creates ORGANIZER invite:**
-```json
-{ "roleName": "ORGANIZER", "expirationHours": 24 }
-```
-*Use ORGANIZER token*
-**Expected 400 — message: "Organizers can only create STAFF invites..."**
-
----
-
-❌ **ORGANIZER creates STAFF invite for event they don't own:**
-*Use ORGANIZER token with another organizer's eventId*
-**Expected 403 ACCESS_DENIED**
-
----
-
-❌ **ATTENDEE token:**
-**Expected 403 ACCESS_DENIED**
-
----
-
-## 3. POST /api/v1/invites/redeem
-
-```
-Method:       POST
-URL:          {{base_url}}/api/v1/invites/redeem
-Auth:         Bearer (any token including PENDING users)
-Role:         Any authenticated
-Approval:     BYPASSED
-Content-Type: application/json
-```
-
----
-
-✅ **Valid code:**
-```json
-{ "code": "{{valid_invite_code}}" }
-```
-**Expected 200:**
-```json
-{
-  "message": "Invite code redeemed successfully",
-  "roleAssigned": "STAFF",
-  "eventName": "Tech Conference 2025",
-  "currentRoles": ["STAFF"]
-}
-```
-
----
-
-✅ **PENDING user can redeem (bypass path):**
-*Use PENDING user token*
-**Expected 200**
-
----
-
-❌ **Missing code:**
-```json
-{}
-```
-**Expected 400**
-
----
-
-❌ **Blank code:**
-```json
-{ "code": "" }
-```
-**Expected 400**
-
----
-
-❌ **Code not in database:**
-```json
-{ "code": "ZZZZ-9999-ZZZZ-9999" }
-```
-**Expected 404 INVITE_CODE_NOT_FOUND**
-
----
-
-❌ **Code already redeemed:**
-**Expected 400 INVALID_INVITE_CODE — message: "has already been redeemed by ... on ..."**
-
----
-
-❌ **Code expired:**
-**Expected 400 INVALID_INVITE_CODE — message: "expired on ..."**
-
----
-
-❌ **Code revoked:**
-**Expected 400 INVALID_INVITE_CODE — message: "has been revoked. Reason: ..."**
-
----
-
-## 4. DELETE /api/v1/invites/{codeId}
-
-```
-Method:  DELETE
-URL:     {{base_url}}/api/v1/invites/{{invite_code_id}}
-Auth:    Bearer {{admin_token}} or {{organizer_token}}
-Role:    ADMIN or ORGANIZER
-Body:    None
-Query:   reason (optional)
-```
-
----
-
-✅ **Creator revokes own code:**
-`DELETE {{base_url}}/api/v1/invites/{{invite_code_id}}`
-**Expected 204 No Content**
-
----
-
-✅ **With reason:**
-`DELETE {{base_url}}/api/v1/invites/{{invite_code_id}}?reason=Event+was+cancelled`
-**Expected 204**
-
----
-
-✅ **ADMIN revokes any code:**
-**Expected 204**
-
----
-
-❌ **Code already REDEEMED:**
-**Expected 400 — message: "Cannot revoke invite code: current status is REDEEMED"**
-
----
-
-❌ **ORGANIZER revoking someone else's code:**
-**Expected 403**
-
----
-
-❌ **Code not found:**
-**Expected 404**
-
----
-
-## 5. GET /api/v1/invites
-
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/invites?page=0&size=20&sort=createdAt,desc
-Auth:    Bearer {{admin_token}}
-Role:    ADMIN or ORGANIZER
-Body:    None
-```
-
-✅ **ADMIN sees all codes, ORGANIZER sees own only**
-**Expected 200 — `Page<InviteCodeResponseDto>`**
-
-❌ **ATTENDEE token → 403**
-
----
-
-## 6. GET /api/v1/invites/events/{eventId}
-
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/invites/events/{{event_id}}?page=0&size=20
-Auth:    Bearer {{admin_token}} or {{organizer_token}}
-Role:    ADMIN or ORGANIZER
-Body:    None
-```
-
-✅ **ADMIN — any event → 200**
-✅ **ORGANIZER — own event → 200**
-❌ **ORGANIZER — event they don't own → 403**
-
----
-
----
-
-## 7. POST /api/v1/events — Create Event
-
-```
-Method:       POST
-URL:          {{base_url}}/api/v1/events
-Auth:         Bearer {{organizer_token}}
-Role:         ORGANIZER
-Approval:     Required
-Content-Type: application/json
-```
-
----
-
-✅ **Minimum valid:**
-```json
-{
-  "name": "My Event",
-  "venue": "City Hall",
-  "status": "DRAFT",
-  "ticketTypes": [
-    { "name": "General", "price": 50.00, "totalAvailable": 100 }
-  ]
-}
-```
-**Expected 201 — save `id` as `event_id`, `ticketTypes[0].id` as `ticket_type_id`**
-
----
-
-✅ **All fields:**
-```json
-{
-  "name": "Tech Conference 2025",
-  "venue": "Convention Center, Building A",
-  "status": "PUBLISHED",
-  "start": "2025-12-15T09:00:00",
-  "end": "2025-12-15T18:00:00",
-  "salesStart": "2025-11-01T00:00:00",
-  "salesEnd": "2025-12-14T23:59:59",
-  "maxCapacity": 500,
-  "ticketTypes": [
-    { "name": "Early Bird", "price": 149.99, "description": "Limited discount slots", "totalAvailable": 100 },
-    { "name": "Regular", "price": 199.99, "description": "Standard admission", "totalAvailable": 400 }
-  ]
-}
-```
-**Expected 201:**
-```json
-{
-  "id": "uuid",
-  "name": "Tech Conference 2025",
-  "start": "2025-12-15T09:00:00",
-  "end": "2025-12-15T18:00:00",
-  "venue": "Convention Center, Building A",
-  "salesStart": "2025-11-01T00:00:00",
-  "salesEnd": "2025-12-14T23:59:59",
-  "status": "PUBLISHED",
-  "ticketTypes": [
-    { "id": "uuid", "name": "Early Bird", "price": 149.99, "description": "Limited discount slots", "totalAvailable": 100, "createdAt": "...", "updatedAt": "..." }
-  ],
-  "createdAt": "...",
-  "updatedAt": "..."
-}
-```
-
----
-
-✅ **Free event (price=0.00):**
-```json
-{
-  "name": "Free Workshop",
-  "venue": "Community Centre",
-  "status": "PUBLISHED",
-  "ticketTypes": [{ "name": "Free Entry", "price": 0.00, "totalAvailable": 50 }]
-}
-```
-**Expected 201**
-
----
-
-✅ **start provided without end (both are independently optional):**
-```json
-{
-  "name": "Open Event", "venue": "Outdoors", "status": "DRAFT",
-  "start": "2025-12-15T09:00:00",
-  "ticketTypes": [{ "name": "T", "price": 10.00, "totalAvailable": 50 }]
-}
-```
-**Expected 201**
-
----
-
-⚠️ **totalAvailable=1 (min boundary):**
-```json
-{
-  "name": "Exclusive", "venue": "Private", "status": "DRAFT",
-  "ticketTypes": [{ "name": "Exclusive", "price": 1000.00, "totalAvailable": 1 }]
-}
-```
-**Expected 201**
-
----
-
-❌ **Missing name:**
-```json
-{
-  "venue": "City Hall", "status": "DRAFT",
-  "ticketTypes": [{ "name": "T", "price": 10.00, "totalAvailable": 50 }]
-}
-```
-**Expected 400**
-
----
-
-❌ **Missing venue:**
-```json
-{
-  "name": "Event", "status": "DRAFT",
-  "ticketTypes": [{ "name": "T", "price": 10.00, "totalAvailable": 50 }]
-}
-```
-**Expected 400**
-
----
-
-❌ **Missing status:**
-```json
-{
-  "name": "Event", "venue": "Venue",
-  "ticketTypes": [{ "name": "T", "price": 10.00, "totalAvailable": 50 }]
-}
-```
-**Expected 400**
-
----
-
-❌ **Missing ticketTypes:**
-```json
-{ "name": "Event", "venue": "Venue", "status": "DRAFT" }
-```
-**Expected 400**
-
----
-
-❌ **Empty ticketTypes array:**
-```json
-{ "name": "Event", "venue": "Venue", "status": "DRAFT", "ticketTypes": [] }
-```
-**Expected 400**
-
----
-
-❌ **ticketType missing totalAvailable:**
-```json
-{
-  "name": "Event", "venue": "Venue", "status": "DRAFT",
-  "ticketTypes": [{ "name": "T", "price": 50.00 }]
-}
-```
-**Expected 400 — `totalAvailable` is @NotNull @Min(1)**
-
----
-
-❌ **ticketType price negative:**
-```json
-{
-  "name": "Event", "venue": "Venue", "status": "DRAFT",
-  "ticketTypes": [{ "name": "T", "price": -0.01, "totalAvailable": 10 }]
-}
-```
-**Expected 400**
-
----
-
-⚠️ **totalAvailable=0:**
-```json
-{
-  "name": "Event", "venue": "Venue", "status": "DRAFT",
-  "ticketTypes": [{ "name": "T", "price": 10.00, "totalAvailable": 0 }]
-}
-```
-**Expected 400**
-
----
-
-⚠️ **maxCapacity=0:**
-```json
-{
-  "name": "Event", "venue": "Venue", "status": "DRAFT",
-  "maxCapacity": 0,
-  "ticketTypes": [{ "name": "T", "price": 10.00, "totalAvailable": 10 }]
-}
-```
-**Expected 400**
-
----
-
-❌ **Invalid status value:**
-```json
-{
-  "name": "Event", "venue": "Venue", "status": "OPEN",
-  "ticketTypes": [{ "name": "T", "price": 10.00, "totalAvailable": 10 }]
-}
-```
-**Expected 400**
-
----
-
-❌ **end before start:**
-```json
-{
-  "name": "Event", "venue": "Venue", "status": "DRAFT",
-  "start": "2025-12-15T18:00:00", "end": "2025-12-15T09:00:00",
-  "ticketTypes": [{ "name": "T", "price": 10.00, "totalAvailable": 10 }]
-}
-```
-**Expected 409 — message: "Event end date must be after start date."**
-
----
-
-❌ **salesEnd before salesStart:**
-```json
-{
-  "name": "Event", "venue": "Venue", "status": "DRAFT",
-  "salesStart": "2025-12-01T00:00:00", "salesEnd": "2025-11-01T00:00:00",
-  "ticketTypes": [{ "name": "T", "price": 10.00, "totalAvailable": 10 }]
-}
-```
-**Expected 409 — message: "Sales end date must be after sales start date."**
-
----
-
-❌ **ATTENDEE token → 403**
-
----
-
-## 8. PUT /api/v1/events/{eventId} — Update Event
-
-```
-Method:       PUT
-URL:          {{base_url}}/api/v1/events/{{event_id}}
-Auth:         Bearer {{organizer_token}}
-Role:         ORGANIZER (must own)
-Content-Type: application/json
-```
-
----
-
-✅ **Basic update:**
-```json
-{
-  "name": "Updated Name",
-  "venue": "Same Venue",
-  "status": "PUBLISHED",
-  "ticketTypes": [
-    { "id": "{{ticket_type_id}}", "name": "General", "price": 99.99, "totalAvailable": 200 }
-  ]
-}
-```
-**Expected 200**
-
----
-
-✅ **Add new ticket type inline (no id = creates new):**
-```json
-{
-  "name": "Event", "venue": "Venue", "status": "PUBLISHED",
-  "ticketTypes": [
-    { "id": "{{ticket_type_id}}", "name": "Existing", "price": 99.99, "totalAvailable": 200 },
-    { "name": "New VIP", "price": 499.99, "totalAvailable": 20 }
-  ]
-}
-```
-**Expected 200 — response includes both ticket types, new one has a new UUID**
-
----
-
-✅ **Cancel event:**
-```json
-{
-  "name": "Event", "venue": "Venue", "status": "CANCELLED",
-  "ticketTypes": [{ "id": "{{ticket_type_id}}", "name": "T", "price": 10.00, "totalAvailable": 100 }]
-}
-```
-**Expected 200 — all PURCHASED tickets become CANCELLED**
-
----
-
-✅ **Set maxCapacity:**
-```json
-{
-  "name": "Event", "venue": "Venue", "status": "PUBLISHED",
-  "maxCapacity": 600,
-  "ticketTypes": [{ "id": "{{ticket_type_id}}", "name": "T", "price": 10.00, "totalAvailable": 600 }]
-}
-```
-**Expected 200**
-
----
-
-✅ **Remove maxCapacity (send null = no cap):**
-```json
-{
-  "name": "Event", "venue": "Venue", "status": "PUBLISHED",
-  "maxCapacity": null,
-  "ticketTypes": [{ "id": "{{ticket_type_id}}", "name": "T", "price": 10.00, "totalAvailable": 600 }]
-}
-```
-**Expected 200**
-
----
-
-❌ **Body id doesn't match URL eventId:**
-```json
-{
-  "id": "00000000-0000-0000-0000-000000000000",
-  "name": "Event", "venue": "Venue", "status": "DRAFT",
-  "ticketTypes": [{ "id": "{{ticket_type_id}}", "name": "T", "price": 10.00, "totalAvailable": 100 }]
-}
-```
-**Expected 400 EVENT_UPDATE_ERROR**
-
----
-
-❌ **Re-publish a CANCELLED event:**
-*Set event to CANCELLED first, then attempt to change status to PUBLISHED*
-```json
-{
-  "name": "Event", "venue": "Venue", "status": "PUBLISHED",
-  "ticketTypes": [{ "id": "{{ticket_type_id}}", "name": "T", "price": 10.00, "totalAvailable": 100 }]
-}
-```
-**Expected 409 — message: "Cannot modify a cancelled event..."**
-
----
-
-❌ **maxCapacity below already-sold count:**
-*Buy 5 tickets first, then set maxCapacity=4*
-**Expected 409**
-
----
-
-❌ **Not owner → 403**
-
----
-
-## 9. GET /api/v1/events
-
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/events?page=0&size=20&sort=start,desc
-Auth:    Bearer {{organizer_token}}
-Role:    ORGANIZER
-Body:    None
-```
-
-✅ **Expected 200 — `Page<ListEventResponseDto>`**
-❌ **ATTENDEE token → 403**
-
----
-
-## 10. GET /api/v1/events/{eventId}
-
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/events/{{event_id}}
-Auth:    Bearer {{organizer_token}}
-Role:    ORGANIZER (must own)
-Body:    None
-```
-
-✅ **Own event → 200 — `GetEventDetailsResponseDto`**
-❌ **Another organizer's event → 404**
-
----
-
-## 11. DELETE /api/v1/events/{eventId}
-
-```
-Method:  DELETE
-URL:     {{base_url}}/api/v1/events/{{event_id}}
-Auth:    Bearer {{organizer_token}}
-Role:    ORGANIZER (must own)
-Body:    None
-```
-
-✅ **Event with no active tickets → 204**
-❌ **Event with active tickets → 409 — message: "Cannot delete event ... N active ticket(s) exist. Cancel the event first."**
-
----
-
-## 12. GET /api/v1/events/{eventId}/sales-dashboard
-
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/events/{{event_id}}/sales-dashboard
-Auth:    Bearer {{organizer_token}}
-Role:    ORGANIZER (must own)
-Body:    None
-```
-
-✅ **Expected 200:**
-```json
-{
-  "eventName": "Tech Conference 2025",
-  "totalTicketsSold": 45,
-  "totalRevenueBeforeDiscount": 8955.00,
-  "totalDiscountGiven": 895.50,
-  "totalRevenueFinal": 8059.50,
-  "ticketTypeBreakdown": [
-    {
-      "ticketTypeName": "Early Bird",
-      "basePrice": 199.00,
-      "totalAvailable": 100,
-      "sold": 45,
-      "remaining": 55,
-      "revenueBeforeDiscount": 8955.00,
-      "discountGiven": 895.50,
-      "revenueFinal": 8059.50
-    }
-  ]
-}
-```
-
-*After cancelling event: `totalTicketsSold` = 0, all revenue = 0 (CANCELLED excluded)*
-*`remaining` = null when totalAvailable is null (unlimited)*
-
----
-
-## 13. GET /api/v1/events/{eventId}/attendees-report
-
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/events/{{event_id}}/attendees-report
-Auth:    Bearer {{organizer_token}}
-Role:    ORGANIZER (must own)
-Body:    None
-```
-
-✅ **Expected 200:**
-```json
-{
-  "eventName": "Tech Conference 2025",
-  "totalAttendees": 45,
-  "attendees": [
-    {
-      "attendeeName": "Jane Doe",
-      "attendeeEmail": "jane@example.com",
-      "ticketType": "Early Bird",
-      "ticketStatus": "PURCHASED",
-      "purchaseDate": "2025-11-10T14:30:00",
-      "validationCount": 1
-    }
-  ]
-}
-```
-
----
-
-## 14. GET /api/v1/events/{eventId}/sales-report.xlsx
-
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/events/{{event_id}}/sales-report.xlsx
-Auth:    Bearer {{organizer_token}}
-Role:    ORGANIZER (must own)
-Body:    None
-```
-
-✅ **Expected 200**
-- `Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
-- `Content-Disposition: attachment`
-
----
-
----
-
-## 15. Ticket Purchase — POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/tickets
-
-```
-Method:       POST
-URL:          {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/tickets
-Auth:         Bearer {{attendee_token}}
-Role:         ATTENDEE or ORGANIZER
-Approval:     Required
-Content-Type: application/json
-```
-
----
-
-✅ **No body — defaults to quantity=1:**
-```json
-{}
-```
-**Expected 201 — array of 1 ticket — save `[0].id` as `ticket_id`:**
-```json
-[
-  {
-    "id": "uuid",
-    "status": "PURCHASED",
-    "price": 149.99,
-    "pricePaid": 149.99,
-    "originalPrice": 149.99,
-    "discountApplied": 0.00,
-    "description": "Early Bird",
-    "eventName": "Tech Conference 2025",
-    "eventVenue": "Convention Center",
-    "eventStart": "2025-12-15T09:00:00",
-    "eventEnd": "2025-12-15T18:00:00"
-  }
-]
-```
-
----
-
-✅ **quantity=2:**
-```json
-{ "quantity": 2 }
-```
-**Expected 201 — array of 2 tickets**
-
----
-
-⚠️ **quantity=1 (min boundary):**
-```json
-{ "quantity": 1 }
-```
-**Expected 201**
-
----
-
-⚠️ **quantity=10 (max boundary):**
-```json
-{ "quantity": 10 }
-```
-**Expected 201**
-
----
-
-✅ **ORGANIZER purchases own event ticket (logged as ORGANIZER_SELF_PURCHASE):**
-*Use ORGANIZER token*
-**Expected 201**
-
----
-
-⚠️ **quantity=0 → 400:**
-```json
-{ "quantity": 0 }
-```
-**Expected 400**
-
----
-
-⚠️ **quantity=11 → 400:**
 ```json
-{ "quantity": 11 }
-```
-**Expected 400**
-
----
-
-❌ **Event is DRAFT:**
-**Expected 409 — message: "Tickets are not available — the event is not open for sales."**
-
----
-
-❌ **Event is CANCELLED:**
-**Expected 409 — message: "This event has been cancelled."**
-
----
-
-❌ **Before salesStart:**
-**Expected 409 — message: "Sales have not started yet. Sales open at ..."**
-
----
-
-❌ **After salesEnd:**
-**Expected 409 — message: "Sales have closed. Sales ended at ..."**
-
----
-
-❌ **Ticket type sold out:**
-*Create event with totalAvailable=2, buy 2, then try to buy 1 more*
-**Expected 400 TICKETS_SOLD_OUT**
-
----
-
-❌ **STAFF token → 403**
-
----
-
----
-
-## 16. GET /api/v1/tickets
-
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/tickets?page=0&size=20&sort=id,desc
-Auth:    Bearer {{attendee_token}}
-Role:    ATTENDEE or ORGANIZER
-Body:    None
+{ "email": "organizer@test.com",  "password": "Organizer1!", "name": "Test Organizer" }
+{ "email": "organizer2@test.com", "password": "Organizer1!", "name": "Organizer Two" }
+{ "email": "staff@test.com",      "password": "Staff1!",      "name": "Test Staff" }
+{ "email": "attendee@test.com",   "password": "Attendee1!",   "name": "Test Attendee" }
 ```
 
-✅ **Expected 200:**
-```json
-{
-  "content": [
-    {
-      "id": "uuid",
-      "status": "PURCHASED",
-      "ticketType": { "id": "uuid", "name": "Early Bird", "price": 149.99 }
-    }
-  ]
-}
-```
+Each returns `201`. All are `PENDING` at this point.
 
-❌ **STAFF token → 403**
+> **Admin user:** Do NOT register `admin@test.com` via the API. The `DatabaseInitializer` creates a DB record for admin automatically on startup. If it does not, run this SQL manually:
+> ```sql
+> INSERT INTO users (id, name, email, approval_status)
+> VALUES ('00000000-0000-0000-0000-000000000001', 'Admin', 'admin@test.com', 'APPROVED')
+> ON CONFLICT DO NOTHING;
+> ```
 
 ---
 
-## 17. GET /api/v1/tickets/{ticketId}
-
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/tickets/{{ticket_id}}
-Auth:    Bearer {{attendee_token}}
-Role:    ATTENDEE or ORGANIZER (must own ticket)
-Body:    None
-```
+## Step 7 — Get Admin Token and Approve All Users
 
-✅ **Own ticket → 200:**
-```json
-{
-  "id": "uuid",
-  "status": "PURCHASED",
-  "price": 149.99,
-  "pricePaid": 149.99,
-  "originalPrice": 149.99,
-  "discountApplied": 0.00,
-  "description": "Early Bird",
-  "eventName": "Tech Conference 2025",
-  "eventVenue": "Convention Center",
-  "eventStart": "2025-12-15T09:00:00",
-  "eventEnd": "2025-12-15T18:00:00"
-}
+**Get the admin token:**
 ```
-
-❌ **Another user's ticket → 404**
-❌ **STAFF token → 403**
-
----
-
-## 18. GET /api/v1/tickets/{ticketId}/qr-codes/view
+POST http://localhost:9090/realms/event-ticket-platform/protocol/openid-connect/token
+Content-Type: application/x-www-form-urlencoded
 
+grant_type=password
+client_id=event-ticket-platform-app
+client_secret=<YOUR_CLIENT_SECRET>
+username=admin@test.com
+password=Admin123!
 ```
-Method:  GET
-URL:     {{base_url}}/api/v1/tickets/{{ticket_id}}/qr-codes/view
-Auth:    Bearer {{attendee_token}}
-Role:    ATTENDEE or ORGANIZER
-Body:    None
-```
-
-✅ **Own ticket → 200 image/png inline**
-- Verify `Content-Type: image/png`
-- Verify `Cache-Control: max-age=300, private` (NOT public)
 
-❌ **Another user's ticket → 403**
-❌ **Cancelled ticket's QR → 404 QR_CODE_NOT_FOUND**
+Save the `access_token` as `admin_token`.
 
----
-
-## 19. GET /api/v1/tickets/{ticketId}/qr-codes/png
-
+**List pending users:**
 ```
-Method:  GET
-URL:     {{base_url}}/api/v1/tickets/{{ticket_id}}/qr-codes/png
-Auth:    Bearer {{attendee_token}}
-Role:    ATTENDEE or ORGANIZER
-Body:    None
+GET http://localhost:8081/api/v1/admin/approvals/pending?page=0&size=20
+Authorization: Bearer <admin_token>
 ```
-
-✅ **Expected 200**
-- `Content-Type: image/png`
-- `Content-Disposition: attachment; filename="..."`
 
----
-
-## 20. GET /api/v1/tickets/{ticketId}/qr-codes/pdf
+Copy each `userId` from the response.
 
+**Approve each user (no body needed):**
 ```
-Method:  GET
-URL:     {{base_url}}/api/v1/tickets/{{ticket_id}}/qr-codes/pdf
-Auth:    Bearer {{attendee_token}}
-Role:    ATTENDEE or ORGANIZER
-Body:    None
+POST http://localhost:8081/api/v1/admin/approvals/{userId}/approve
+Authorization: Bearer <admin_token>
 ```
 
-✅ **Expected 200**
-- `Content-Type: application/pdf`
-- `Content-Disposition: attachment`
-
----
+Repeat for each user. Now all users are `APPROVED` and can use the system.
 
 ---
-
-## 21. Ticket Type Management
-
-### POST /api/v1/events/{eventId}/ticket-types
-
-```
-Method:       POST
-URL:          {{base_url}}/api/v1/events/{{event_id}}/ticket-types
-Auth:         Bearer {{organizer_token}}
-Role:         ORGANIZER (must own)
-Content-Type: application/json
-```
-
-✅ **Minimum valid:**
-```json
-{ "name": "General", "price": 99.99, "totalAvailable": 200 }
-```
-**Expected 201**
 
-✅ **Free ticket:**
-```json
-{ "name": "Free Entry", "price": 0.00, "totalAvailable": 100 }
-```
-**Expected 201**
+## Step 8 — Postman Environment Variables
 
-✅ **All fields:**
-```json
-{ "name": "VIP Pass", "price": 499.99, "description": "Premium access", "totalAvailable": 50 }
-```
-**Expected 201:**
-```json
-{ "id": "uuid", "name": "VIP Pass", "price": 499.99, "description": "Premium access", "totalAvailable": 50, "createdAt": "...", "updatedAt": "..." }
-```
+Create a Postman Environment with these variables:
 
-❌ **Missing totalAvailable → 400**
-❌ **price=-0.01 → 400**
-❌ **totalAvailable=0 → 400**
+| Variable | Value |
+|----------|-------|
+| `base_url` | `http://localhost:8081` |
+| `keycloak_url` | `http://localhost:9090` |
+| `realm` | `event-ticket-platform` |
+| `client_id` | `event-ticket-platform-app` |
+| `client_secret` | *(from Keycloak Credentials tab)* |
+| `admin_token` | *(fill after login)* |
+| `organizer_token` | *(fill after login)* |
+| `organizer2_token` | *(fill after login)* |
+| `attendee_token` | *(fill after login)* |
+| `staff_token` | *(fill after login)* |
+| `event_id` | *(fill as you test)* |
+| `ticket_type_id` | *(fill as you test)* |
+| `ticket_id` | *(fill as you test)* |
+| `discount_id` | *(fill as you test)* |
+| `invite_code_id` | *(fill as you test)* |
+| `user_id` | *(fill as you test)* |
 
 ---
 
-### PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
+## Step 9 — Get All Tokens
 
-```
-Method:       PUT
-URL:          {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}
-Auth:         Bearer {{organizer_token}}
-Role:         ORGANIZER (must own)
-Content-Type: application/json
-```
+Run this once for each user — same URL, different credentials:
 
-✅ **Update name and price:**
-```json
-{ "name": "VIP Updated", "price": 549.99 }
 ```
-**Expected 200**
+POST {{keycloak_url}}/realms/{{realm}}/protocol/openid-connect/token
+Content-Type: application/x-www-form-urlencoded
 
-✅ **Remove description:**
-```json
-{ "name": "VIP Updated", "price": 549.99, "description": null }
+grant_type=password
+client_id={{client_id}}
+client_secret={{client_secret}}
+username=<email>
+password=<password>
 ```
-**Expected 200**
 
-✅ **Raise totalAvailable:**
-```json
-{ "name": "General", "price": 99.99, "totalAvailable": 500 }
-```
-**Expected 200**
+| User | Email | Password | Save `access_token` as |
+|------|-------|----------|----------------------|
+| Admin | admin@test.com | Admin123! | `admin_token` |
+| Organizer | organizer@test.com | Organizer1! | `organizer_token` |
+| Organizer 2 | organizer2@test.com | Organizer1! | `organizer2_token` |
+| Attendee | attendee@test.com | Attendee1! | `attendee_token` |
+| Staff | staff@test.com | Staff1! | `staff_token` |
 
-❌ **Lower totalAvailable below active sold count → 409**
+**Tokens expire in 5 minutes.** If you get 401, refresh.
 
 ---
 
-### DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
+# SECTION 2 — KEY RULES BEFORE TESTING
 
-```
-Method:  DELETE
-URL:     {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}
-Auth:    Bearer {{organizer_token}}
-Role:    ORGANIZER (must own)
-Body:    None
-```
+| Rule | Detail |
+|------|--------|
+| All users start PENDING | Must be approved via `POST /admin/approvals/{id}/approve` before they can use most endpoints |
+| Approval gate bypass paths | `POST /auth/register` and `POST /invites/redeem` work for PENDING users |
+| Ownership returns 404 | When an organizer accesses another organizer's event, they get 404 — not 403 |
+| ADMIN cannot access events/tickets | ADMIN role is blocked from `/published-events`, `/tickets`, etc. |
+| Ticket type `id` in PUT event | When updating an event, include `"id"` in each ticket type element to update it. Omitting `id` creates a new ticket type instead |
+| Validation method values | Only `MANUAL` and `QR_SCAN` are valid. `QR_CODE`, `SCAN` return 400 |
+| Second ticket scan | Returns 200 with `status: "INVALID"` — not an error |
+| Per-user ticket limit | Max 10 tickets per user per ticket type |
+| Password special char | Password must contain a special char from `!@#$%^&*`. `Password1` fails. Use `Password1!` |
 
-✅ **No sold tickets → 204**
-❌ **Has active sold tickets → 409 TICKET_TYPE_DELETE_NOT_ALLOWED**
-
 ---
 
-### GET /api/v1/events/{eventId}/ticket-types
+# SECTION 3 — TEST CASES FOR ALL 50 ENDPOINTS
 
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/events/{{event_id}}/ticket-types
-Auth:    Bearer {{organizer_token}}
-Role:    ORGANIZER (must own)
-Body:    None
-```
-✅ **Expected 200 — `List<CreateTicketTypeResponseDto>`**
+Symbols: ✅ valid | ❌ invalid | ⚠️ boundary value
 
 ---
 
-### GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
+## GROUP 1 — Authentication
 
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}
-Auth:    Bearer {{organizer_token}}
-Role:    ORGANIZER (must own)
-Body:    None
-```
-✅ **Expected 200** | ❌ **Wrong event → 404**
+### EP-01 · POST /api/v1/auth/register
 
----
+| # | | Payload | Expected |
+|---|--|---------|----------|
+| 1 | ✅ No invite — gets ATTENDEE | `{"email":"new@test.com","password":"Password1!","name":"New User"}` | 201, `assignedRole:"ATTENDEE"`, `requiresApproval:true` |
+| 2 | ✅ With ORGANIZER invite code | Add `"inviteCode":"{{organizer_invite_code}}"` | 201, `assignedRole:"ORGANIZER"` |
+| 3 | ✅ Email stored lowercase | `"email":"New@Test.COM"` | 201, email stored as `new@test.com` |
+| 4 | ⚠️ name exactly 2 chars (min) | `"name":"Jo"` | 201 |
+| 5 | ⚠️ name exactly 100 chars (max) | 100-char name | 201 |
+| 6 | ⚠️ password exactly 8 chars (min) | `"password":"Passw0r!"` | 201 |
+| 7 | ❌ Empty body | `{}` | 400 — all 3 field errors returned at once |
+| 8 | ❌ Missing email | `{"password":"Password1!","name":"Test"}` | 400 |
+| 9 | ❌ Missing password | `{"email":"u@test.com","name":"Test"}` | 400 |
+| 10 | ❌ Missing name | `{"email":"u@test.com","password":"Password1!"}` | 400 |
+| 11 | ❌ Invalid email format | `"email":"notanemail"` | 400 |
+| 12 | ❌ Password no uppercase | `"password":"password1!"` | 400 |
+| 13 | ❌ Password no lowercase | `"password":"PASSWORD1!"` | 400 |
+| 14 | ❌ Password no digit | `"password":"Password!!"` | 400 |
+| 15 | ❌ Password no special char | `"password":"Password1"` | **400 — special char `!@#$%^&*` required** |
+| 16 | ⚠️ name exactly 1 char (below min) | `"name":"A"` | 400 |
+| 17 | ❌ Duplicate email | Register same email twice | 409 `EMAIL_ALREADY_REGISTERED` |
+| 18 | ❌ inviteCode wrong format (lowercase) | `"inviteCode":"abcd-1234-efgh-5678"` | 400 |
+| 19 | ❌ inviteCode not in DB | `"inviteCode":"ZZZZ-9999-ZZZZ-9999"` | 404 `INVITE_CODE_NOT_FOUND` |
+| 20 | ❌ inviteCode already redeemed | Use a previously redeemed code | 400 `INVALID_INVITE_CODE` — "already been redeemed by..." |
+| 21 | ❌ inviteCode expired | Use an expired code | 400 `INVALID_INVITE_CODE` — "expired on..." |
 
 ---
 
-## 22. Discount Management
+## GROUP 2 — Approval Management
 
-**⚠️ All URLs end in `/discounts` (plural). `/discount` (singular) returns 404.**
+### EP-02 · GET /api/v1/admin/approvals/pending
 
-### POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Admin lists pending | 200, list of PENDING users, `roles:[]` always empty |
+| 2 | ❌ ORGANIZER token | 403 |
+| 3 | ❌ No token | 401 |
 
-```
-Method:       POST
-URL:          {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts
-Auth:         Bearer {{organizer_token}}
-Role:         ORGANIZER (must own)
-Content-Type: application/json
-```
-
-✅ **PERCENTAGE minimum:**
-```json
-{
-  "discountType": "PERCENTAGE",
-  "value": 20.0,
-  "validFrom": "2025-11-01T00:00:00",
-  "validTo": "2025-11-30T23:59:59"
-}
-```
-**Expected 201 — then purchase a ticket and verify `discountApplied > 0`**
+### EP-03 · POST /api/v1/admin/approvals/{userId}/approve
 
-✅ **PERCENTAGE all fields:**
-```json
-{
-  "discountType": "PERCENTAGE",
-  "value": 20.0,
-  "validFrom": "2025-11-01T00:00:00",
-  "validTo": "2025-11-30T23:59:59",
-  "active": true,
-  "description": "Black Friday 20% off"
-}
-```
-**Expected 201:**
-```json
-{
-  "id": "uuid",
-  "ticketTypeId": "uuid",
-  "ticketTypeName": "Early Bird",
-  "discountType": "PERCENTAGE",
-  "value": 20.0,
-  "validFrom": "2025-11-01T00:00:00",
-  "validTo": "2025-11-30T23:59:59",
-  "active": true,
-  "description": "Black Friday 20% off",
-  "createdAt": "...",
-  "updatedAt": "..."
-}
-```
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Approve PENDING user | 200, `{"status":"APPROVED"}` — user can now log in |
+| 2 | ❌ Already APPROVED | 409 `INVALID_APPROVAL_STATE` |
+| 3 | ❌ Already REJECTED | 409 `INVALID_APPROVAL_STATE` |
+| 4 | ❌ User not found | 404 `USER_NOT_FOUND` |
+| 5 | ❌ ORGANIZER token | 403 |
 
-✅ **FIXED_AMOUNT:**
-```json
-{
-  "discountType": "FIXED_AMOUNT",
-  "value": 50.00,
-  "validFrom": "2025-12-01T00:00:00",
-  "validTo": "2025-12-25T23:59:59",
-  "active": true
-}
-```
-**Expected 201 — purchase and verify `pricePaid = originalPrice - 50`**
+### EP-04 · POST /api/v1/admin/approvals/{userId}/reject
+
+| # | | Payload | Expected |
+|---|--|---------|----------|
+| 1 | ✅ Valid reason | `{"reason":"Account violates terms."}` | 200, `{"status":"REJECTED","reason":"..."}` |
+| 2 | ⚠️ reason exactly 10 chars (min) | `{"reason":"Duplicate."}` | 200 |
+| 3 | ⚠️ reason 9 chars (1 below min) | `{"reason":"Too short"}` | 400 |
+| 4 | ❌ Empty body | `{}` | 400 |
+| 5 | ❌ Whitespace-only reason | `{"reason":"   "}` | 400 |
+| 6 | ❌ Already REJECTED | — | 409 |
+
+### EP-05 · GET /api/v1/admin/approvals
 
-⚠️ **PERCENTAGE value=100.0 (100% free):**
-```json
-{
-  "discountType": "PERCENTAGE", "value": 100.0,
-  "validFrom": "2025-11-01T00:00:00", "validTo": "2025-11-30T23:59:59", "active": true
-}
-```
-**Expected 201 — purchase and verify `pricePaid = 0.00`**
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ All users, all statuses | 200 |
+| 2 | ❌ ORGANIZER token | 403 |
+
+---
 
-✅ **FIXED_AMOUNT larger than ticket price (clamped to 0, not an error):**
-```json
-{
-  "discountType": "FIXED_AMOUNT", "value": 9999.00,
-  "validFrom": "2025-11-01T00:00:00", "validTo": "2025-11-30T23:59:59", "active": true
-}
-```
-**Expected 201 — purchase and verify `pricePaid = 0.00`**
+## GROUP 3 — Admin Role Management
 
-✅ **active=false (exists but won't apply at purchase time):**
-```json
-{
-  "discountType": "PERCENTAGE", "value": 15.0,
-  "validFrom": "2025-11-01T00:00:00", "validTo": "2025-11-30T23:59:59", "active": false
-}
-```
-**Expected 201 — purchase and verify `pricePaid = full price`**
+### EP-06 · POST /api/v1/admin/users/{userId}/roles
 
----
+| # | | Payload | Expected |
+|---|--|---------|----------|
+| 1 | ✅ Assign ATTENDEE | `{"roleName":"ATTENDEE"}` | 200, `{"roles":["ATTENDEE"]}` |
+| 2 | ✅ Assign ORGANIZER | `{"roleName":"ORGANIZER"}` | 200 |
+| 3 | ✅ Assign STAFF | `{"roleName":"STAFF"}` | 200 |
+| 4 | ✅ Assign ADMIN | `{"roleName":"ADMIN"}` | 200 |
+| 5 | ❌ Invalid role | `{"roleName":"SUPERUSER"}` | 400 |
+| 6 | ❌ Empty body | `{}` | 400 |
+| 7 | ❌ ORGANIZER token | — | 403 |
 
-❌ **Missing discountType → 400**
-❌ **Missing value → 400**
-❌ **Missing validFrom → 400**
-❌ **Missing validTo → 400**
+### EP-07 · DELETE /api/v1/admin/users/{userId}/roles/{roleName}
 
-⚠️ **value=0 → 400:**
-```json
-{ "discountType": "PERCENTAGE", "value": 0, "validFrom": "2025-11-01T00:00:00", "validTo": "2025-11-30T23:59:59" }
-```
-**Expected 400**
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Revoke STAFF from staff user | 200, updated roles list |
+| 2 | ❌ ORGANIZER token | 403 |
+
+### EP-08 · GET /api/v1/admin/users/{userId}/roles
+
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Get roles for known user | 200, `{"userId":"...","roles":[...]}` |
+| 2 | ❌ Unknown userId | 404 |
+| 3 | ❌ ORGANIZER token | 403 |
+
+### EP-09 · GET /api/v1/admin/roles
+
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Admin calls | 200, `{"roles":["ADMIN","ORGANIZER","ATTENDEE","STAFF"]}` |
+| 2 | ❌ ORGANIZER token | 403 |
+
+---
+
+## GROUP 4 — Invite Codes
+
+### EP-10 · POST /api/v1/invites
+
+| # | | Payload | Token | Expected |
+|---|--|---------|-------|----------|
+| 1 | ✅ ADMIN creates ATTENDEE | `{"roleName":"ATTENDEE","expirationHours":24}` | admin | 201 |
+| 2 | ✅ ADMIN creates ORGANIZER | `{"roleName":"ORGANIZER","expirationHours":72}` | admin | 201 |
+| 3 | ✅ ADMIN creates ADMIN | `{"roleName":"ADMIN","expirationHours":24}` | admin | 201 |
+| 4 | ✅ ORGANIZER creates STAFF for own event | `{"roleName":"STAFF","eventId":"{{event_id}}","expirationHours":48}` | organizer | 201 |
+| 5 | ⚠️ expirationHours=1 (min) | `{"roleName":"ATTENDEE","expirationHours":1}` | admin | 201 |
+| 6 | ❌ expirationHours=0 | `{"roleName":"ATTENDEE","expirationHours":0}` | admin | 400 |
+| 7 | ❌ Missing roleName | `{"expirationHours":24}` | admin | 400 |
+| 8 | ❌ Invalid roleName | `{"roleName":"BOSS","expirationHours":24}` | admin | 400 |
+| 9 | ❌ STAFF without eventId | `{"roleName":"STAFF","expirationHours":24}` | admin | 400 — "Event ID is required" |
+| 10 | ❌ Non-STAFF with eventId | `{"roleName":"ATTENDEE","eventId":"{{event_id}}","expirationHours":24}` | admin | 400 — "should only be provided for STAFF" |
+| 11 | ❌ ORGANIZER tries ORGANIZER | `{"roleName":"ORGANIZER","expirationHours":24}` | organizer | 400 — "can only create STAFF invites" |
+| 12 | ❌ ORGANIZER tries ADMIN | `{"roleName":"ADMIN","expirationHours":24}` | organizer | 400 — "Only ADMINs can create ADMIN role invites" |
+| 13 | ❌ ORGANIZER, other org's event | STAFF invite for another organizer's event | organizer | 403 |
+| 14 | ❌ ATTENDEE token | — | attendee | 403 |
+
+### EP-11 · POST /api/v1/invites/redeem (Approval gate BYPASSED)
+
+| # | | Payload | Expected |
+|---|--|---------|----------|
+| 1 | ✅ Valid code | `{"code":"{{valid_invite_code}}"}` | 200, `{"roleAssigned":"STAFF","currentRoles":["STAFF"]}` |
+| 2 | ✅ PENDING user can redeem | Same with PENDING user token | 200 — bypass confirmed |
+| 3 | ❌ Empty body | `{}` | 400 |
+| 4 | ❌ Blank code | `{"code":""}` | 400 |
+| 5 | ❌ Code not in DB | `{"code":"ZZZZ-9999-ZZZZ-9999"}` | 404 `INVITE_CODE_NOT_FOUND` |
+| 6 | ❌ Already redeemed | Redeemed code | 400 `INVALID_INVITE_CODE` — "already been redeemed by..." |
+| 7 | ❌ Expired | Expired code | 400 `INVALID_INVITE_CODE` — "expired on..." |
+| 8 | ❌ Revoked | Revoked code | 400 `INVALID_INVITE_CODE` — "has been revoked. Reason:..." |
+
+### EP-12 · DELETE /api/v1/invites/{codeId}
+
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Creator revokes own code | 204 |
+| 2 | ✅ With `?reason=Event+cancelled` | 204 |
+| 3 | ✅ ADMIN revokes any code | 204 |
+| 4 | ❌ Code is REDEEMED | 400 — "Cannot revoke: current status is REDEEMED" |
+| 5 | ❌ ORGANIZER revoking another's code | 403 |
+| 6 | ❌ Code not found | 404 |
 
-⚠️ **PERCENTAGE value=100.01 (above max) → 400:**
-```json
-{ "discountType": "PERCENTAGE", "value": 100.01, "validFrom": "2025-11-01T00:00:00", "validTo": "2025-11-30T23:59:59" }
-```
-**Expected 400**
+### EP-13 · GET /api/v1/invites
 
-❌ **validTo before validFrom → 400:**
-```json
-{ "discountType": "PERCENTAGE", "value": 10, "validFrom": "2025-11-30T00:00:00", "validTo": "2025-11-01T00:00:00" }
-```
-**Expected 400**
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ ADMIN | 200 — sees ALL invite codes |
+| 2 | ✅ ORGANIZER | 200 — sees only their own |
+| 3 | ❌ ATTENDEE | 403 |
 
-❌ **Second active discount for same ticket type → 409 DISCOUNT_ALREADY_EXISTS**
+### EP-14 · GET /api/v1/invites/events/{eventId}
 
-✅ **Expired discount doesn't block new one:**
-*Delete or deactivate existing discount, then create new one*
-**Expected 201**
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ ADMIN any event | 200 |
+| 2 | ✅ ORGANIZER own event | 200 |
+| 3 | ❌ ORGANIZER other's event | 403 |
 
 ---
 
-### PUT .../discounts/{discountId}
+## GROUP 5 — Event Management
 
-```
-Method:       PUT
-URL:          {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts/{{discount_id}}
-Auth:         Bearer {{organizer_token}}
-Content-Type: application/json
-```
+### EP-15 · POST /api/v1/events
 
-Same payload as POST. **Expected 200**
-
----
+| # | | Payload | Expected |
+|---|--|---------|----------|
+| 1 | ✅ Minimum valid | `{"name":"Event","venue":"Venue","status":"PUBLISHED","ticketTypes":[{"name":"GA","price":99.99,"totalAvailable":100}]}` | 201 — save `event_id`, `ticket_type_id` |
+| 2 | ✅ Full with all optional fields | Add dates, maxCapacity, 2 ticket types | 201 |
+| 3 | ✅ Free event | `"price":0.00` | 201 |
+| 4 | ✅ DRAFT status | `"status":"DRAFT"` | 201 |
+| 5 | ⚠️ totalAvailable=1 (min) | — | 201 |
+| 6 | ❌ Missing name | — | 400 |
+| 7 | ❌ Missing venue | — | 400 |
+| 8 | ❌ Missing status | — | 400 |
+| 9 | ❌ Invalid status value | `"status":"OPEN"` | 400 |
+| 10 | ❌ Empty ticketTypes | `"ticketTypes":[]` | 400 |
+| 11 | ❌ totalAvailable=0 | — | 400 |
+| 12 | ❌ price=-0.01 | — | 400 |
+| 13 | ❌ end before start | — | 409 — "Event end date must be after start date" |
+| 14 | ❌ salesEnd before salesStart | — | 409 |
+| 15 | ❌ ATTENDEE token | — | 403 |
 
-### DELETE .../discounts/{discountId}
+### EP-16 · PUT /api/v1/events/{eventId}
 
-```
-Method:  DELETE
-URL:     {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts/{{discount_id}}
-Auth:    Bearer {{organizer_token}}
-Body:    None
-```
-✅ **Expected 204**
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Update name — include ticket type `id` | 200 |
+| 2 | ✅ Add new ticket type — omit `id` in that element | 200, new UUID created |
+| 3 | ✅ Cancel event — `"status":"CANCELLED"` | 200, all PURCHASED tickets auto-cancelled |
+| 4 | ❌ Body `id` ≠ URL eventId | 400 `INVALID_ARGUMENT` |
+| 5 | ❌ Re-publish a CANCELLED event | 409 — "Cannot modify a cancelled event" |
+| 6 | ❌ maxCapacity below already-sold count | 409 |
+| 7 | ❌ Not owner | 404 |
 
----
+### EP-17 · GET /api/v1/events
 
-### GET .../discounts/{discountId}
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Organizer calls | 200 — only their own events |
+| 2 | ❌ ATTENDEE token | 403 |
 
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts/{{discount_id}}
-Auth:    Bearer {{organizer_token}}
-Body:    None
-```
-✅ **Expected 200 DiscountResponseDto** | ❌ **Not found → 404**
+### EP-18 · GET /api/v1/events/{eventId}
 
----
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Own event | 200 |
+| 2 | ❌ Another organizer's event | 404 (ownership hidden — not 403) |
 
-### GET .../discounts
+### EP-19 · DELETE /api/v1/events/{eventId}
 
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts
-Auth:    Bearer {{organizer_token}}
-Body:    None
-```
-✅ **Expected 200 — `List<DiscountResponseDto>`**
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Event with no active tickets | 204 |
+| 2 | ❌ Event has active tickets | 409 — "N active ticket(s) exist. Cancel the event first." |
 
----
+### EP-20 · GET /api/v1/events/{eventId}/sales-dashboard
 
----
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ After buying tickets | 200, `totalTicketsSold > 0`, revenue fields populated |
+| 2 | ✅ After cancelling event | 200, `totalTicketsSold:0`, all revenue `0.00` |
+| 3 | ✅ Event with unlimited tickets (`totalAvailable` null) | 200, `remaining:null` (not NPE) |
 
-## 23. GET /api/v1/published-events
+### EP-21 · GET /api/v1/events/{eventId}/attendees-report
 
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/published-events?page=0&size=20&sort=start,asc
-Auth:    Bearer {{attendee_token}}
-Role:    ATTENDEE or ORGANIZER or STAFF
-Body:    None
-```
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ After validating a ticket | 200, attendee listed with `ticketStatus:"VALIDATED"`, `validationCount:1` |
+| 2 | ✅ After second scan | `validationCount:2` |
 
-✅ **No params → 200**
-✅ **With search: `?q=tech&page=0&size=20` → 200**
+### EP-22 · GET /api/v1/events/{eventId}/sales-report.xlsx
 
-❌ **ADMIN token → 403 (ADMIN role not allowed here)**
-❌ **No token → 401**
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Own event | 200, `Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, file downloads |
 
 ---
 
-## 24. GET /api/v1/published-events/{eventId}
+## GROUP 6 — Published Events
 
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/published-events/{{event_id}}
-Auth:    Bearer {{attendee_token}}
-Role:    ATTENDEE or ORGANIZER or STAFF
-Body:    None
-```
+### EP-23 · GET /api/v1/published-events
 
-✅ **PUBLISHED event → 200:**
-```json
-{
-  "id": "uuid",
-  "name": "Tech Conference 2025",
-  "start": "2025-12-15T09:00:00",
-  "end": "2025-12-15T18:00:00",
-  "venue": "Convention Center",
-  "ticketTypes": [
-    { "id": "uuid", "name": "Early Bird", "price": 149.99, "description": "..." }
-  ]
-}
-```
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ ATTENDEE — all published | 200 |
+| 2 | ✅ With search `?q=tech` | 200, filtered list |
+| 3 | ❌ ADMIN token | 403 — ADMIN not allowed |
+| 4 | ❌ No token | 401 |
 
-❌ **DRAFT event → 404**
-❌ **CANCELLED event → 404**
+### EP-24 · GET /api/v1/published-events/{eventId}
 
----
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ PUBLISHED event | 200 with ticket types |
+| 2 | ❌ DRAFT event | 404 |
+| 3 | ❌ CANCELLED event | 404 |
 
 ---
 
-## 25. Ticket Validation
+## GROUP 7 — Ticket Types
 
-### POST /api/v1/ticket-validations
+### EP-25 · POST /api/v1/events/{eventId}/ticket-types
 
-```
-Method:       POST
-URL:          {{base_url}}/api/v1/ticket-validations
-Auth:         Bearer {{staff_token}} or {{organizer_token}}
-Role:         STAFF or ORGANIZER
-Approval:     Required
-Content-Type: application/json
-```
+| # | | Payload | Expected |
+|---|--|---------|----------|
+| 1 | ✅ Valid | `{"name":"VIP","price":499.99,"totalAvailable":50}` | 201 |
+| 2 | ✅ Free ticket | `"price":0.00` | 201 |
+| 3 | ❌ Missing name | — | 400 |
+| 4 | ❌ totalAvailable=0 | — | 400 |
+| 5 | ❌ price=-0.01 | — | 400 |
 
----
+### EP-26 · GET /api/v1/events/{eventId}/ticket-types
 
-✅ **Manual validation (first scan):**
-```json
-{ "id": "{{ticket_id}}", "method": "MANUAL" }
-```
-**Expected 200:**
-```json
-{
-  "ticketId": "uuid",
-  "status": "VALID",
-  "validatedById": "uuid",
-  "validatedByName": "John Staff",
-  "validatedAt": "2025-12-15T10:23:45"
-}
-```
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Own event | 200, list of all ticket types |
+| 2 | ❌ ATTENDEE token | 403 |
 
----
+### EP-27 · GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
 
-✅ **QR scan (id is the QR code UUID — NOT the ticket UUID):**
-```json
-{ "id": "{{qr_code_id}}", "method": "QR_SCAN" }
-```
-**Expected 200 with `status: "VALID"`**
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Correct event and type | 200 |
+| 2 | ❌ Wrong eventId for the type | 404 |
 
----
+### EP-28 · PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
 
-✅ **Second scan of same ticket (NOT an error — returns 200 with INVALID):**
-```json
-{ "id": "{{ticket_id}}", "method": "MANUAL" }
-```
-**Expected 200:**
-```json
-{
-  "ticketId": "uuid",
-  "status": "INVALID",
-  "validatedById": "uuid",
-  "validatedByName": "John Staff",
-  "validatedAt": "..."
-}
-```
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Update name and price | 200 |
+| 2 | ✅ Raise totalAvailable | 200 |
+| 3 | ❌ Lower totalAvailable below sold count | 409 |
 
----
+### EP-29 · DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
 
-❌ **Empty body — both fields are @NotNull:**
-```json
-{}
-```
-**Expected 400 with validationErrors listing both missing fields**
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ No sold tickets | 204 |
+| 2 | ❌ Has active sold tickets | 409 `TICKET_TYPE_DELETE_NOT_ALLOWED` |
 
 ---
 
-❌ **Missing method:**
-```json
-{ "id": "{{ticket_id}}" }
-```
-**Expected 400**
+## GROUP 8 — Ticket Purchase
 
----
+### EP-30 · POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/tickets
 
-❌ **Missing id:**
-```json
-{ "method": "MANUAL" }
-```
-**Expected 400**
+| # | | Payload | Expected |
+|---|--|---------|----------|
+| 1 | ✅ Default quantity | `{}` | 201, array of 1 ticket — save `ticket_id` |
+| 2 | ✅ quantity=2 | `{"quantity":2}` | 201, 2 tickets |
+| 3 | ⚠️ quantity=1 (min) | — | 201 |
+| 4 | ⚠️ quantity=10 (max) | — | 201 |
+| 5 | ✅ With active 20% discount | Buy after creating discount | 201, `discountApplied > 0`, `pricePaid < originalPrice` |
+| 6 | ✅ ORGANIZER buys own event | organizer token | 201 |
+| 7 | ❌ quantity=0 | — | 400 |
+| 8 | ❌ quantity=11 | — | 400 |
+| 9 | ❌ DRAFT event | — | 409 — "not open for sales" |
+| 10 | ❌ CANCELLED event | — | 409 — "has been cancelled" |
+| 11 | ❌ Before salesStart | — | 409 — "Sales have not started yet. Sales open at..." |
+| 12 | ❌ After salesEnd | — | 409 — "Sales have closed. Sales ended at..." |
+| 13 | ❌ Ticket type sold out | totalAvailable=2, buy 2, try 1 more | 400 `TICKETS_SOLD_OUT` |
+| 14 | ❌ Per-user limit exceeded | Buy 10, try 1 more | 409 — "Purchase limit reached. You already own 10..." |
+| 15 | ❌ STAFF token | — | 403 |
 
 ---
 
-❌ **method="QR_CODE" (wrong — correct is "QR_SCAN"):**
-```json
-{ "id": "{{ticket_id}}", "method": "QR_CODE" }
-```
-**Expected 400**
-
----
+## GROUP 9 — Ticket Viewing & QR Codes
 
-❌ **method="SCAN" (wrong):**
-```json
-{ "id": "{{ticket_id}}", "method": "SCAN" }
-```
-**Expected 400**
+### EP-31 · GET /api/v1/tickets
 
----
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Attendee lists own tickets | 200 — only their own |
+| 2 | ❌ STAFF token | 403 |
 
-❌ **CANCELLED ticket:**
-```json
-{ "id": "{{cancelled_ticket_id}}", "method": "MANUAL" }
-```
-**Expected 409 — message: "Ticket ... has been cancelled and cannot be validated."**
+### EP-32 · GET /api/v1/tickets/{ticketId}
 
----
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Own ticket | 200 with all price fields |
+| 2 | ❌ Another user's ticket | 404 |
+| 3 | ❌ STAFF token | 403 |
 
-❌ **Ticket not found → 404**
-❌ **QR code not found → 404**
-❌ **ATTENDEE token → 403**
-❌ **STAFF not assigned to this event → 403**
+### EP-33 · GET /api/v1/tickets/{ticketId}/qr-codes *(Legacy)*
 
----
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Own ticket | 200, `Content-Type: image/png` |
 
-### GET /api/v1/ticket-validations/events/{eventId}
+### EP-34 · GET /api/v1/tickets/{ticketId}/qr-codes/view
 
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/ticket-validations/events/{{event_id}}?page=0&size=20
-Auth:    Bearer {{staff_token}} or {{organizer_token}}
-Role:    STAFF or ORGANIZER (must be assigned/own)
-Body:    None
-```
-✅ **Expected 200 — `Page<TicketValidationResponseDto>`**
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Own ticket | 200, `Content-Type: image/png`, **`Cache-Control: max-age=300, private`** (verify private — not public) |
+| 2 | ❌ Other user's ticket | 403 |
+| 3 | ❌ Cancelled ticket | 404 `QR_CODE_NOT_FOUND` |
 
----
+### EP-35 · GET /api/v1/tickets/{ticketId}/qr-codes/png
 
-### GET /api/v1/ticket-validations/tickets/{ticketId}
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Own ticket | 200, `Content-Type: image/png`, `Content-Disposition: attachment` |
 
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/ticket-validations/tickets/{{ticket_id}}
-Auth:    Bearer {{staff_token}} or {{organizer_token}}
-Role:    STAFF or ORGANIZER
-Body:    None
-```
-✅ **Expected 200 — `List<TicketValidationResponseDto>`**
+### EP-36 · GET /api/v1/tickets/{ticketId}/qr-codes/pdf
 
----
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Own ticket | 200, `Content-Type: application/pdf`, `Content-Disposition: attachment` |
 
 ---
-
-## 26. Admin Role Management
-
-### POST /api/v1/admin/users/{userId}/roles
-
-```
-Method:       POST
-URL:          {{base_url}}/api/v1/admin/users/{{user_id}}/roles
-Auth:         Bearer {{admin_token}}
-Role:         ADMIN
-Content-Type: application/json
-```
-
-✅ **Assign ATTENDEE:**
-```json
-{ "roleName": "ATTENDEE" }
-```
-**Expected 200:**
-```json
-{ "userId": "uuid", "userName": "Test User", "email": "test@example.com", "roles": ["ATTENDEE"] }
-```
-
-✅ **Assign ORGANIZER:** `{ "roleName": "ORGANIZER" }` → 200
-✅ **Assign STAFF:** `{ "roleName": "STAFF" }` → 200
-✅ **Assign ADMIN:** `{ "roleName": "ADMIN" }` → 200
 
-❌ **Invalid role:** `{ "roleName": "SUPERUSER" }` → 400
-❌ **Missing roleName:** `{}` → 400
-❌ **ORGANIZER token → 403**
+## GROUP 10 — Discounts
 
----
+### EP-37 · POST .../discounts
 
-### DELETE /api/v1/admin/users/{userId}/roles/{roleName}
+| # | | Payload | Expected |
+|---|--|---------|----------|
+| 1 | ✅ PERCENTAGE 20% | `{"discountType":"PERCENTAGE","value":20.0,"validFrom":"2025-11-01T00:00:00","validTo":"2025-11-30T23:59:59","active":true}` | 201 |
+| 2 | ✅ FIXED_AMOUNT $50 | `{"discountType":"FIXED_AMOUNT","value":50.00,"validFrom":"...","validTo":"...","active":true}` | 201 |
+| 3 | ✅ PERCENTAGE 100% | value=100.0 | 201 — purchase gives `pricePaid:0.00` |
+| 4 | ✅ FIXED larger than ticket price | value=9999 | 201 — purchase clamps to `pricePaid:0.00` |
+| 5 | ✅ active=false | — | 201 — purchase at full price (discount not applied) |
+| 6 | ❌ Second active discount same type | — | 409 `DISCOUNT_ALREADY_EXISTS` |
+| 7 | ❌ validFrom in past | — | 400 — "must be in the future" |
+| 8 | ❌ value=0 | — | 400 |
+| 9 | ❌ PERCENTAGE value=100.01 | — | 400 |
+| 10 | ❌ validTo before validFrom | — | 400 |
 
-```
-Method:  DELETE
-URL:     {{base_url}}/api/v1/admin/users/{{user_id}}/roles/STAFF
-Auth:    Bearer {{admin_token}}
-Role:    ADMIN
-Body:    None
-```
-✅ **Expected 200 — `UserRolesResponseDto` with updated roles**
-❌ **ORGANIZER token → 403**
+### EP-38 · PUT .../discounts/{discountId}
 
----
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Update description only | 200 |
+| 2 | ✅ Deactivate — `"active":false` | 200 |
+| 3 | ❌ Change discountType/value after tickets sold | 400 — "Cannot change discount type or value — N active ticket(s) sold" |
+| 4 | ❌ Re-activate when another active exists | 409 `DISCOUNT_ALREADY_EXISTS` |
 
-### GET /api/v1/admin/users/{userId}/roles
+### EP-39 · DELETE .../discounts/{discountId}
 
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/admin/users/{{user_id}}/roles
-Auth:    Bearer {{admin_token}}
-Role:    ADMIN
-Body:    None
-```
-✅ **Expected 200 — `UserRolesResponseDto`**
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Delete own discount | 204 |
+| 2 | ❌ Not owner | 403 |
 
----
+### EP-40 · GET .../discounts/{discountId}
 
-### GET /api/v1/admin/roles
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Exists | 200 |
+| 2 | ❌ Not found | 404 `DISCOUNT_NOT_FOUND` |
 
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/admin/roles
-Auth:    Bearer {{admin_token}}
-Role:    ADMIN
-Body:    None
-```
-✅ **Expected 200:**
-```json
-{ "roles": ["ADMIN", "ORGANIZER", "ATTENDEE", "STAFF"], "message": "Available roles in the system" }
-```
+### EP-41 · GET .../discounts (list)
 
----
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Own event | 200, all discounts (active and inactive) |
 
 ---
 
-## 27. Approval Management
+## GROUP 11 — Ticket Validation
 
-### GET /api/v1/admin/approvals/pending
+### EP-42 · POST /api/v1/ticket-validations
 
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/admin/approvals/pending?page=0&size=20
-Auth:    Bearer {{admin_token}}
-Role:    ADMIN
-Body:    None
-```
-✅ **Expected 200 — `roles: []` always in list (use GET /admin/users/{id}/roles for roles)**
-
----
+| # | | Payload | Expected |
+|---|--|---------|----------|
+| 1 | ✅ MANUAL — first scan | `{"id":"{{ticket_id}}","method":"MANUAL"}` | 200, `"status":"VALID"`, `validatedByName` populated |
+| 2 | ✅ QR_SCAN — first scan | `{"id":"{{qr_code_id}}","method":"QR_SCAN"}` | 200, `"status":"VALID"` |
+| 3 | ✅ Second scan same ticket | Same payload again | 200, `"status":"INVALID"` — NOT an error, returns 200 |
+| 4 | ❌ Empty body | `{}` | 400 — both fields listed in validationErrors |
+| 5 | ❌ method="QR_CODE" | — | 400 — invalid enum |
+| 6 | ❌ method="SCAN" | — | 400 |
+| 7 | ❌ CANCELLED ticket | — | 409 — "has been cancelled and cannot be validated" |
+| 8 | ❌ Random ticket UUID | — | 404 |
+| 9 | ❌ ATTENDEE token | — | 403 |
+| 10 | ❌ STAFF not assigned to this event | — | 403 |
 
-### POST /api/v1/admin/approvals/{userId}/approve
+### EP-43 · GET /api/v1/ticket-validations/events/{eventId}
 
-```
-Method:  POST
-URL:     {{base_url}}/api/v1/admin/approvals/{{user_id}}/approve
-Auth:    Bearer {{admin_token}}
-Role:    ADMIN
-Body:    None (no request body)
-```
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ STAFF assigned to event | 200, paginated validation records |
+| 2 | ✅ ORGANIZER owns event | 200 |
+| 3 | ❌ STAFF not assigned | 403 |
+| 4 | ❌ ATTENDEE token | 403 |
 
-✅ **PENDING user → 200:**
-```json
-{ "message": "User approved successfully", "userId": "uuid", "status": "APPROVED" }
-```
+### EP-44 · GET /api/v1/ticket-validations/tickets/{ticketId}
 
-❌ **Already APPROVED → 409 INVALID_APPROVAL_STATE**
-❌ **Already REJECTED → 409**
-❌ **User not found → 404**
-❌ **ORGANIZER token → 403**
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ STAFF or ORGANIZER | 200, list of all scans for that ticket |
+| 2 | ❌ ATTENDEE token | 403 |
 
 ---
-
-### POST /api/v1/admin/approvals/{userId}/reject
-
-```
-Method:       POST
-URL:          {{base_url}}/api/v1/admin/approvals/{{user_id}}/reject
-Auth:         Bearer {{admin_token}}
-Role:         ADMIN
-Content-Type: application/json
-```
-
-✅ **Valid reason:**
-```json
-{ "reason": "Account violates platform terms of service." }
-```
-**Expected 200:**
-```json
-{ "message": "User rejected successfully", "userId": "uuid", "status": "REJECTED", "reason": "Account violates platform terms of service." }
-```
 
-⚠️ **reason exactly 10 chars (min boundary):**
-```json
-{ "reason": "Duplicate." }
-```
-**Expected 200**
+## GROUP 12 — Event Staff Management
 
-⚠️ **reason 9 chars (one below min) → 400:**
-```json
-{ "reason": "Too short" }
-```
-**Expected 400**
+### EP-45 · POST /api/v1/events/{eventId}/staff
 
-❌ **Missing reason → 400:** `{}`
-❌ **reason="" → 400**
-❌ **reason whitespace only → 400:** `{ "reason": "          " }`
-❌ **Already REJECTED → 409**
+| # | | Payload | Expected |
+|---|--|---------|----------|
+| 1 | ✅ User has STAFF role | `{"userId":"{{staff_user_id}}"}` | 201, staff list with 1 member |
+| 2 | ❌ User has no STAFF role | — | 409 — "does not have STAFF role. STAFF role must be assigned by ADMIN first." |
+| 3 | ❌ User already assigned | Same userId again | 409 — "already assigned as staff" |
+| 4 | ❌ Empty body | `{}` | 400 |
+| 5 | ❌ Not owner | — | 403 |
 
----
+### EP-46 · DELETE /api/v1/events/{eventId}/staff/{userId}
 
-### GET /api/v1/admin/approvals
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Assigned user | 200, updated staff list |
+| 2 | ❌ User not assigned | 409 |
+| 3 | ❌ Not owner | 403 |
 
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/admin/approvals?page=0&size=20
-Auth:    Bearer {{admin_token}}
-Role:    ADMIN
-Body:    None
-```
-✅ **All users all statuses → 200**
+### EP-47 · GET /api/v1/events/{eventId}/staff
 
----
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Own event | 200 |
+| 2 | ❌ ATTENDEE token | 403 |
 
 ---
-
-## 28. Event Staff Management
 
-### POST /api/v1/events/{eventId}/staff
-
-```
-Method:       POST
-URL:          {{base_url}}/api/v1/events/{{event_id}}/staff
-Auth:         Bearer {{organizer_token}}
-Role:         ORGANIZER (must own)
-Content-Type: application/json
-```
+## GROUP 13 — Audit Logs
 
-✅ **Valid — user has STAFF role:**
-```json
-{ "userId": "{{staff_user_id}}" }
-```
-**Expected 201:**
-```json
-{
-  "eventId": "uuid",
-  "eventName": "Tech Conference 2025",
-  "staffMembers": [{ "userId": "uuid", "userName": "John Staff", "email": "john@example.com" }],
-  "totalStaffCount": 1
-}
-```
+### EP-48 · GET /api/v1/audit
 
-❌ **Missing userId → 400:** `{}`
-❌ **User doesn't have STAFF role → 409**
-❌ **User already assigned → 409**
-❌ **Not owner → 403**
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ ADMIN | 200, `userAgent` field populated |
+| 2 | ❌ ORGANIZER | 403 |
 
----
+### EP-49 · GET /api/v1/audit/events/{eventId}
 
-### DELETE /api/v1/events/{eventId}/staff/{userId}
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ ORGANIZER own event | 200 |
+| 2 | ❌ Other org's event | 403 |
 
-```
-Method:  DELETE
-URL:     {{base_url}}/api/v1/events/{{event_id}}/staff/{{staff_user_id}}
-Auth:    Bearer {{organizer_token}}
-Role:    ORGANIZER (must own)
-Body:    None
-```
+### EP-50 · GET /api/v1/audit/me
 
-✅ **Assigned user → 200** with updated `EventStaffResponseDto`
-❌ **User NOT assigned → 409**
-❌ **Not owner → 403**
+| # | | Expected |
+|---|--|----------|
+| 1 | ✅ Any approved user | 200, their own actions only |
 
 ---
 
-### GET /api/v1/events/{eventId}/staff
+# SECTION 4 — SECURITY TEST MATRIX
 
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/events/{{event_id}}/staff
-Auth:    Bearer {{organizer_token}}
-Role:    ORGANIZER (must own)
-Body:    None
-```
-✅ **Expected 200 — `EventStaffResponseDto`**
+Run all 16. All must return exactly the indicated response.
 
----
+| # | Token | Method | URL | Expected |
+|---|-------|--------|-----|----------|
+| S-01 | None | GET | `/api/v1/published-events` | 401 `AUTHENTICATION_FAILED` |
+| S-02 | `"Bearer garbage"` | GET | `/api/v1/published-events` | 401 |
+| S-03 | PENDING user | GET | `/api/v1/published-events` | 403 `APPROVAL_PENDING` — message says "awaiting approval" |
+| S-04 | PENDING user | POST | `/api/v1/auth/register` | 201 ✅ — approval gate bypassed |
+| S-05 | PENDING user | POST | `/api/v1/invites/redeem` | 200 ✅ — approval gate bypassed |
+| S-06 | REJECTED user | GET | `/api/v1/published-events` | 403 `APPROVAL_REJECTED` — rejection reason in message |
+| S-07 | ATTENDEE | GET | `/api/v1/events` | 403 |
+| S-08 | ATTENDEE | GET | `/api/v1/admin/roles` | 403 |
+| S-09 | ATTENDEE | POST | `/api/v1/ticket-validations` | 403 |
+| S-10 | STAFF | GET | `/api/v1/tickets` | 403 |
+| S-11 | STAFF | POST | `/api/v1/events/{id}/ticket-types/{id}/tickets` | 403 |
+| S-12 | ORGANIZER | GET | `/api/v1/admin/approvals` | 403 |
+| S-13 | ADMIN | GET | `/api/v1/published-events` | 403 |
+| S-14 | ADMIN | GET | `/api/v1/tickets` | 403 |
+| S-15 | Organizer B | GET | `/api/v1/events/{organizer-A-event-id}` | **404** (not 403 — ownership is hidden) |
+| S-16 | ATTENDEE | GET | `/api/v1/tickets/{id}/qr-codes/view` | 200 — check response header `Cache-Control: max-age=300, private` (must NOT be `public`) |
 
 ---
 
-## 29. Audit Logs
+# SECTION 5 — END-TO-END HAPPY PATH
 
-### GET /api/v1/audit
+Run all 24 steps in order. Each step depends on the previous.
 
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/audit?page=0&size=20&sort=createdAt,desc
-Auth:    Bearer {{admin_token}}
-Role:    ADMIN
-Body:    None
-```
-✅ **Expected 200 — `Page<AuditLogDto>` including `userAgent` field**
-❌ **ORGANIZER token → 403**
+| Step | Request | Expected | Save |
+|------|---------|----------|------|
+| 1 | `POST /api/v1/auth/register` (new attendee) | 201 PENDING | `new_user_id` |
+| 2 | `POST /admin/approvals/{userId}/approve` (admin) | 200 | — |
+| 3 | Get attendee token from Keycloak | 200 | `attendee_token` |
+| 4 | `POST /api/v1/events` (organizer) | 201 | `event_id`, `ticket_type_id` |
+| 5 | `POST /api/v1/invites` (admin, STAFF for that event) | 201 | `invite_code` |
+| 6 | `POST /api/v1/invites/redeem` (staff user, PENDING status) | 200 | — |
+| 7 | `POST /admin/approvals/{staffId}/approve` (admin) | 200 | — |
+| 8 | `POST /api/v1/events/{id}/staff` (organizer, userId=staff) | 201 | — |
+| 9 | `POST .../discounts` (organizer, 20% PERCENTAGE, active=true) | 201 | `discount_id` |
+| 10 | `POST .../ticket-types/{id}/tickets` (attendee, quantity=2) | 201 | `ticket_id` — verify `discountApplied>0`, `pricePaid < originalPrice` |
+| 11 | `GET /api/v1/tickets/{ticket_id}` (attendee) | 200 | — |
+| 12 | `GET /api/v1/tickets/{ticket_id}/qr-codes/png` (attendee) | 200, PNG downloads | — |
+| 13 | `POST /api/v1/ticket-validations` (staff, MANUAL, ticket_id) | 200, `status:"VALID"`, `validatedByName` populated | — |
+| 14 | `POST /api/v1/ticket-validations` (same ticket, same staff) | 200, `status:"INVALID"` — NOT an error | — |
+| 15 | `GET /ticket-validations/events/{event_id}` (staff) | 200, 2 records visible | — |
+| 16 | `GET /events/{id}/attendees-report` (organizer) | 200, `validationCount:2` for that ticket | — |
+| 17 | `GET /events/{id}/sales-dashboard` (organizer) | 200, revenue and discount totals correct | — |
+| 18 | `GET /events/{id}/sales-report.xlsx` (organizer) | 200, Excel file downloads | — |
+| 19 | `PUT /events/{id}` with `"status":"CANCELLED"` (organizer) | 200 | — |
+| 20 | `POST /ticket-validations` (staff, cancelled ticket) | 409 — "cancelled and cannot be validated" | — |
+| 21 | `GET /events/{id}/sales-dashboard` (organizer) | 200, `totalTicketsSold:0`, all revenue `0.00` | — |
+| 22 | `DELETE /events/{id}` (organizer) | 409 — "N active ticket(s) exist. Cancel first." | — |
+| 23 | `GET /api/v1/audit/me` (attendee) | 200, all attendee actions in trail | — |
+| 24 | `GET /api/v1/audit/events/{id}` (organizer) | 200, all event actions in trail | — |
 
 ---
-
-### GET /api/v1/audit/events/{eventId}
-
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/audit/events/{{event_id}}?page=0&size=20
-Auth:    Bearer {{organizer_token}}
-Role:    ORGANIZER (must own)
-Body:    None
-```
-✅ **Expected 200**
 
----
+# SECTION 6 — FIX VERIFICATION TESTS
 
-### GET /api/v1/audit/me
+These prove every bug fixed during the audit works correctly in production.
 
-```
-Method:  GET
-URL:     {{base_url}}/api/v1/audit/me?page=0&size=20
-Auth:    Bearer (any approved user)
-Role:    Any authenticated
-Body:    None
-```
-✅ **Expected 200 — own audit trail**
+| # | Fix | Steps | Expected |
+|---|-----|-------|----------|
+| F-01 | Live event update allowed | Create event with past `salesStart`, then PUT to change venue | 200 — succeeds, not blocked |
+| F-02 | VALIDATED status written on scan | Validate ticket once, then GET ticket | `"status":"VALIDATED"` not `"PURCHASED"` |
+| F-03 | Invite expiry race condition closed | Create invite, wait for scheduler to expire it, try to redeem | 400 `INVALID_INVITE_CODE` — "expired on..." |
+| F-04 | Email registration race condition | Register same email twice rapidly | Second returns 409 EMAIL_ALREADY_REGISTERED (not 500) |
+| F-05 | Discount post-sales guard | Create discount, buy 2 tickets, try PUT to change `discountType` | 400 — "Cannot change discount type or value — 2 active ticket(s) sold" |
+| F-06 | Expired discount unblocks new | Set discount `active:false`, create new active discount | 201 — not blocked by inactive old one |
+| F-07 | Per-user ticket limit enforced | Buy 10 tickets for same type, try 11th | 409 — "Purchase limit reached. You already own 10" |
+| F-08 | QR UUID valid for QR_SCAN | Download PNG, extract QR code UUID, use in validation with `method:"QR_SCAN"` | 200 `status:"VALID"` (not 404) |
+| F-09 | Null totalAvailable — no NPE | Create ticket type with no cap, view sales dashboard | `"remaining":null` (not 500) |
+| F-10 | Approval gate bypass confirmed | PENDING user sends `POST /auth/register` | 201 (not 403 APPROVAL_PENDING) |
 
 ---
 
----
+# SECTION 7 — COMMON MISTAKES AND FIXES
 
-## 30. Security Tests
-
-| # | Token | URL | Expected |
-|---|-------|-----|----------|
-| 1 | None | `GET /api/v1/published-events` | 401 |
-| 2 | `"Bearer bad"` | Any | 401 |
-| 3 | PENDING | `GET /api/v1/published-events` | 403 APPROVAL_PENDING |
-| 4 | PENDING | `POST /api/v1/auth/register` | 201 ✅ (bypass) |
-| 5 | PENDING | `POST /api/v1/invites/redeem` | 200 ✅ (bypass) |
-| 6 | REJECTED | `GET /api/v1/published-events` | 403 APPROVAL_REJECTED |
-| 7 | ATTENDEE | `GET /api/v1/events` | 403 |
-| 8 | ATTENDEE | `GET /api/v1/admin/roles` | 403 |
-| 9 | ATTENDEE | `POST /api/v1/ticket-validations` | 403 |
-| 10 | STAFF | `GET /api/v1/tickets` | 403 |
-| 11 | STAFF | `POST /api/v1/events/{{id}}/ticket-types/{{id}}/tickets` | 403 |
-| 12 | ORGANIZER | `GET /api/v1/admin/approvals` | 403 |
-| 13 | ADMIN | `GET /api/v1/published-events` | 403 |
-| 14 | ADMIN | `GET /api/v1/tickets` | 403 |
-| 15 | ORGANIZER B | `GET /api/v1/events/{{organizer-A-event}}` | 404 |
+| Mistake | Error You See | Fix |
+|---------|--------------|-----|
+| Password without special char `!@#$%^&*` | 400 `VALIDATION_ERROR` | Use `Password1!` not `Password1` |
+| User not approved | 403 `APPROVAL_PENDING` | `POST /admin/approvals/{id}/approve` |
+| Wrong token for role | 403 `ACCESS_DENIED` | Use correct token |
+| PUT event — no ticket type `id` in body | 500 duplicate key | Include `"id":"uuid"` for every existing ticket type |
+| `"method":"QR_CODE"` in validation | 400 | Use `"method":"QR_SCAN"` |
+| Getting token from port 8081 | 401 | Tokens come from Keycloak: port **9090** |
+| Accessing another org's event | 404 | Use your own organizer token and events |
+| Creating discount with past `validFrom` | 400 | New discounts must start in the future |
+| Assigning staff before ADMIN gives STAFF role | 409 — "does not have STAFF role" | `POST /admin/users/{id}/roles` first |
+| Expired token | 401 | Tokens expire in 5 minutes — refresh |
+| ADMIN tries `/published-events` | 403 | ADMIN cannot access this — use attendee token |
+| STAFF tries `/tickets` | 403 | STAFF cannot view tickets — use attendee token |
 
 ---
 
-## 31. End-to-End Happy Path
-
-Run in order:
-
-1. `POST /api/v1/auth/register` → 201 PENDING
-2. `POST /api/v1/admin/approvals/{id}/approve` (ADMIN) → 200
-3. Get ATTENDEE token from Keycloak
-4. `POST /api/v1/events` (ORGANIZER) → 201 — save `event_id`, `ticket_type_id`
-5. `POST /api/v1/events/{id}/ticket-types/{id}/discounts` (20% PERCENTAGE, active=true) → 201
-6. `POST /api/v1/events/{id}/ticket-types/{id}/tickets` (ATTENDEE, quantity=2) → 201 — save `ticket_id`, verify `discountApplied = 29.998`
-7. `GET /api/v1/tickets/{ticket_id}` → 200, verify `pricePaid < originalPrice`
-8. `GET /api/v1/tickets/{ticket_id}/qr-codes/png` → 200 PNG
-9. `POST /api/v1/ticket-validations` (STAFF, MANUAL, ticket_id) → 200 `status: "VALID"`, `validatedByName` populated
-10. `POST /api/v1/ticket-validations` same ticket again → 200 `status: "INVALID"` (not an error)
-11. `GET /api/v1/events/{id}/sales-dashboard` → verify revenue and discounts
-12. `PUT /api/v1/events/{id}` with `status: "CANCELLED"` → 200
-13. `POST /api/v1/ticket-validations` on cancelled ticket → 409
-14. `GET /api/v1/events/{id}/sales-dashboard` → totalTicketsSold=0, all revenue=0
-15. `DELETE /api/v1/events/{id}` → 204
+*50 endpoints. 215+ individual test cases. All roles covered.*
+*Passwords: uppercase + lowercase + digit + special char from `!@#$%^&*` — use `Password1!`*

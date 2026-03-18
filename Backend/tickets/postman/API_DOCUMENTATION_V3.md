@@ -1,106 +1,115 @@
-# Event Booking App — Complete API Reference and Postman Guide
-
-This document reflects the ACTUAL codebase. Every endpoint, every request field, every response field is sourced directly from the controllers and DTOs.
-
-**Last Updated:** March 18, 2026
-**API Version:** v1.0
-**Base URL:** `http://localhost:8081`
-**Auth:** OAuth2 Bearer JWT (Keycloak)
-**Pagination:** Spring Pageable — use `?page=0&size=20&sort=createdAt,desc`
-**Max page size:** 50 (server enforces — `?size=999` is capped at 50)
+# Event Booking Platform — API Documentation
+**Version:** 1.0 | **Base URL:** `http://localhost:8081` | **Auth:** OAuth2 Bearer JWT (Keycloak `http://localhost:9090`)
 
 ---
 
-## Prerequisites and Environment
+## Authentication
 
-| Service | URL | Credentials |
-|---------|-----|-------------|
-| Spring Boot App | http://localhost:8081 | — |
-| Keycloak Admin | http://localhost:9090 | admin / admin |
-| Adminer (DB UI) | http://localhost:8888 | System: PostgreSQL, Server: db, User: postgres, Pass: postgres123 |
+All endpoints require `Authorization: Bearer <token>` except `POST /api/v1/auth/register`.
 
-Start everything: `docker-compose up -d`
+**Get a token:**
+```
+POST http://localhost:9090/realms/event-ticket-platform/protocol/openid-connect/token
+Content-Type: application/x-www-form-urlencoded
 
----
-
-## Authentication — Get a Token
-
-**POST** `http://localhost:9090/realms/event-ticket-platform/protocol/openid-connect/token`
-
-**Content-Type:** `application/x-www-form-urlencoded`
-
-| Field | Value |
-|-------|-------|
-| `grant_type` | `password` |
-| `client_id` | `event-ticket-platform-app` |
-| `client_secret` | *(from Keycloak → Clients → Credentials tab)* |
-| `username` | your username |
-| `password` | your password |
-
-**Response:**
-```json
-{
-  "access_token": "eyJhbGc...",
-  "expires_in": 300,
-  "token_type": "Bearer"
-}
+grant_type=password
+client_id=event-ticket-platform-app
+client_secret=<client_secret>
+username=<email>
+password=<password>
 ```
 
-Use the token as: `Authorization: Bearer <access_token>`
-
 ---
 
-## ⚠️ Approval Gate — CRITICAL
+## Role Matrix
 
-All authenticated endpoints block users unless their account is APPROVED.
-
-**Bypass paths (no approval check):**
-- `POST /api/v1/auth/register`
-- `POST /api/v1/invites/redeem`
-- `/actuator/**`
-- `/swagger-ui/**`, `/v3/api-docs/**`
-
-**Approval states:**
-
-| State | Effect |
-|-------|--------|
-| PENDING | 403 `APPROVAL_PENDING` on all non-bypass endpoints |
-| APPROVED | Access allowed (subject to role checks) |
-| REJECTED | 403 `APPROVAL_REJECTED` on all non-bypass endpoints |
-
----
-
-## Error Response Shape
-
-Every error returns `ErrorDto`:
-
-```json
-{
-  "error": "VALIDATION_ERROR",
-  "message": "Email is required",
-  "statusCode": 400,
-  "statusDescription": "BAD REQUEST - Invalid input data",
-  "timestamp": "2026-03-18T10:30:00",
-  "path": "/api/v1/auth/register",
-  "possibleCauses": ["Missing required field"],
-  "solutions": ["Provide the required field"]
-}
-```
-
-For 400 validation errors, ALL failing fields are returned simultaneously in the `validationErrors` list (not just the first one).
-
----
-
-## Role Summary
-
-| Role | Can Access |
-|------|-----------|
-| ADMIN | User governance, approvals, audit logs. Cannot access event/ticket/published-events endpoints |
-| ORGANIZER | Own events, ticket types, discounts, staff management, invite codes (STAFF only) |
+| Role | Access |
+|------|--------|
+| ADMIN | Approvals, role management, audit logs (all). Cannot access events/tickets/published-events |
+| ORGANIZER | Own events, ticket types, discounts, staff, invite codes (STAFF only), audit (own events) |
 | ATTENDEE | Published events, ticket purchase, own tickets, QR codes |
 | STAFF | Ticket validation for assigned events only |
 
-Roles live in `realm_access.roles` in the JWT — never in the request body.
+---
+
+## Approval Gate
+
+All users start `PENDING` after registration. The approval gate blocks `PENDING` and `REJECTED` users from all endpoints except:
+- `POST /api/v1/auth/register`
+- `POST /api/v1/invites/redeem`
+- `/actuator/**`, `/swagger-ui/**`, `/v3/api-docs/**`
+
+---
+
+## Error Response Format
+
+Every error returns:
+```json
+{
+  "error": "VALIDATION_ERROR",
+  "message": "Validation failed on 2 field(s). See validationErrors for details.",
+  "statusCode": 400,
+  "statusDescription": "BAD REQUEST - Validation failed",
+  "timestamp": "2026-03-18T10:30:00",
+  "path": "/api/v1/auth/register",
+  "validationErrors": ["email: Email is required", "name: Name is required"],
+  "possibleCauses": ["Missing required fields"],
+  "solutions": ["Fix ALL fields listed in the validationErrors array"]
+}
+```
+
+All validation errors are returned **simultaneously** — never one at a time.
+
+### Error Codes
+
+| Status | Error Code | Cause |
+|--------|-----------|-------|
+| 400 | `VALIDATION_ERROR` | Field validation failed |
+| 400 | `INVALID_INPUT` | Business rule input error |
+| 400 | `INVALID_ARGUMENT` | Event ID mismatch in body vs URL |
+| 400 | `INVALID_INVITE_CODE` | Invite expired / redeemed / revoked |
+| 400 | `TICKETS_SOLD_OUT` | No tickets remaining |
+| 401 | `AUTHENTICATION_FAILED` | No token or expired token |
+| 403 | `ACCESS_DENIED` | Wrong role for endpoint |
+| 403 | `APPROVAL_PENDING` | Account awaiting admin approval |
+| 403 | `APPROVAL_REJECTED` | Account rejected — reason in message |
+| 404 | `EVENT_NOT_FOUND` | Event does not exist or not owned by caller |
+| 404 | `TICKET_NOT_FOUND` | Ticket not found or belongs to another user |
+| 404 | `TICKET_TYPE_NOT_FOUND` | Ticket type not found |
+| 404 | `USER_NOT_FOUND` | User not found |
+| 404 | `INVITE_CODE_NOT_FOUND` | Code was never created |
+| 404 | `QR_CODE_NOT_FOUND` | Ticket cancelled — QR deactivated |
+| 404 | `DISCOUNT_NOT_FOUND` | Discount not found |
+| 409 | `EMAIL_ALREADY_REGISTERED` | Duplicate email address |
+| 409 | `INVALID_APPROVAL_STATE` | Approve/reject wrong state transition |
+| 409 | `BUSINESS_RULE_VIOLATION` | Business state conflict |
+| 409 | `DISCOUNT_ALREADY_EXISTS` | Second active discount for same ticket type |
+| 409 | `TICKET_TYPE_DELETE_NOT_ALLOWED` | Ticket type has active sold tickets |
+| 409 | `DATA_CONFLICT` | DB unique constraint violation |
+| 422 | `REGISTRATION_FAILED` | Keycloak or DB system error |
+| 500 | `INTERNAL_SERVER_ERROR` | QR generation failure, Keycloak admin down |
+
+---
+
+## Pagination
+
+All list endpoints accept:
+```
+?page=0&size=20&sort=createdAt,desc
+```
+Max page size: **50** (server enforced). Default: 20.
+
+Paginated response shape:
+```json
+{
+  "content": ["..."],
+  "pageable": { "pageNumber": 0, "pageSize": 20 },
+  "totalElements": 45,
+  "totalPages": 3,
+  "first": true,
+  "last": false
+}
+```
 
 ---
 
@@ -110,7 +119,7 @@ Roles live in `realm_access.roles` in the JWT — never in the request body.
 
 ---
 
-## 0. Auth
+## 1. Authentication
 
 ---
 
@@ -118,42 +127,28 @@ Roles live in `realm_access.roles` in the JWT — never in the request body.
 
 | | |
 |--|--|
-| **Method** | POST |
-| **URL** | `{{base_url}}/api/v1/auth/register` |
-| **Auth required** | No |
-| **Role required** | None (public) |
+| **Auth** | None |
+| **Role** | Public |
 | **Approval gate** | Bypassed |
-| **Content-Type** | application/json |
 
-**Request Body Fields:**
-
-| Field | Type | Required | Validation |
-|-------|------|----------|------------|
-| `email` | String | ✅ Required | `@NotBlank` `@Email` `@Size(max=255)` |
-| `password` | String | ✅ Required | `@NotBlank` `@Size(min=8, max=128)` must contain uppercase + lowercase + digit |
-| `name` | String | ✅ Required | `@NotBlank` `@Size(min=2, max=100)` |
-| `inviteCode` | String | ❌ Optional | `@Pattern(^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$)` — uppercase letters and digits only |
-
-**Minimum valid payload:**
+**Request body:**
 ```json
 {
   "email": "user@example.com",
-  "password": "Password1",
-  "name": "John Doe"
-}
-```
-
-**Full payload (with invite code):**
-```json
-{
-  "email": "user@example.com",
-  "password": "Password1",
+  "password": "Password1!",
   "name": "John Doe",
   "inviteCode": "ABCD-1234-EFGH-5678"
 }
 ```
 
-**Success Response — 201 Created:**
+| Field | Required | Validation |
+|-------|----------|-----------|
+| `email` | ✅ | @NotBlank, @Email, max 255 |
+| `password` | ✅ | @NotBlank, min 8, max 128, must contain uppercase + lowercase + digit + special char `!@#$%^&*` |
+| `name` | ✅ | @NotBlank, min 2, max 100 |
+| `inviteCode` | ❌ | Pattern: `^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$` |
+
+**Response 201:**
 ```json
 {
   "message": "Registration successful! Your account is pending admin approval.",
@@ -164,708 +159,669 @@ Roles live in `realm_access.roles` in the JWT — never in the request body.
 }
 ```
 
-**Error Responses:**
-
-| Status | Error | When |
-|--------|-------|------|
-| 400 | `VALIDATION_ERROR` | Missing/invalid fields — all failures listed together |
-| 400 | `INVALID_INVITE_CODE` | Code found but is expired / redeemed / revoked |
-| 404 | `INVITE_CODE_NOT_FOUND` | Invite code string not in database |
-| 409 | `EMAIL_ALREADY_REGISTERED` | Email already in use |
-| 422 | `REGISTRATION_FAILED` | Keycloak/DB system error |
+| Error | Status | When |
+|-------|--------|------|
+| `VALIDATION_ERROR` | 400 | Invalid fields |
+| `INVALID_INVITE_CODE` | 400 | Code expired / redeemed / revoked |
+| `INVITE_CODE_NOT_FOUND` | 404 | Code not in database |
+| `EMAIL_ALREADY_REGISTERED` | 409 | Duplicate email |
+| `REGISTRATION_FAILED` | 422 | Keycloak / DB system error |
 
 ---
 
+## 2. Approval Management
+
+Base path: `/api/v1/admin/approvals` | Role: **ADMIN**
+
 ---
 
-## 1. Event Management — /api/v1/events
+### GET /api/v1/admin/approvals/pending
 
-**Role required for all:** ORGANIZER (must own the event for PUT/GET/{id}/DELETE)
+```
+GET /api/v1/admin/approvals/pending?page=0&size=20
+Authorization: Bearer {{admin_token}}
+```
+
+Returns all users with `PENDING` approval status. `roles` field is always `[]` in the list — use `GET /admin/users/{id}/roles` for roles.
+
+**Response 200:** `Page<UserApprovalDto>`
+
+---
+
+### GET /api/v1/admin/approvals
+
+```
+GET /api/v1/admin/approvals?page=0&size=20
+Authorization: Bearer {{admin_token}}
+```
+
+Returns all users with all approval statuses.
+
+**Response 200:** `Page<UserApprovalDto>`
+
+---
+
+### POST /api/v1/admin/approvals/{userId}/approve
+
+```
+POST /api/v1/admin/approvals/{userId}/approve
+Authorization: Bearer {{admin_token}}
+```
+
+No request body. Approves a PENDING user. Also enables their Keycloak account.
+
+**Response 200:**
+```json
+{
+  "message": "User approved successfully",
+  "userId": "uuid",
+  "status": "APPROVED"
+}
+```
+
+| Error | Status | When |
+|-------|--------|------|
+| `USER_NOT_FOUND` | 404 | User ID doesn't exist |
+| `INVALID_APPROVAL_STATE` | 409 | User is already APPROVED or REJECTED |
+
+---
+
+### POST /api/v1/admin/approvals/{userId}/reject
+
+```
+POST /api/v1/admin/approvals/{userId}/reject
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+```
+
+**Request body:**
+```json
+{ "reason": "Account violates platform terms of service." }
+```
+
+| Field | Required | Validation |
+|-------|----------|-----------|
+| `reason` | ✅ | @NotBlank, min 10, max 500 |
+
+**Response 200:**
+```json
+{
+  "message": "User rejected successfully",
+  "userId": "uuid",
+  "status": "REJECTED",
+  "reason": "Account violates platform terms of service."
+}
+```
+
+---
+
+## 3. Admin Role Management
+
+Base path: `/api/v1/admin` | Role: **ADMIN**
+
+---
+
+### POST /api/v1/admin/users/{userId}/roles
+
+```
+POST /api/v1/admin/users/{userId}/roles
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+```
+
+**Request body:**
+```json
+{ "roleName": "ORGANIZER" }
+```
+
+| Field | Required | Validation |
+|-------|----------|-----------|
+| `roleName` | ✅ | Must be one of: `ADMIN`, `ORGANIZER`, `ATTENDEE`, `STAFF` |
+
+**Response 200:**
+```json
+{
+  "userId": "uuid",
+  "userName": "Test User",
+  "email": "user@test.com",
+  "roles": ["ORGANIZER"]
+}
+```
+
+---
+
+### DELETE /api/v1/admin/users/{userId}/roles/{roleName}
+
+```
+DELETE /api/v1/admin/users/{userId}/roles/STAFF
+Authorization: Bearer {{admin_token}}
+```
+
+No request body. Revokes the named role from the user.
+
+**Response 200:** `UserRolesResponseDto` with updated roles list.
+
+---
+
+### GET /api/v1/admin/users/{userId}/roles
+
+```
+GET /api/v1/admin/users/{userId}/roles
+Authorization: Bearer {{admin_token}}
+```
+
+**Response 200:**
+```json
+{
+  "userId": "uuid",
+  "userName": "Test User",
+  "email": "user@test.com",
+  "roles": ["ATTENDEE"]
+}
+```
+
+---
+
+### GET /api/v1/admin/roles
+
+```
+GET /api/v1/admin/roles
+Authorization: Bearer {{admin_token}}
+```
+
+Returns all available realm roles.
+
+**Response 200:**
+```json
+{
+  "roles": ["ADMIN", "ORGANIZER", "ATTENDEE", "STAFF"],
+  "message": "Available roles in the system"
+}
+```
+
+---
+
+## 4. Invite Codes
+
+Base path: `/api/v1/invites`
+
+---
+
+### POST /api/v1/invites
+
+```
+POST /api/v1/invites
+Authorization: Bearer {{admin_token}}    ← or organizer_token
+Content-Type: application/json
+```
+
+**Request body:**
+```json
+{
+  "roleName": "STAFF",
+  "eventId": "uuid",
+  "expirationHours": 48
+}
+```
+
+| Field | Required | Validation |
+|-------|----------|-----------|
+| `roleName` | ✅ | `ADMIN`, `ORGANIZER`, `ATTENDEE`, or `STAFF` |
+| `expirationHours` | ✅ | @NotNull, @Positive (> 0) |
+| `eventId` | Conditional | Required when `roleName=STAFF`, must be omitted for all others |
+
+**Organizer restrictions:** Can only create `STAFF` invites for their own events.
+
+**Response 201:**
+```json
+{
+  "id": "uuid",
+  "code": "ABCD-1234-EFGH-5678",
+  "roleName": "STAFF",
+  "eventId": "uuid",
+  "eventName": "Tech Conference 2025",
+  "status": "PENDING",
+  "createdBy": "organizer@test.com",
+  "createdAt": "2026-03-18T10:00:00",
+  "expiresAt": "2026-03-20T10:00:00",
+  "redeemedBy": null,
+  "redeemedAt": null
+}
+```
+
+---
+
+### POST /api/v1/invites/redeem
+
+```
+POST /api/v1/invites/redeem
+Authorization: Bearer {{any_token}}
+Content-Type: application/json
+```
+
+Approval gate: **BYPASSED** — PENDING users can redeem.
+
+**Request body:**
+```json
+{ "code": "ABCD-1234-EFGH-5678" }
+```
+
+**Response 200:**
+```json
+{
+  "message": "Invite code redeemed successfully",
+  "roleAssigned": "STAFF",
+  "eventName": "Tech Conference 2025",
+  "currentRoles": ["STAFF"]
+}
+```
+
+| Error | Status | When |
+|-------|--------|------|
+| `INVITE_CODE_NOT_FOUND` | 404 | Code not in database |
+| `INVALID_INVITE_CODE` | 400 | Code expired / already redeemed / revoked — specific reason in message |
+
+---
+
+### DELETE /api/v1/invites/{codeId}
+
+```
+DELETE /api/v1/invites/{codeId}?reason=Event+was+cancelled
+Authorization: Bearer {{admin_token}}    ← or organizer_token (own codes only)
+```
+
+Query param `reason` is optional (default: "Revoked by creator").
+
+**Response 204:** No content.
+
+---
+
+### GET /api/v1/invites
+
+```
+GET /api/v1/invites?page=0&size=20&sort=createdAt,desc
+Authorization: Bearer {{admin_token}}    ← or organizer_token
+```
+
+ADMIN sees all codes. ORGANIZER sees only their own.
+
+**Response 200:** `Page<InviteCodeResponseDto>`
+
+---
+
+### GET /api/v1/invites/events/{eventId}
+
+```
+GET /api/v1/invites/events/{eventId}?page=0&size=20
+Authorization: Bearer {{admin_token}}    ← or organizer_token (own event only)
+```
+
+**Response 200:** `Page<InviteCodeResponseDto>`
+
+---
+
+## 5. Event Management
+
+Base path: `/api/v1/events` | Role: **ORGANIZER** (must own event for all except POST)
 
 ---
 
 ### POST /api/v1/events
 
-| | |
-|--|--|
-| **Method** | POST |
-| **URL** | `{{base_url}}/api/v1/events` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER |
-| **Approval gate** | Yes |
-| **Content-Type** | application/json |
-
-**Request Body Fields:**
-
-| Field | Type | Required | Validation |
-|-------|------|----------|------------|
-| `name` | String | ✅ Required | `@NotBlank` `@Size(max=200)` |
-| `venue` | String | ✅ Required | `@NotBlank` `@Size(max=500)` |
-| `status` | String | ✅ Required | `@NotNull` — must be `DRAFT`, `PUBLISHED`, or `CANCELLED` |
-| `ticketTypes` | Array | ✅ Required | `@NotEmpty` `@Valid` — at least 1 element |
-| `ticketTypes[].name` | String | ✅ Required | `@NotBlank` |
-| `ticketTypes[].price` | Decimal | ✅ Required | `@NotNull` `@DecimalMin("0.00")` — 0.00 valid (free event) |
-| `ticketTypes[].totalAvailable` | Integer | ✅ Required | `@NotNull` `@Min(1)` |
-| `ticketTypes[].description` | String | ❌ Optional | — |
-| `start` | DateTime | ❌ Optional | Format: `YYYY-MM-DDTHH:mm:ss` |
-| `end` | DateTime | ❌ Optional | Must be after `start` if both provided |
-| `salesStart` | DateTime | ❌ Optional | |
-| `salesEnd` | DateTime | ❌ Optional | Must be after `salesStart` if both provided |
-| `maxCapacity` | Integer | ❌ Optional | `@Min(1)` if provided — null = no cap |
-
-**Minimum valid payload:**
-```json
-{
-  "name": "Tech Conference 2025",
-  "venue": "Convention Center",
-  "status": "PUBLISHED",
-  "ticketTypes": [
-    {
-      "name": "General Admission",
-      "price": 199.99,
-      "totalAvailable": 100
-    }
-  ]
-}
+```
+POST /api/v1/events
+Authorization: Bearer {{organizer_token}}
+Content-Type: application/json
 ```
 
-**Full payload:**
+**Request body:**
 ```json
 {
   "name": "Tech Conference 2025",
+  "venue": "Convention Center, Building A",
+  "status": "PUBLISHED",
   "start": "2025-12-15T09:00:00",
   "end": "2025-12-15T18:00:00",
-  "venue": "Convention Center, Building A",
   "salesStart": "2025-11-01T00:00:00",
   "salesEnd": "2025-12-14T23:59:59",
-  "status": "PUBLISHED",
   "maxCapacity": 500,
   "ticketTypes": [
-    {
-      "name": "Early Bird",
-      "price": 149.99,
-      "description": "Limited discounted slots",
-      "totalAvailable": 100
-    },
-    {
-      "name": "Regular",
-      "price": 199.99,
-      "description": "Standard admission",
-      "totalAvailable": 400
-    }
+    { "name": "Early Bird", "price": 149.99, "description": "Limited slots", "totalAvailable": 100 },
+    { "name": "Regular", "price": 199.99, "totalAvailable": 400 }
   ]
 }
 ```
 
-**Success Response — 201 Created:**
+| Field | Required | Validation |
+|-------|----------|-----------|
+| `name` | ✅ | @NotBlank, max 200 |
+| `venue` | ✅ | @NotBlank, max 500 |
+| `status` | ✅ | `DRAFT`, `PUBLISHED`, or `CANCELLED` |
+| `ticketTypes` | ✅ | @NotEmpty — at least 1 element |
+| `ticketTypes[].name` | ✅ | @NotBlank |
+| `ticketTypes[].price` | ✅ | @NotNull, @DecimalMin("0.00") |
+| `ticketTypes[].totalAvailable` | ✅ | @NotNull, @Min(1) |
+| `ticketTypes[].description` | ❌ | — |
+| `start` | ❌ | Format: `YYYY-MM-DDTHH:mm:ss` |
+| `end` | ❌ | Must be after `start` if both provided |
+| `salesStart` | ❌ | — |
+| `salesEnd` | ❌ | Must be after `salesStart` if both provided |
+| `maxCapacity` | ❌ | @Min(1) if provided — null means no cap |
+
+**Response 201:**
 ```json
 {
-  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "id": "uuid",
   "name": "Tech Conference 2025",
+  "venue": "Convention Center, Building A",
+  "status": "PUBLISHED",
   "start": "2025-12-15T09:00:00",
   "end": "2025-12-15T18:00:00",
-  "venue": "Convention Center, Building A",
   "salesStart": "2025-11-01T00:00:00",
   "salesEnd": "2025-12-14T23:59:59",
-  "status": "PUBLISHED",
   "ticketTypes": [
-    {
-      "id": "uuid",
-      "name": "Early Bird",
-      "price": 149.99,
-      "description": "Limited discounted slots",
-      "totalAvailable": 100,
-      "createdAt": "2026-03-18T10:00:00",
-      "updatedAt": "2026-03-18T10:00:00"
-    }
+    { "id": "uuid", "name": "Early Bird", "price": 149.99, "description": "Limited slots", "totalAvailable": 100, "createdAt": "...", "updatedAt": "..." }
   ],
-  "createdAt": "2026-03-18T10:00:00",
-  "updatedAt": "2026-03-18T10:00:00"
+  "createdAt": "...",
+  "updatedAt": "..."
 }
 ```
-
-**Error Responses:**
-
-| Status | Error | When |
-|--------|-------|------|
-| 400 | `VALIDATION_ERROR` | Missing required fields, invalid status value, totalAvailable < 1 |
-| 409 | `INVALID_BUSINESS_STATE` | `end` not after `start`; `salesEnd` not after `salesStart` |
-| 403 | `ACCESS_DENIED` | Not ORGANIZER role |
 
 ---
 
 ### PUT /api/v1/events/{eventId}
 
-| | |
-|--|--|
-| **Method** | PUT |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own event) |
-| **Approval gate** | Yes |
-| **Content-Type** | application/json |
-
-**Request Body Fields:**
-
-| Field | Type | Required | Validation / Notes |
-|-------|------|----------|--------------------|
-| `id` | UUID | ❌ Optional | If provided, must match URL `{eventId}` |
-| `name` | String | ✅ Required | `@NotBlank` `@Size(max=200)` |
-| `venue` | String | ✅ Required | `@NotBlank` `@Size(max=500)` |
-| `status` | String | ✅ Required | `@NotNull` — `DRAFT`, `PUBLISHED`, or `CANCELLED` |
-| `ticketTypes` | Array | ✅ Required | `@NotEmpty` `@Valid` |
-| `ticketTypes[].id` | UUID | ❌ Optional | Omit to create a new type inline; include to update existing |
-| `ticketTypes[].name` | String | ✅ Required | `@NotBlank` |
-| `ticketTypes[].price` | Decimal | ✅ Required | `@NotNull` `@DecimalMin("0.00")` |
-| `ticketTypes[].description` | String | ❌ Optional | |
-| `ticketTypes[].totalAvailable` | Integer | ❌ Optional | Cannot be set below active (non-cancelled) sold count |
-| `start` | DateTime | ❌ Optional | |
-| `end` | DateTime | ❌ Optional | Must be after `start` if both provided |
-| `salesStart` | DateTime | ❌ Optional | |
-| `salesEnd` | DateTime | ❌ Optional | Must be after `salesStart` if both provided |
-| `maxCapacity` | Integer | ❌ Optional | **Always send current value to preserve it** — omitting sends null which removes the cap |
-
-**Minimum valid payload:**
-```json
-{
-  "name": "Updated Conference",
-  "venue": "Updated Venue",
-  "status": "PUBLISHED",
-  "ticketTypes": [
-    {
-      "id": "{{ticket_type_id}}",
-      "name": "General Admission",
-      "price": 199.99,
-      "totalAvailable": 200
-    }
-  ]
-}
+```
+PUT /api/v1/events/{eventId}
+Authorization: Bearer {{organizer_token}}
+Content-Type: application/json
 ```
 
-**Full payload:**
-```json
-{
-  "name": "Updated Tech Conference 2025",
-  "start": "2025-12-15T10:00:00",
-  "end": "2025-12-15T19:00:00",
-  "venue": "Updated Convention Center",
-  "salesStart": "2025-11-01T00:00:00",
-  "salesEnd": "2025-12-14T23:59:59",
-  "status": "PUBLISHED",
-  "maxCapacity": 500,
-  "ticketTypes": [
-    {
-      "id": "{{ticket_type_id}}",
-      "name": "Updated Early Bird",
-      "price": 149.99,
-      "description": "Updated description",
-      "totalAvailable": 120
-    }
-  ]
-}
-```
+Same body structure as POST. Two rules:
+1. If `id` is included in the body it must match the URL `{eventId}`.
+2. Include `id` in each `ticketTypes` element to **update** it — omit `id` to **create** a new ticket type.
 
-**Cancel event payload (bulk-cancels all PURCHASED tickets):**
-```json
-{
-  "name": "Tech Conference 2025",
-  "venue": "Convention Center",
-  "status": "CANCELLED",
-  "ticketTypes": [
-    { "id": "{{ticket_type_id}}", "name": "General", "price": 199.99, "totalAvailable": 100 }
-  ]
-}
-```
+**Response 200:** `UpdateEventResponseDto` — same shape as create response.
 
-**Success Response — 200 OK:**
-```json
-{
-  "id": "uuid",
-  "name": "Updated Tech Conference 2025",
-  "start": "2025-12-15T10:00:00",
-  "end": "2025-12-15T19:00:00",
-  "venue": "Updated Convention Center",
-  "salesStart": "2025-11-01T00:00:00",
-  "salesEnd": "2025-12-14T23:59:59",
-  "status": "PUBLISHED",
-  "ticketTypes": [
-    {
-      "id": "uuid",
-      "name": "Updated Early Bird",
-      "price": 149.99,
-      "description": "Updated description",
-      "totalAvailable": 120,
-      "createdAt": "...",
-      "updatedAt": "..."
-    }
-  ],
-  "createdAt": "...",
-  "updatedAt": "..."
-}
-```
-
-**Error Responses:**
-
-| Status | Error | When |
-|--------|-------|------|
-| 400 | `VALIDATION_ERROR` | Missing required fields |
-| 400 | `EVENT_UPDATE_ERROR` | Body `id` does not match path `{eventId}` |
-| 403 | `ACCESS_DENIED` | Not owner of this event |
-| 404 | `EVENT_NOT_FOUND` | Event ID not found |
-| 404 | `TICKET_TYPE_NOT_FOUND` | A `ticketTypes[].id` doesn't belong to this event |
-| 409 | `INVALID_BUSINESS_STATE` | Attempting to update a CANCELLED event; re-publishing CANCELLED event; `end` before `start`; `maxCapacity` below sold count; removing ticket type with active tickets |
+| Error | Status | When |
+|-------|--------|------|
+| `INVALID_ARGUMENT` | 400 | Body `id` does not match URL `eventId` |
+| `BUSINESS_RULE_VIOLATION` | 409 | Re-publishing a cancelled event; maxCapacity below sold count |
+| `EVENT_NOT_FOUND` | 404 | Not owner |
 
 ---
 
 ### GET /api/v1/events
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/events?page=0&size=20&sort=start,desc` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER |
-| **Approval gate** | Yes |
-| **Body** | None |
-
-Returns only the authenticated organizer's own events.
-
-**Success Response — 200 OK:**
-```json
-{
-  "content": [
-    {
-      "id": "uuid",
-      "name": "Tech Conference 2025",
-      "start": "2025-12-15T09:00:00",
-      "end": "2025-12-15T18:00:00",
-      "venue": "Convention Center",
-      "salesStart": "2025-11-01T00:00:00",
-      "salesEnd": "2025-12-14T23:59:59",
-      "status": "PUBLISHED",
-      "ticketTypes": [
-        { "id": "uuid", "name": "Early Bird", "price": 149.99 }
-      ]
-    }
-  ],
-  "totalElements": 3,
-  "totalPages": 1,
-  "size": 20,
-  "number": 0
-}
 ```
+GET /api/v1/events?page=0&size=20&sort=start,desc
+Authorization: Bearer {{organizer_token}}
+```
+
+Returns only the caller's own events.
+
+**Response 200:** `Page<ListEventResponseDto>`
 
 ---
 
 ### GET /api/v1/events/{eventId}
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Approval gate** | Yes |
-| **Body** | None |
-
-**Success Response — 200 OK:**
-```json
-{
-  "id": "uuid",
-  "name": "Tech Conference 2025",
-  "start": "2025-12-15T09:00:00",
-  "end": "2025-12-15T18:00:00",
-  "venue": "Convention Center",
-  "salesStart": "2025-11-01T00:00:00",
-  "salesEnd": "2025-12-14T23:59:59",
-  "status": "PUBLISHED",
-  "ticketTypes": [
-    {
-      "id": "uuid",
-      "name": "Early Bird",
-      "price": 149.99,
-      "description": "Limited discounted slots",
-      "totalAvailable": 100,
-      "createdAt": "...",
-      "updatedAt": "..."
-    }
-  ],
-  "createdAt": "...",
-  "updatedAt": "..."
-}
+```
+GET /api/v1/events/{eventId}
+Authorization: Bearer {{organizer_token}}
 ```
 
-**Error Responses:** 404 (not found or not owned by this organizer)
+Returns full event details. Returns 404 if not owned by caller (ownership is hidden — no 403).
+
+**Response 200:** `GetEventDetailsResponseDto`
 
 ---
 
 ### DELETE /api/v1/events/{eventId}
 
-| | |
-|--|--|
-| **Method** | DELETE |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Approval gate** | Yes |
-| **Body** | None |
+```
+DELETE /api/v1/events/{eventId}
+Authorization: Bearer {{organizer_token}}
+```
 
-**Business rule:** Cannot delete if any active (non-cancelled) tickets exist. Cancel the event first.
+**Response 204:** No content.
 
-**Success Response — 204 No Content**
-
-**Error Responses:**
-
-| Status | Error | When |
-|--------|-------|------|
-| 409 | `INVALID_BUSINESS_STATE` | Active tickets exist — message includes count |
-| 403 | `ACCESS_DENIED` | Not owner |
+| Error | Status | When |
+|-------|--------|------|
+| `BUSINESS_RULE_VIOLATION` | 409 | Event has active tickets — cancel first |
 
 ---
 
 ### GET /api/v1/events/{eventId}/sales-dashboard
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}/sales-dashboard` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Body** | None |
+```
+GET /api/v1/events/{eventId}/sales-dashboard
+Authorization: Bearer {{organizer_token}}
+```
 
-**Success Response — 200 OK:**
+**Response 200:**
 ```json
 {
   "eventName": "Tech Conference 2025",
-  "totalTicketsSold": 45,
-  "totalRevenueBeforeDiscount": 8955.00,
-  "totalDiscountGiven": 895.50,
-  "totalRevenueFinal": 8059.50,
+  "totalTicketsSold": 5,
+  "totalRevenueBeforeDiscount": 999.95,
+  "totalDiscountGiven": 99.99,
+  "totalRevenueFinal": 899.96,
   "ticketTypeBreakdown": [
     {
       "ticketTypeName": "Early Bird",
-      "basePrice": 199.00,
+      "basePrice": 199.99,
       "totalAvailable": 100,
-      "sold": 45,
-      "remaining": 55,
-      "revenueBeforeDiscount": 8955.00,
-      "discountGiven": 895.50,
-      "revenueFinal": 8059.50
+      "sold": 5,
+      "remaining": 95,
+      "revenueBeforeDiscount": 999.95,
+      "discountGiven": 99.99,
+      "revenueFinal": 899.96
     }
   ]
 }
 ```
 
-**Note:** CANCELLED tickets excluded from all counts and revenue. `remaining` is `null` when `totalAvailable` is null (unlimited ticket type — no cap set).
+Note: `remaining` is `null` when `totalAvailable` is null (unlimited). Cancelled tickets are excluded from all counts.
 
 ---
 
 ### GET /api/v1/events/{eventId}/attendees-report
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}/attendees-report` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Body** | None |
+```
+GET /api/v1/events/{eventId}/attendees-report
+Authorization: Bearer {{organizer_token}}
+```
 
-**Success Response — 200 OK:**
+**Response 200:**
 ```json
 {
   "eventName": "Tech Conference 2025",
-  "totalAttendees": 45,
+  "totalAttendees": 5,
   "attendees": [
     {
-      "attendeeName": "Jane Doe",
-      "attendeeEmail": "jane@example.com",
+      "attendeeName": "Test Attendee",
+      "attendeeEmail": "attendee@test.com",
       "ticketType": "Early Bird",
-      "ticketStatus": "PURCHASED",
+      "ticketStatus": "VALIDATED",
       "purchaseDate": "2025-11-10T14:30:00",
-      "validationCount": 1
+      "validationCount": 2
     }
   ]
 }
 ```
-
-**Note:** CANCELLED tickets excluded.
 
 ---
 
 ### GET /api/v1/events/{eventId}/sales-report.xlsx
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}/sales-report.xlsx` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Body** | None |
+```
+GET /api/v1/events/{eventId}/sales-report.xlsx
+Authorization: Bearer {{organizer_token}}
+```
 
-**Success Response — 200 OK**
+**Response 200:**
 - `Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
-- `Content-Disposition: attachment; filename="<event-name>_sales_report_<timestamp>.xlsx"`
+- `Content-Disposition: attachment; filename="eventname_sales_report_YYYYMMDD_HHmmss.xlsx"`
+- Body: binary Excel file
 
 ---
 
----
+## 6. Published Events
 
-## 2. Published Events — /api/v1/published-events
-
-**Role required:** ATTENDEE, ORGANIZER, or STAFF
-**Note: ADMIN cannot access these endpoints — returns 403**
+Base path: `/api/v1/published-events` | Role: **ATTENDEE**, **ORGANIZER**, or **STAFF** (not ADMIN)
 
 ---
 
 ### GET /api/v1/published-events
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/published-events?page=0&size=20&sort=start,asc` |
-| **Auth required** | Yes |
-| **Role required** | ATTENDEE or ORGANIZER or STAFF |
-| **Body** | None |
-| **Query params** | `q` (optional) — full-text search on event name and venue |
-
-**Success Response — 200 OK:**
-```json
-{
-  "content": [
-    {
-      "id": "uuid",
-      "name": "Tech Conference 2025",
-      "start": "2025-12-15T09:00:00",
-      "end": "2025-12-15T18:00:00",
-      "venue": "Convention Center"
-    }
-  ],
-  "totalElements": 5,
-  "totalPages": 1,
-  "size": 20,
-  "number": 0
-}
 ```
+GET /api/v1/published-events?page=0&size=20&sort=start,asc
+GET /api/v1/published-events?q=tech&page=0&size=20
+Authorization: Bearer {{attendee_token}}
+```
+
+Optional `q` parameter filters by event name.
+
+**Response 200:** `Page<ListPublishedEventResponseDto>`
 
 ---
 
 ### GET /api/v1/published-events/{eventId}
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/published-events/{{event_id}}` |
-| **Auth required** | Yes |
-| **Role required** | ATTENDEE or ORGANIZER or STAFF |
-| **Body** | None |
+```
+GET /api/v1/published-events/{eventId}
+Authorization: Bearer {{attendee_token}}
+```
 
-Returns PUBLISHED events only. DRAFT and CANCELLED events return 404.
+Returns 404 for DRAFT or CANCELLED events.
 
-**Success Response — 200 OK:**
+**Response 200:**
 ```json
 {
   "id": "uuid",
   "name": "Tech Conference 2025",
+  "venue": "Convention Center",
   "start": "2025-12-15T09:00:00",
   "end": "2025-12-15T18:00:00",
-  "venue": "Convention Center",
   "ticketTypes": [
-    {
-      "id": "uuid",
-      "name": "Early Bird",
-      "price": 149.99,
-      "description": "Limited discounted slots"
-    }
+    { "id": "uuid", "name": "Early Bird", "price": 149.99, "description": "Limited slots" }
   ]
 }
 ```
 
-**Note:** `totalAvailable`, `salesStart`, `salesEnd`, `maxCapacity` are NOT exposed in this public response.
+---
 
-**Error Responses:** 404 (not found or not PUBLISHED)
+## 7. Ticket Types
+
+Base path: `/api/v1/events/{eventId}/ticket-types` | Role: **ORGANIZER** (must own event)
 
 ---
 
----
+### POST /api/v1/events/{eventId}/ticket-types
 
-## 3. Ticket Management — /api/v1/tickets
+```
+POST /api/v1/events/{eventId}/ticket-types
+Authorization: Bearer {{organizer_token}}
+Content-Type: application/json
+```
 
-**Role required:** ATTENDEE or ORGANIZER
-**Note: STAFF cannot access these endpoints — returns 403**
-
----
-
-### GET /api/v1/tickets
-
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/tickets?page=0&size=20&sort=id,desc` |
-| **Auth required** | Yes |
-| **Role required** | ATTENDEE or ORGANIZER |
-| **Body** | None |
-
-Returns only tickets belonging to the authenticated user.
-
-**Success Response — 200 OK:**
+**Request body:**
 ```json
-{
-  "content": [
-    {
-      "id": "uuid",
-      "status": "PURCHASED",
-      "ticketType": {
-        "id": "uuid",
-        "name": "Early Bird",
-        "price": 149.99
-      }
-    }
-  ],
-  "totalElements": 2,
-  "totalPages": 1,
-  "size": 20,
-  "number": 0
-}
+{ "name": "VIP", "price": 499.99, "description": "Premium access", "totalAvailable": 50 }
+```
+
+| Field | Required | Validation |
+|-------|----------|-----------|
+| `name` | ✅ | @NotBlank |
+| `price` | ✅ | @NotNull, @DecimalMin("0.00") |
+| `totalAvailable` | ✅ | @NotNull, @Min(1) |
+| `description` | ❌ | — |
+
+**Response 201:**
+```json
+{ "id": "uuid", "name": "VIP", "price": 499.99, "description": "Premium access", "totalAvailable": 50, "createdAt": "...", "updatedAt": "..." }
 ```
 
 ---
 
-### GET /api/v1/tickets/{ticketId}
+### GET /api/v1/events/{eventId}/ticket-types
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/tickets/{{ticket_id}}` |
-| **Auth required** | Yes |
-| **Role required** | ATTENDEE or ORGANIZER (must own the ticket) |
-| **Body** | None |
-
-**Success Response — 200 OK:**
-```json
-{
-  "id": "uuid",
-  "status": "PURCHASED",
-  "price": 149.99,
-  "pricePaid": 119.99,
-  "originalPrice": 149.99,
-  "discountApplied": 30.00,
-  "description": "Early Bird",
-  "eventName": "Tech Conference 2025",
-  "eventVenue": "Convention Center",
-  "eventStart": "2025-12-15T09:00:00",
-  "eventEnd": "2025-12-15T18:00:00"
-}
+```
+GET /api/v1/events/{eventId}/ticket-types
+Authorization: Bearer {{organizer_token}}
 ```
 
-**Error Responses:** 404 (not found or doesn't belong to authenticated user)
+**Response 200:** `List<CreateTicketTypeResponseDto>`
 
 ---
 
-### GET /api/v1/tickets/{ticketId}/qr-codes/view
+### GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/tickets/{{ticket_id}}/qr-codes/view` |
-| **Auth required** | Yes |
-| **Role required** | ATTENDEE or ORGANIZER |
-| **Body** | None |
+```
+GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
+Authorization: Bearer {{organizer_token}}
+```
 
-Returns QR code for inline display.
-
-**Success Response — 200 OK**
-- `Content-Type: image/png`
-- `Content-Disposition: inline; filename="qr-code.png"`
-- `Cache-Control: max-age=300, private`
-
-**Error Responses:**
-
-| Status | Error | When |
-|--------|-------|------|
-| 403 | `ACCESS_DENIED` | Doesn't own ticket |
-| 404 | `QR_CODE_NOT_FOUND` | QR deactivated (ticket cancelled) |
+**Response 200:** `CreateTicketTypeResponseDto` | 404 if wrong event
 
 ---
 
-### GET /api/v1/tickets/{ticketId}/qr-codes/png
+### PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/tickets/{{ticket_id}}/qr-codes/png` |
-| **Auth required** | Yes |
-| **Role required** | ATTENDEE or ORGANIZER |
-| **Body** | None |
+```
+PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
+Authorization: Bearer {{organizer_token}}
+Content-Type: application/json
+```
 
-Returns QR code as downloadable PNG file.
+**Request body:** Same fields as create — `name` and `price` required, others optional.
 
-**Success Response — 200 OK**
-- `Content-Type: image/png`
-- `Content-Disposition: attachment; filename="<event>_<type>_<user>_<id>.png"`
+**Response 200:** `UpdateTicketTypeResponseDto`
 
----
-
-### GET /api/v1/tickets/{ticketId}/qr-codes/pdf
-
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/tickets/{{ticket_id}}/qr-codes/pdf` |
-| **Auth required** | Yes |
-| **Role required** | ATTENDEE or ORGANIZER |
-| **Body** | None |
-
-Returns QR code embedded in a PDF with ticket details.
-
-**Success Response — 200 OK**
-- `Content-Type: application/pdf`
-- `Content-Disposition: attachment; filename="<event>_<type>_<user>_<id>.pdf"`
+| Error | Status | When |
+|-------|--------|------|
+| `BUSINESS_RULE_VIOLATION` | 409 | `totalAvailable` set below already-sold count |
 
 ---
 
+### DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
+
+```
+DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
+Authorization: Bearer {{organizer_token}}
+```
+
+**Response 204:** No content.
+
+| Error | Status | When |
+|-------|--------|------|
+| `TICKET_TYPE_DELETE_NOT_ALLOWED` | 409 | Has active sold tickets |
+
 ---
 
-## 4. Ticket Purchase — /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/tickets
+## 8. Ticket Purchase
 
 ---
 
 ### POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/tickets
 
-| | |
-|--|--|
-| **Method** | POST |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/tickets` |
-| **Auth required** | Yes |
-| **Role required** | ATTENDEE or ORGANIZER |
-| **Approval gate** | Yes |
-| **Content-Type** | application/json |
-
-**Request Body Fields:**
-
-| Field | Type | Required | Validation |
-|-------|------|----------|------------|
-| `quantity` | Integer | ❌ Optional | `@Min(1)` `@Max(10)` — defaults to **1** if body is `{}` or omitted |
-
-**Minimum valid payload (defaults to quantity=1):**
-```json
-{}
+```
+POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/tickets
+Authorization: Bearer {{attendee_token}}    ← or organizer_token
+Content-Type: application/json
 ```
 
-**Full payload:**
+**Request body:**
 ```json
-{
-  "quantity": 3
-}
+{ "quantity": 2 }
 ```
 
-**Business rules enforced:**
-- Event must be `PUBLISHED`
-- Current time must be within `salesStart`–`salesEnd` window (if set)
-- Ticket type `totalAvailable` not exceeded (cancelled ticket slots free back up)
-- Event `maxCapacity` not exceeded (if set)
-- Active discounts automatically applied at time of purchase
+| Field | Required | Default | Validation |
+|-------|----------|---------|-----------|
+| `quantity` | ❌ | 1 | @Min(1), @Max(10) |
 
-**Success Response — 201 Created (returns a LIST, even for quantity=1):**
+**Response 201:** Array of tickets
 ```json
 [
   {
@@ -884,1069 +840,417 @@ Returns QR code embedded in a PDF with ticket details.
 ]
 ```
 
-If no discount was active: `pricePaid == originalPrice`, `discountApplied == 0.00`
-
-**Error Responses:**
-
-| Status | Error | When |
-|--------|-------|------|
-| 400 | `VALIDATION_ERROR` | `quantity` < 1 or > 10 |
-| 400 | `TICKETS_SOLD_OUT` | Ticket type sold out or event capacity reached |
-| 403 | `ACCESS_DENIED` | STAFF role; PENDING/REJECTED user |
-| 404 | `EVENT_NOT_FOUND` | eventId not found |
-| 404 | `TICKET_TYPE_NOT_FOUND` | ticketTypeId not found or wrong event |
-| 409 | `INVALID_BUSINESS_STATE` | Event not PUBLISHED; outside sales window; event cancelled |
+| Error | Status | When |
+|-------|--------|------|
+| `VALIDATION_ERROR` | 400 | quantity < 1 or > 10 |
+| `TICKETS_SOLD_OUT` | 400 | No tickets remaining |
+| `BUSINESS_RULE_VIOLATION` | 409 | Event not PUBLISHED; before salesStart; after salesEnd; per-user limit reached (max 10/type) |
 
 ---
 
----
+## 9. Ticket Viewing
 
-## 5. Ticket Type Management — /api/v1/events/{eventId}/ticket-types
-
-**Role required:** ORGANIZER (must own the event)
+Base path: `/api/v1/tickets` | Role: **ATTENDEE** or **ORGANIZER**
 
 ---
 
-### POST /api/v1/events/{eventId}/ticket-types
+### GET /api/v1/tickets
 
-| | |
-|--|--|
-| **Method** | POST |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}/ticket-types` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Content-Type** | application/json |
+```
+GET /api/v1/tickets?page=0&size=20&sort=id,desc
+Authorization: Bearer {{attendee_token}}
+```
 
-**Request Body Fields:**
+Returns only the caller's own tickets.
 
-| Field | Type | Required | Validation |
-|-------|------|----------|------------|
-| `name` | String | ✅ Required | `@NotBlank` |
-| `price` | Decimal | ✅ Required | `@NotNull` `@DecimalMin("0.00")` |
-| `totalAvailable` | Integer | ✅ Required | `@NotNull` `@Min(1)` |
-| `description` | String | ❌ Optional | — |
-
-**Minimum valid payload:**
+**Response 200:** `Page<ListTicketResponseDto>`
 ```json
 {
-  "name": "VIP Pass",
-  "price": 499.99,
-  "totalAvailable": 50
+  "content": [
+    { "id": "uuid", "status": "PURCHASED", "ticketType": { "id": "uuid", "name": "Early Bird", "price": 149.99 } }
+  ]
 }
 ```
 
-**Full payload:**
-```json
-{
-  "name": "VIP Pass",
-  "price": 499.99,
-  "description": "Premium access with dinner",
-  "totalAvailable": 50
-}
+---
+
+### GET /api/v1/tickets/{ticketId}
+
+```
+GET /api/v1/tickets/{ticketId}
+Authorization: Bearer {{attendee_token}}
 ```
 
-**Success Response — 201 Created:**
+**Response 200:** `GetTicketResponseDto`
 ```json
 {
   "id": "uuid",
-  "name": "VIP Pass",
-  "price": 499.99,
-  "description": "Premium access with dinner",
-  "totalAvailable": 50,
-  "createdAt": "...",
-  "updatedAt": "..."
+  "status": "PURCHASED",
+  "price": 149.99,
+  "pricePaid": 119.99,
+  "originalPrice": 149.99,
+  "discountApplied": 30.00,
+  "description": "Early Bird",
+  "eventName": "Tech Conference 2025",
+  "eventVenue": "Convention Center",
+  "eventStart": "2025-12-15T09:00:00",
+  "eventEnd": "2025-12-15T18:00:00"
 }
 ```
 
----
-
-### GET /api/v1/events/{eventId}/ticket-types
-
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}/ticket-types` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Body** | None |
-
-**Success Response — 200 OK:** `List<CreateTicketTypeResponseDto>`
+Returns 404 if ticket belongs to another user.
 
 ---
 
-### GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
+## 10. QR Codes
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Body** | None |
-
-**Success Response — 200 OK** or **404** (not found or wrong event)
+Base path: `/api/v1/tickets/{ticketId}/qr-codes` | Role: **ATTENDEE** or **ORGANIZER**
 
 ---
 
-### PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
+### GET /api/v1/tickets/{ticketId}/qr-codes *(Legacy)*
 
-| | |
-|--|--|
-| **Method** | PUT |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Content-Type** | application/json |
-
-**Request Body Fields:**
-
-| Field | Type | Required | Validation |
-|-------|------|----------|------------|
-| `name` | String | ✅ Required | `@NotBlank` |
-| `price` | Decimal | ✅ Required | `@NotNull` `@DecimalMin("0.00")` |
-| `description` | String | ❌ Optional | Send `null` to remove existing description |
-| `totalAvailable` | Integer | ❌ Optional | Cannot be set below active (non-cancelled) sold count |
-
-**Minimum valid payload:**
-```json
-{
-  "name": "Updated VIP Pass",
-  "price": 549.99
-}
+```
+GET /api/v1/tickets/{ticketId}/qr-codes
+Authorization: Bearer {{attendee_token}}
 ```
 
-**Full payload:**
-```json
-{
-  "name": "Updated VIP Pass",
-  "price": 549.99,
-  "description": "Updated premium access",
-  "totalAvailable": 75
-}
+**Response 200:** Binary PNG bytes. `Content-Type: image/png`
+
+---
+
+### GET /api/v1/tickets/{ticketId}/qr-codes/view
+
+```
+GET /api/v1/tickets/{ticketId}/qr-codes/view
+Authorization: Bearer {{attendee_token}}
 ```
 
-**Success Response — 200 OK:**
-```json
-{
-  "id": "uuid",
-  "name": "Updated VIP Pass",
-  "price": 549.99,
-  "description": "Updated premium access",
-  "totalAvailable": 75,
-  "createdAt": "...",
-  "updatedAt": "..."
-}
+Inline display. Cache-Control is `private` — QR codes must never be shared caches.
+
+**Response 200:**
+- `Content-Type: image/png`
+- `Content-Disposition: inline; filename="qr-code.png"`
+- `Cache-Control: max-age=300, private`
+- Body: PNG bytes
+
+---
+
+### GET /api/v1/tickets/{ticketId}/qr-codes/png
+
+```
+GET /api/v1/tickets/{ticketId}/qr-codes/png
+Authorization: Bearer {{attendee_token}}
 ```
 
-**Error Responses:**
-
-| Status | Error | When |
-|--------|-------|------|
-| 409 | `INVALID_BUSINESS_STATE` | `totalAvailable` below active sold count |
-| 403 | `ACCESS_DENIED` | Not owner |
+**Response 200:**
+- `Content-Type: image/png`
+- `Content-Disposition: attachment; filename="eventname_tickettype_username_ticketid.png"`
 
 ---
 
-### DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}
+### GET /api/v1/tickets/{ticketId}/qr-codes/pdf
 
-| | |
-|--|--|
-| **Method** | DELETE |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Body** | None |
+```
+GET /api/v1/tickets/{ticketId}/qr-codes/pdf
+Authorization: Bearer {{attendee_token}}
+```
 
-**Business rule:** Cannot delete if any active (non-cancelled) tickets have been sold.
-
-**Success Response — 204 No Content**
-
-**Error Responses:**
-
-| Status | Error | When |
-|--------|-------|------|
-| 409 | `TICKET_TYPE_DELETE_NOT_ALLOWED` | Active sold tickets exist |
-| 403 | `ACCESS_DENIED` | Not owner |
+**Response 200:**
+- `Content-Type: application/pdf`
+- `Content-Disposition: attachment; filename="....pdf"`
 
 ---
 
----
+## 11. Discounts
 
-## 6. Discount Management
-
-**Base URL:** `/api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts`
-**⚠️ Note: URL ends in `/discounts` (plural). Using `/discount` (singular) returns 404.**
-**Role required:** ORGANIZER (must own the event)
+Base path: `/api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts` | Role: **ORGANIZER** (must own event)
 
 ---
 
-### POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts
+### POST .../discounts
 
-| | |
-|--|--|
-| **Method** | POST |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Content-Type** | application/json |
+```
+POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts
+Authorization: Bearer {{organizer_token}}
+Content-Type: application/json
+```
 
-**Request Body Fields:**
-
-| Field | Type | Required | Validation |
-|-------|------|----------|------------|
-| `discountType` | String | ✅ Required | `@NotNull` — `PERCENTAGE` or `FIXED_AMOUNT` |
-| `value` | Decimal | ✅ Required | `@NotNull` `@DecimalMin("0.01")`. PERCENTAGE: max 100.0. FIXED_AMOUNT: any positive value |
-| `validFrom` | DateTime | ✅ Required | `@NotNull` `@FutureOrPresent` |
-| `validTo` | DateTime | ✅ Required | `@NotNull` `@Future` — must be after `validFrom` |
-| `active` | Boolean | ❌ Optional | null/omitted = inactive (won't apply at purchase time) |
-| `description` | String | ❌ Optional | — |
-
-**Minimum valid payload:**
+**Request body:**
 ```json
 {
   "discountType": "PERCENTAGE",
-  "value": 20.00,
-  "validFrom": "2025-11-01T00:00:00",
-  "validTo": "2025-11-30T23:59:59"
-}
-```
-
-**Full payload — percentage discount:**
-```json
-{
-  "discountType": "PERCENTAGE",
-  "value": 20.00,
+  "value": 20.0,
   "validFrom": "2025-11-01T00:00:00",
   "validTo": "2025-11-30T23:59:59",
   "active": true,
-  "description": "Early Bird Special"
+  "description": "Black Friday 20% off"
 }
 ```
 
-**Full payload — fixed amount discount:**
-```json
-{
-  "discountType": "FIXED_AMOUNT",
-  "value": 50.00,
-  "validFrom": "2025-12-01T00:00:00",
-  "validTo": "2025-12-25T23:59:59",
-  "active": true,
-  "description": "Holiday Discount"
-}
-```
+| Field | Required | Validation |
+|-------|----------|-----------|
+| `discountType` | ✅ | `PERCENTAGE` or `FIXED_AMOUNT` |
+| `value` | ✅ | > 0. PERCENTAGE: ≤ 100. FIXED_AMOUNT: > 0 |
+| `validFrom` | ✅ | Must be in the future for new discounts |
+| `validTo` | ✅ | Must be after `validFrom` |
+| `active` | ❌ | Default: `true` |
+| `description` | ❌ | — |
 
-**Success Response — 201 Created:**
+Only **one active** discount per ticket type at a time.
+
+**Response 201:**
 ```json
 {
   "id": "uuid",
   "ticketTypeId": "uuid",
   "ticketTypeName": "Early Bird",
   "discountType": "PERCENTAGE",
-  "value": 20.00,
+  "value": 20.0,
   "validFrom": "2025-11-01T00:00:00",
   "validTo": "2025-11-30T23:59:59",
   "active": true,
-  "description": "Early Bird Special",
+  "description": "Black Friday 20% off",
   "createdAt": "...",
   "updatedAt": "..."
 }
 ```
 
-**Error Responses:**
-
-| Status | Error | When |
-|--------|-------|------|
-| 400 | `VALIDATION_ERROR` | Missing required fields, value ≤ 0, `validFrom` in past |
-| 400 | `INVALID_INPUT` | `validTo` not after `validFrom`; PERCENTAGE > 100 |
-| 409 | `DISCOUNT_ALREADY_EXISTS` | Another active non-expired discount already exists for this ticket type |
-| 403 | `ACCESS_DENIED` | Not owner |
-| 404 | `TICKET_TYPE_NOT_FOUND` | ticketTypeId not found or wrong event |
+| Error | Status | When |
+|-------|--------|------|
+| `DISCOUNT_ALREADY_EXISTS` | 409 | Another active discount already exists for this ticket type |
 
 ---
 
-### PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}
+### PUT .../discounts/{discountId}
 
-| | |
-|--|--|
-| **Method** | PUT |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts/{{discount_id}}` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Content-Type** | application/json |
+```
+PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}
+Authorization: Bearer {{organizer_token}}
+Content-Type: application/json
+```
 
-**Request body:** Same as POST create.
+Same body as create. `validFrom` in the past is allowed on update.
 
-**Success Response — 200 OK:** Same shape as `DiscountResponseDto`
+**Response 200:** `DiscountResponseDto`
 
----
-
-### DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}
-
-| | |
-|--|--|
-| **Method** | DELETE |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts/{{discount_id}}` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Body** | None |
-
-**Success Response — 204 No Content**
+| Error | Status | When |
+|-------|--------|------|
+| `VALIDATION_ERROR` | 400 | Attempt to change `discountType` or `value` after tickets have been sold |
 
 ---
 
-### GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}
+### DELETE .../discounts/{discountId}
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts/{{discount_id}}` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Body** | None |
+```
+DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}
+Authorization: Bearer {{organizer_token}}
+```
 
-**Success Response — 200 OK:** `DiscountResponseDto` or **404**
+**Response 204:** No content.
 
 ---
 
-### GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts
+### GET .../discounts/{discountId}
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}/ticket-types/{{ticket_type_id}}/discounts` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Body** | None |
+```
+GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}
+Authorization: Bearer {{organizer_token}}
+```
 
-Returns all discounts (active and inactive) for this ticket type.
-
-**Success Response — 200 OK:** `List<DiscountResponseDto>`
+**Response 200:** `DiscountResponseDto` | 404 `DISCOUNT_NOT_FOUND`
 
 ---
 
+### GET .../discounts
+
+```
+GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts
+Authorization: Bearer {{organizer_token}}
+```
+
+Returns all discounts (active and inactive) for the ticket type.
+
+**Response 200:** `List<DiscountResponseDto>`
+
 ---
 
-## 7. Ticket Validation — /api/v1/ticket-validations
+## 12. Ticket Validation
 
-**Role required:** STAFF or ORGANIZER (must be assigned to / own the event)
+Base path: `/api/v1/ticket-validations` | Role: **STAFF** or **ORGANIZER**
 
 ---
 
 ### POST /api/v1/ticket-validations
 
-| | |
-|--|--|
-| **Method** | POST |
-| **URL** | `{{base_url}}/api/v1/ticket-validations` |
-| **Auth required** | Yes |
-| **Role required** | STAFF or ORGANIZER |
-| **Approval gate** | Yes |
-| **Content-Type** | application/json |
-
-**Request Body Fields:**
-
-| Field | Type | Required | Validation |
-|-------|------|----------|------------|
-| `id` | UUID | ✅ Required | `@NotNull` — for `MANUAL`: pass ticket UUID; for `QR_SCAN`: pass QR code UUID |
-| `method` | String | ✅ Required | `@NotNull` — `MANUAL` or `QR_SCAN` (**not** `QR_CODE` — that returns 400) |
-
-**Manual validation payload:**
-```json
-{
-  "id": "{{ticket_id}}",
-  "method": "MANUAL"
-}
+```
+POST /api/v1/ticket-validations
+Authorization: Bearer {{staff_token}}
+Content-Type: application/json
 ```
 
-**QR scan payload (id is the QR code UUID scanned from image — NOT the ticket UUID):**
+**Request body:**
 ```json
-{
-  "id": "{{qr_code_id}}",
-  "method": "QR_SCAN"
-}
+{ "id": "uuid", "method": "MANUAL" }
 ```
 
-**Success Response — 200 OK (first scan):**
+| Field | Required | Validation |
+|-------|----------|-----------|
+| `id` | ✅ | @NotNull — ticket UUID for MANUAL; QR code UUID for QR_SCAN |
+| `method` | ✅ | @NotNull — exactly `MANUAL` or `QR_SCAN` |
+
+A second scan of the same ticket returns 200 with `status: "INVALID"` — this is expected behaviour, not an error.
+
+**Response 200:**
 ```json
 {
   "ticketId": "uuid",
   "status": "VALID",
   "validatedById": "uuid",
-  "validatedByName": "John Staff",
+  "validatedByName": "Test Staff",
   "validatedAt": "2025-12-15T10:23:45"
 }
 ```
 
-**Success Response — 200 OK (second/duplicate scan — NOT an error):**
-```json
-{
-  "ticketId": "uuid",
-  "status": "INVALID",
-  "validatedById": "uuid",
-  "validatedByName": "John Staff",
-  "validatedAt": "2025-12-15T10:25:00"
-}
-```
+`status` values: `VALID` (first scan) | `INVALID` (already scanned)
 
-**Error Responses:**
-
-| Status | Error | When |
-|--------|-------|------|
-| 400 | `VALIDATION_ERROR` | Missing `id` or `method`; invalid method value (e.g. `QR_CODE`) |
-| 403 | `ACCESS_DENIED` | ATTENDEE role; STAFF not assigned to this event |
-| 404 | `TICKET_NOT_FOUND` | Ticket UUID not found (MANUAL method) |
-| 404 | `QR_CODE_NOT_FOUND` | QR code not found or EXPIRED (QR_SCAN method) |
-| 409 | `INVALID_BUSINESS_STATE` | Ticket is CANCELLED — cannot be validated |
+| Error | Status | When |
+|-------|--------|------|
+| `TICKET_NOT_FOUND` | 404 | Ticket UUID not found |
+| `QR_CODE_NOT_FOUND` | 404 | QR code UUID not found |
+| `BUSINESS_RULE_VIOLATION` | 409 | Ticket is CANCELLED |
+| `ACCESS_DENIED` | 403 | STAFF not assigned to this event |
 
 ---
 
 ### GET /api/v1/ticket-validations/events/{eventId}
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/ticket-validations/events/{{event_id}}?page=0&size=20` |
-| **Auth required** | Yes |
-| **Role required** | STAFF or ORGANIZER (must be assigned/own) |
-| **Body** | None |
+```
+GET /api/v1/ticket-validations/events/{eventId}?page=0&size=20
+Authorization: Bearer {{staff_token}}
+```
 
-**Success Response — 200 OK:** `Page<TicketValidationResponseDto>`
+STAFF must be assigned to the event. ORGANIZER must own it.
+
+**Response 200:** `Page<TicketValidationResponseDto>`
 
 ---
 
 ### GET /api/v1/ticket-validations/tickets/{ticketId}
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/ticket-validations/tickets/{{ticket_id}}` |
-| **Auth required** | Yes |
-| **Role required** | STAFF or ORGANIZER (must be assigned/own) |
-| **Body** | None |
-
-**Success Response — 200 OK:** `List<TicketValidationResponseDto>`
-
----
-
----
-
-## 8. Admin Governance — /api/v1/admin
-
-**Role required:** ADMIN
-
----
-
-### POST /api/v1/admin/users/{userId}/roles
-
-| | |
-|--|--|
-| **Method** | POST |
-| **URL** | `{{base_url}}/api/v1/admin/users/{{user_id}}/roles` |
-| **Auth required** | Yes |
-| **Role required** | ADMIN |
-| **Content-Type** | application/json |
-
-**Request Body Fields:**
-
-| Field | Type | Required | Validation |
-|-------|------|----------|------------|
-| `roleName` | String | ✅ Required | `@NotBlank` `@Pattern(^(ADMIN\|ORGANIZER\|ATTENDEE\|STAFF)$)` |
-
-**Valid payload:**
-```json
-{
-  "roleName": "ORGANIZER"
-}
+```
+GET /api/v1/ticket-validations/tickets/{ticketId}
+Authorization: Bearer {{staff_token}}
 ```
 
-**Success Response — 200 OK:**
-```json
-{
-  "userId": "uuid",
-  "userName": "Test User",
-  "email": "test@example.com",
-  "roles": ["ORGANIZER"]
-}
-```
-
-**Error Responses:** 400 (invalid roleName), 403 (not ADMIN)
+**Response 200:** `List<TicketValidationResponseDto>` — all scans for that ticket
 
 ---
 
-### DELETE /api/v1/admin/users/{userId}/roles/{roleName}
+## 13. Event Staff Management
 
-| | |
-|--|--|
-| **Method** | DELETE |
-| **URL** | `{{base_url}}/api/v1/admin/users/{{user_id}}/roles/STAFF` |
-| **Auth required** | Yes |
-| **Role required** | ADMIN |
-| **Body** | None |
-
-**Success Response — 200 OK:** `UserRolesResponseDto` with updated roles list
-
----
-
-### GET /api/v1/admin/users/{userId}/roles
-
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/admin/users/{{user_id}}/roles` |
-| **Auth required** | Yes |
-| **Role required** | ADMIN |
-| **Body** | None |
-
-**Note:** The approval list endpoints always return `roles: []`. Use this endpoint to get a specific user's roles.
-
-**Success Response — 200 OK:**
-```json
-{
-  "userId": "uuid",
-  "userName": "Test User",
-  "email": "test@example.com",
-  "roles": ["ORGANIZER", "ATTENDEE"]
-}
-```
-
----
-
-### GET /api/v1/admin/roles
-
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/admin/roles` |
-| **Auth required** | Yes |
-| **Role required** | ADMIN |
-| **Body** | None |
-
-**Success Response — 200 OK:**
-```json
-{
-  "roles": ["ADMIN", "ORGANIZER", "ATTENDEE", "STAFF"],
-  "message": "Available roles in the system"
-}
-```
-
----
-
----
-
-## 9. Approval Management — /api/v1/admin/approvals
-
-**Role required:** ADMIN
-
----
-
-### GET /api/v1/admin/approvals
-
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/admin/approvals?page=0&size=20` |
-| **Auth required** | Yes |
-| **Role required** | ADMIN |
-| **Body** | None |
-
-Returns all users with all approval statuses. `roles` is always `[]` in list responses.
-
-**Success Response — 200 OK:**
-```json
-{
-  "content": [
-    {
-      "userId": "uuid",
-      "name": "Test User",
-      "email": "test@example.com",
-      "approvalStatus": "PENDING",
-      "roles": [],
-      "createdAt": "2026-03-18T10:00:00",
-      "rejectionReason": null,
-      "approvedAt": null,
-      "rejectedAt": null,
-      "approvedByName": null
-    }
-  ],
-  "totalElements": 5,
-  "totalPages": 1,
-  "size": 20,
-  "number": 0
-}
-```
-
----
-
-### GET /api/v1/admin/approvals/pending
-
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/admin/approvals/pending?page=0&size=20` |
-| **Auth required** | Yes |
-| **Role required** | ADMIN |
-| **Body** | None |
-
-Returns only PENDING users. Same response shape as above.
-
----
-
-### POST /api/v1/admin/approvals/{userId}/approve
-
-| | |
-|--|--|
-| **Method** | POST |
-| **URL** | `{{base_url}}/api/v1/admin/approvals/{{user_id}}/approve` |
-| **Auth required** | Yes |
-| **Role required** | ADMIN |
-| **Body** | None (no request body) |
-
-**Success Response — 200 OK:**
-```json
-{
-  "message": "User approved successfully",
-  "userId": "uuid",
-  "status": "APPROVED"
-}
-```
-
-**Error Responses:**
-
-| Status | Error | When |
-|--------|-------|------|
-| 409 | `INVALID_APPROVAL_STATE` | User is not PENDING (already APPROVED or REJECTED) |
-| 404 | `USER_NOT_FOUND` | User not found |
-
----
-
-### POST /api/v1/admin/approvals/{userId}/reject
-
-| | |
-|--|--|
-| **Method** | POST |
-| **URL** | `{{base_url}}/api/v1/admin/approvals/{{user_id}}/reject` |
-| **Auth required** | Yes |
-| **Role required** | ADMIN |
-| **Content-Type** | application/json |
-
-**Request Body Fields:**
-
-| Field | Type | Required | Validation |
-|-------|------|----------|------------|
-| `reason` | String | ✅ Required | `@NotBlank` `@Size(min=10, max=500)` |
-
-**Minimum valid payload (exactly 10 chars):**
-```json
-{
-  "reason": "Duplicate."
-}
-```
-
-**Full payload:**
-```json
-{
-  "reason": "Account violates platform terms of service."
-}
-```
-
-**Success Response — 200 OK:**
-```json
-{
-  "message": "User rejected successfully",
-  "userId": "uuid",
-  "status": "REJECTED",
-  "reason": "Account violates platform terms of service."
-}
-```
-
-**Error Responses:**
-
-| Status | Error | When |
-|--------|-------|------|
-| 400 | `VALIDATION_ERROR` | reason blank, too short (< 10), or too long (> 500) |
-| 409 | `INVALID_APPROVAL_STATE` | User is not PENDING |
-
----
-
----
-
-## 10. Event Staff Management — /api/v1/events/{eventId}/staff
-
-**Role required:** ORGANIZER (must own the event)
+Base path: `/api/v1/events/{eventId}/staff` | Role: **ORGANIZER** (must own event)
 
 ---
 
 ### POST /api/v1/events/{eventId}/staff
 
-| | |
-|--|--|
-| **Method** | POST |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}/staff` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Content-Type** | application/json |
-
-**Request Body Fields:**
-
-| Field | Type | Required | Validation |
-|-------|------|----------|------------|
-| `userId` | UUID | ✅ Required | `@NotNull` — target user must already have STAFF Keycloak role |
-
-**Valid payload:**
-```json
-{
-  "userId": "{{staff_user_id}}"
-}
+```
+POST /api/v1/events/{eventId}/staff
+Authorization: Bearer {{organizer_token}}
+Content-Type: application/json
 ```
 
-**Success Response — 201 Created:**
+**Request body:**
+```json
+{ "userId": "uuid" }
+```
+
+The user must already have the `STAFF` Keycloak role (assign via `POST /admin/users/{id}/roles` first).
+
+**Response 201:**
 ```json
 {
   "eventId": "uuid",
   "eventName": "Tech Conference 2025",
   "staffMembers": [
-    {
-      "userId": "uuid",
-      "userName": "John Staff",
-      "email": "john@example.com"
-    }
+    { "userId": "uuid", "userName": "Test Staff", "email": "staff@test.com" }
   ],
   "totalStaffCount": 1
 }
 ```
 
-**Error Responses:**
-
-| Status | Error | When |
-|--------|-------|------|
-| 409 | `INVALID_BUSINESS_STATE` | User doesn't have STAFF role; user already assigned to this event |
-| 404 | `USER_NOT_FOUND` | userId not found |
-| 403 | `ACCESS_DENIED` | Not owner |
+| Error | Status | When |
+|-------|--------|------|
+| `BUSINESS_RULE_VIOLATION` | 409 | User has no STAFF role; user already assigned |
 
 ---
 
 ### DELETE /api/v1/events/{eventId}/staff/{userId}
 
-| | |
-|--|--|
-| **Method** | DELETE |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}/staff/{{staff_user_id}}` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Body** | None |
+```
+DELETE /api/v1/events/{eventId}/staff/{userId}
+Authorization: Bearer {{organizer_token}}
+```
 
-**Success Response — 200 OK:** `EventStaffResponseDto` with updated staff list
-
-**Error Responses:**
-
-| Status | Error | When |
-|--------|-------|------|
-| 409 | `INVALID_BUSINESS_STATE` | User is NOT currently assigned to this event's staff |
-| 403 | `ACCESS_DENIED` | Not owner |
+**Response 200:** Updated `EventStaffResponseDto`.
 
 ---
 
 ### GET /api/v1/events/{eventId}/staff
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/events/{{event_id}}/staff` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own) |
-| **Body** | None |
-
-**Success Response — 200 OK:** `EventStaffResponseDto`
-
----
-
----
-
-## 11. Invite Code System — /api/v1/invites
-
----
-
-### POST /api/v1/invites
-
-| | |
-|--|--|
-| **Method** | POST |
-| **URL** | `{{base_url}}/api/v1/invites` |
-| **Auth required** | Yes |
-| **Role required** | ADMIN or ORGANIZER |
-| **Approval gate** | Yes |
-| **Content-Type** | application/json |
-
-**Request Body Fields:**
-
-| Field | Type | Required | Validation |
-|-------|------|----------|------------|
-| `roleName` | String | ✅ Required | `@NotBlank` `@Pattern(^(ADMIN\|ORGANIZER\|ATTENDEE\|STAFF)$)` |
-| `expirationHours` | Integer | ✅ Required | `@NotNull` `@Positive` (min 1) |
-| `eventId` | UUID | Conditional | **Required** when `roleName=STAFF`; must **not** be provided for other roles |
-
-**Business rules:**
-- ADMIN can create invites for any role including ADMIN
-- ORGANIZER can only create STAFF invites for events they own
-- ORGANIZER cannot create ORGANIZER, ATTENDEE, or ADMIN invites
-
-**ADMIN creates ATTENDEE invite:**
-```json
-{
-  "roleName": "ATTENDEE",
-  "expirationHours": 24
-}
+```
+GET /api/v1/events/{eventId}/staff
+Authorization: Bearer {{organizer_token}}
 ```
 
-**ADMIN creates ADMIN invite:**
-```json
-{
-  "roleName": "ADMIN",
-  "expirationHours": 24
-}
-```
-
-**ADMIN or ORGANIZER creates STAFF invite:**
-```json
-{
-  "roleName": "STAFF",
-  "eventId": "{{event_id}}",
-  "expirationHours": 48
-}
-```
-
-**Success Response — 201 Created:**
-```json
-{
-  "id": "uuid",
-  "code": "ABCD-1234-EFGH-5678",
-  "roleName": "STAFF",
-  "eventId": "uuid",
-  "eventName": "Tech Conference 2025",
-  "status": "PENDING",
-  "createdBy": "organizer@test.com",
-  "createdAt": "2026-03-18T10:00:00",
-  "expiresAt": "2026-03-20T10:00:00",
-  "redeemedBy": null,
-  "redeemedAt": null
-}
-```
-
-**Error Responses:**
-
-| Status | Error | When |
-|--------|-------|------|
-| 400 | `VALIDATION_ERROR` | Missing roleName or expirationHours; invalid roleName value; expirationHours ≤ 0 |
-| 400 | `INVALID_ARGUMENT` | STAFF without eventId; non-STAFF with eventId; ORGANIZER creating non-STAFF invite |
-| 403 | `ACCESS_DENIED` | ORGANIZER on event they don't own |
+**Response 200:** `EventStaffResponseDto`
 
 ---
 
-### POST /api/v1/invites/redeem
+## 14. Audit Logs
 
-| | |
-|--|--|
-| **Method** | POST |
-| **URL** | `{{base_url}}/api/v1/invites/redeem` |
-| **Auth required** | Yes |
-| **Role required** | Any authenticated user |
-| **Approval gate** | **Bypassed** — PENDING users can redeem |
-| **Content-Type** | application/json |
-
-**Request Body Fields:**
-
-| Field | Type | Required | Validation |
-|-------|------|----------|------------|
-| `code` | String | ✅ Required | `@NotBlank` |
-
-**Valid payload:**
-```json
-{
-  "code": "ABCD-1234-EFGH-5678"
-}
-```
-
-**Success Response — 200 OK:**
-```json
-{
-  "message": "Invite code redeemed successfully",
-  "roleAssigned": "STAFF",
-  "eventName": "Tech Conference 2025",
-  "currentRoles": ["STAFF"]
-}
-```
-
-`eventName` is `null` for non-STAFF roles.
-
-**Error Responses:**
-
-| Status | Error | When |
-|--------|-------|------|
-| 400 | `VALIDATION_ERROR` | Blank code |
-| 400 | `INVALID_INVITE_CODE` | Code is expired, already redeemed, or revoked — message specifies which |
-| 404 | `INVITE_CODE_NOT_FOUND` | Code not in database |
-
----
-
-### DELETE /api/v1/invites/{codeId}
-
-| | |
-|--|--|
-| **Method** | DELETE |
-| **URL** | `{{base_url}}/api/v1/invites/{{invite_code_id}}?reason=No+longer+needed` |
-| **Auth required** | Yes |
-| **Role required** | ADMIN or ORGANIZER |
-| **Body** | None |
-| **Query param** | `reason` — optional, default `"Revoked by creator"` |
-
-**Success Response — 204 No Content**
-
-**Error Responses:**
-
-| Status | Error | When |
-|--------|-------|------|
-| 400 | `INVALID_INVITE_CODE` | Code is not PENDING (already redeemed or revoked) |
-| 403 | `ACCESS_DENIED` | Not creator and not ADMIN |
-| 404 | `INVITE_CODE_NOT_FOUND` | Code not found |
-
----
-
-### GET /api/v1/invites
-
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/invites?page=0&size=20&sort=createdAt,desc` |
-| **Auth required** | Yes |
-| **Role required** | ADMIN or ORGANIZER |
-| **Body** | None |
-
-**ADMIN sees all codes; ORGANIZER sees only own codes.**
-
-**Success Response — 200 OK:** `Page<InviteCodeResponseDto>`
-
----
-
-### GET /api/v1/invites/events/{eventId}
-
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/invites/events/{{event_id}}?page=0&size=20` |
-| **Auth required** | Yes |
-| **Role required** | ADMIN or ORGANIZER |
-| **Body** | None |
-
-ADMIN: any event. ORGANIZER: must own event.
-
-**Success Response — 200 OK:** `Page<InviteCodeResponseDto>`
-
----
-
----
-
-## 12. Audit Logs — /api/v1/audit
+Base path: `/api/v1/audit`
 
 ---
 
 ### GET /api/v1/audit
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/audit?page=0&size=20&sort=createdAt,desc` |
-| **Auth required** | Yes |
-| **Role required** | ADMIN |
-| **Body** | None |
-
-**Success Response — 200 OK:**
-```json
-{
-  "content": [
-    {
-      "id": "uuid",
-      "action": "TICKET_PURCHASED",
-      "actorId": "uuid",
-      "actorName": "Jane Doe",
-      "targetUserId": "uuid",
-      "targetUserName": "Jane Doe",
-      "eventId": "uuid",
-      "eventName": "Tech Conference 2025",
-      "resourceType": "TICKET",
-      "resourceId": "uuid",
-      "details": "ticketType=Early Bird,quantity=2",
-      "ipAddress": "192.168.1.100",
-      "userAgent": "Mozilla/5.0 ...",
-      "createdAt": "2025-12-15T10:30:00"
-    }
-  ],
-  "totalElements": 100,
-  "totalPages": 5,
-  "size": 20,
-  "number": 0
-}
 ```
+GET /api/v1/audit?page=0&size=20&sort=createdAt,desc
+Authorization: Bearer {{admin_token}}
+```
+
+Role: **ADMIN** only.
+
+**Response 200:** `Page<AuditLogDto>` — includes `ipAddress` and `userAgent` fields.
 
 ---
 
 ### GET /api/v1/audit/events/{eventId}
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/audit/events/{{event_id}}?page=0&size=20` |
-| **Auth required** | Yes |
-| **Role required** | ORGANIZER (must own the event) |
-| **Body** | None |
+```
+GET /api/v1/audit/events/{eventId}?page=0&size=20
+Authorization: Bearer {{organizer_token}}
+```
 
-**Success Response — 200 OK:** `Page<AuditLogDto>` scoped to that event
+Role: **ORGANIZER** (must own the event).
+
+**Response 200:** `Page<AuditLogDto>`
 
 ---
 
 ### GET /api/v1/audit/me
 
-| | |
-|--|--|
-| **Method** | GET |
-| **URL** | `{{base_url}}/api/v1/audit/me?page=0&size=20` |
-| **Auth required** | Yes |
-| **Role required** | Any authenticated approved user |
-| **Body** | None |
+```
+GET /api/v1/audit/me?page=0&size=20
+Authorization: Bearer {{any_approved_token}}
+```
 
-Returns audit entries where the authenticated user is the actor.
+Role: Any authenticated approved user. Returns the caller's own actions only.
 
-**Success Response — 200 OK:** `Page<AuditLogDto>`
+**Response 200:** `Page<AuditLogDto>`
 
 ---
 
----
-
-## Enum Values Reference
-
-| Enum | Values |
-|------|--------|
-| `EventStatusEnum` | `DRAFT`, `PUBLISHED`, `CANCELLED` |
-| `TicketStatusEnum` | `PURCHASED`, `CANCELLED` |
-| `TicketValidationStatusEnum` | `VALID`, `INVALID` |
-| `TicketValidationMethod` | `MANUAL`, `QR_SCAN` (**not** `QR_CODE`) |
-| `DiscountType` | `PERCENTAGE`, `FIXED_AMOUNT` |
-| `ApprovalStatus` | `PENDING`, `APPROVED`, `REJECTED` |
-| `InviteCodeStatus` | `PENDING`, `REDEEMED`, `EXPIRED`, `REVOKED` |
-
----
-
-## Common HTTP Codes
-
-| Code | Meaning |
-|------|---------|
-| 200 | OK |
-| 201 | Created |
-| 204 | No Content (DELETE success) |
-| 400 | Validation error or bad request |
-| 401 | Missing, expired, or malformed token |
-| 403 | Wrong role, PENDING/REJECTED user, ownership violation |
-| 404 | Resource not found |
-| 409 | Business rule violation, state conflict |
-| 422 | Registration system error |
-| 429 | Rate limit exceeded |
-| 500 | Server error |
+*Total: 50 endpoints across 14 groups.*
