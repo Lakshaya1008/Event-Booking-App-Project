@@ -1637,6 +1637,8 @@ Response shape for paginated endpoints:
 }
 ```
 
+> Contract note: list endpoints currently return Spring `PageImpl` JSON directly. Treat core fields (`content`, `totalElements`, `totalPages`, `first`, `last`) as stable for assertions and avoid over-constraining internal `pageable` serialization details.
+
 ---
 
 *50 endpoints total. All covered. Passwords must contain uppercase + lowercase + digit + special char (`!@#$%^&*`). Use `Password1!` as your base test password.*
