@@ -65,7 +65,7 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
     private final AuditLogService auditLogService;
     private final ObjectProvider<SystemUserProvider> systemUserProviderProvider;
 
-    @Value("${keycloak.admin.realm}")
+    @Value("${keycloak.admin.target-realm}")
     private String realm;
 
     @Override

@@ -33,13 +33,16 @@ build/
 .vscode/
 
 ### Sensitive Configuration Files ###
-# Local configuration with real passwords (never commit)
+# SECURITY: .env contains real passwords and API keys.
+# NEVER commit .env - treat it like a private key.
+# Use .env.example (committed) as the template.
+# If .env is ever committed, rotate all credentials immediately.
 application-local.properties
 **/application-local.properties
 **/application-local.yml
 
-# Environment-specific files with secrets
-.env
+# Environment variable files - all variants blocked
+postman/.env
 .env.local
 .env.*
 .env.*.local

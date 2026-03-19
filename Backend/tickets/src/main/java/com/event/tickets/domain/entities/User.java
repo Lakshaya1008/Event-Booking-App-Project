@@ -90,6 +90,13 @@ public class User {
     @Column(name = "rejection_reason", length = 500)
     private String rejectionReason;
 
+    /**
+     * Keycloak sync flag - set to true when DB approval state changes but
+     * the corresponding Keycloak call failed.
+     */
+    @Column(name = "keycloak_sync_pending", nullable = false)
+    private boolean keycloakSyncPending = false;
+
     @OneToMany(mappedBy = "organizer", cascade = CascadeType.ALL)
     private List<Event> organizedEvents = new ArrayList<>();
 

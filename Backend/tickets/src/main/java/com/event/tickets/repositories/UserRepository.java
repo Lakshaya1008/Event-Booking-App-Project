@@ -2,6 +2,7 @@ package com.event.tickets.repositories;
 
 import com.event.tickets.domain.entities.ApprovalStatus;
 import com.event.tickets.domain.entities.User;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -27,4 +28,9 @@ public interface UserRepository extends JpaRepository<User, UUID> {
    * @return true if user exists, false otherwise
    */
   boolean existsByEmail(String email);
+
+  /**
+   * Finds all users whose Keycloak state is out of sync with the DB.
+   */
+  List<User> findByKeycloakSyncPending(boolean keycloakSyncPending);
 }

@@ -21,7 +21,11 @@ services:
       - 8888:8080
 
   keycloak:
-    image: quay.io/keycloak/keycloak:latest
+    # Pinned to a specific version - never use :latest for Keycloak.
+    # The Admin REST API changes between major versions. Using :latest risks
+    # pulling a breaking change that changes realm behavior or API contracts.
+    # To upgrade: test in a branch, update this version, and re-run Keycloak setup.
+    image: quay.io/keycloak/keycloak:26.1.4
     ports:
       - "9090:8080"
     environment:

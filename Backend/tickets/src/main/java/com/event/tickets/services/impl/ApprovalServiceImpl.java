@@ -20,26 +20,17 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * FIXES APPLIED IN THIS VERSION:
+ * FIX 1 - @Transactional(readOnly=true) on read methods.
  *
- * FIX 1 — @Transactional(readOnly=true) added to getPendingApprovals() and getAllUsersWithApprovalStatus().
- *   These are pure read operations. Without readOnly=true, Hibernate tracks every entity loaded from
- *   the DB for dirty checking — unnecessary overhead since no writes occur. readOnly=true tells Hibernate
- *   to skip dirty checking, reducing memory usage and slightly improving query performance at scale.
- *   Previously these had no @Transactional at all, meaning they ran without a transaction context
- *   (Hibernate opens/closes a connection per lazy load — wasteful).
- *
- * NOTE on approveUser() Keycloak sync gap:
- *   approveUser() saves APPROVED to DB then calls keycloakAdminService.activateUser().
- *   If Keycloak is down, the exception is swallowed — DB shows APPROVED but user cannot log in.
- *   This is a known architectural gap. The production-grade fix requires a keycloak_sync_pending
- *   field on User + @Scheduled retry job. That change touches the User entity and requires a
- *   DB migration — it is tracked as a separate work item and documented in the audit report.
- *   For now the current behavior (log + swallow) is intentional and documented.
+ * FIX 2 - keycloak_sync_pending retry mechanism.
+ * approveUser() / rejectUser() sets keycloak_sync_pending=true first,
+ * then attempts the Keycloak call. On success the flag is cleared. On failure
+ * the flag remains true and retryKeycloakSync() retries every 5 minutes.
  */
 @Service
 @RequiredArgsConstructor
@@ -52,7 +43,7 @@ public class ApprovalServiceImpl implements ApprovalService {
     private final EmailService emailService;
 
     @Override
-    @Transactional(readOnly = true)  // FIX 1: read-only — skip dirty checking
+    @Transactional(readOnly = true)
     public Page<UserApprovalDto> getPendingApprovals(Pageable pageable) {
         log.debug("Fetching pending approvals, page: {}", pageable.getPageNumber());
         return userRepository.findByApprovalStatus(ApprovalStatus.PENDING, pageable)
@@ -78,27 +69,24 @@ public class ApprovalServiceImpl implements ApprovalService {
                 .orElseThrow(() -> new UserNotFoundException(
                         String.format("Admin user with ID '%s' not found", adminId)));
 
+        // Persist intended state first; retry job reconciles Keycloak later if needed.
         user.setApprovalStatus(ApprovalStatus.APPROVED);
         user.setApprovedAt(LocalDateTime.now());
         user.setApprovedBy(admin);
+        user.setKeycloakSyncPending(true);
         userRepository.save(user);
 
-        // Keep DB and Keycloak state strongly consistent for approval outcome.
         try {
             keycloakAdminService.activateUser(userId);
-        } catch (Exception e) {
-            log.error("CRITICAL: Keycloak activation failed for user {}: {}. Rolling back DB approval.",
-                    userId, e.getMessage());
-            user.setApprovalStatus(ApprovalStatus.PENDING);
-            user.setApprovedAt(null);
-            user.setApprovedBy(null);
+            user.setKeycloakSyncPending(false);
             userRepository.save(user);
-            throw new RuntimeException(
-                    "Keycloak synchronization failed. Approval rolled back to PENDING. " +
-                            "Please retry after Keycloak is restored.", e);
+            log.info("Keycloak activation succeeded for user {}", userId);
+        } catch (Exception e) {
+            log.error("WARN: Keycloak activation failed for user {}. " +
+                    "DB is APPROVED, sync pending, retry job will resolve. Error: {}",
+                    userId, e.getMessage());
         }
 
-        // Non-critical: email failure does not affect approval outcome
         try {
             emailService.sendApprovalEmail(user.getEmail(), user.getName());
         } catch (Exception e) {
@@ -131,25 +119,20 @@ public class ApprovalServiceImpl implements ApprovalService {
         user.setApprovalStatus(ApprovalStatus.REJECTED);
         user.setRejectedAt(LocalDateTime.now());
         user.setRejectionReason(reason);
+        user.setKeycloakSyncPending(true);
         userRepository.save(user);
 
         try {
             keycloakAdminService.setUserEnabled(userId, false);
-        } catch (Exception e) {
-            // CRITICAL: Keycloak sync failed after DB update.
-            // ROLLBACK: Revert DB changes to maintain consistency.
-            log.error("CRITICAL: Keycloak disable failed for user {}: {}. Rolling back DB changes.",
-                    userId, e.getMessage());
-            user.setApprovalStatus(ApprovalStatus.PENDING);
-            user.setRejectedAt(null);
-            user.setRejectionReason(null);
+            user.setKeycloakSyncPending(false);
             userRepository.save(user);
-            throw new RuntimeException(
-                    "Keycloak synchronization failed. Rejection rolled back to PENDING. " +
-                            "Please retry rejection after Keycloak is restored.", e);
+            log.info("Keycloak disable succeeded for user {}", userId);
+        } catch (Exception e) {
+            log.error("WARN: Keycloak disable failed for user {}. " +
+                    "DB is REJECTED, sync pending, retry job will resolve. Error: {}",
+                    userId, e.getMessage());
         }
 
-        // Non-critical: email failure is logged but user remains rejected
         try {
             emailService.sendRejectionEmail(user.getEmail(), user.getName(), reason);
         } catch (Exception e) {
@@ -161,18 +144,44 @@ public class ApprovalServiceImpl implements ApprovalService {
     }
 
     @Override
-    @Transactional(readOnly = true)  // FIX 1: read-only
+    @Transactional(readOnly = true)
     public Page<UserApprovalDto> getAllUsersWithApprovalStatus(Pageable pageable) {
         return userRepository.findAll(pageable).map(this::toUserApprovalDtoNoRoles);
     }
 
-    // ── PRIVATE HELPERS ───────────────────────────────────────────────────────
-
     /**
-     * List response DTO — no Keycloak call (M-03 FIX).
-     * Roles are omitted from list pages. Use GET /admin/users/{id}/roles
-     * for per-user role data when needed.
+     * Retries Keycloak sync for users where the initial call failed.
+     * DB state is authoritative; this job makes Keycloak match the DB.
      */
+    @Scheduled(fixedDelay = 300_000)
+    @Transactional
+    public void retryKeycloakSync() {
+        List<User> pendingSync = userRepository.findByKeycloakSyncPending(true);
+        if (pendingSync.isEmpty()) {
+            return;
+        }
+
+        log.info("Keycloak sync retry: {} user(s) pending", pendingSync.size());
+
+        for (User user : pendingSync) {
+            try {
+                if (user.getApprovalStatus() == ApprovalStatus.APPROVED) {
+                    keycloakAdminService.activateUser(user.getId());
+                    log.info("Retry: activated Keycloak user {}", user.getEmail());
+                } else if (user.getApprovalStatus() == ApprovalStatus.REJECTED) {
+                    keycloakAdminService.setUserEnabled(user.getId(), false);
+                    log.info("Retry: disabled Keycloak user {}", user.getEmail());
+                }
+                user.setKeycloakSyncPending(false);
+                userRepository.save(user);
+            } catch (Exception e) {
+                log.error("Retry failed for user {}: {}", user.getEmail(), e.getMessage());
+            }
+        }
+    }
+
+    // Private helpers
+
     private UserApprovalDto toUserApprovalDtoNoRoles(User user) {
         UserApprovalDto dto = new UserApprovalDto();
         dto.setUserId(user.getId().toString());
