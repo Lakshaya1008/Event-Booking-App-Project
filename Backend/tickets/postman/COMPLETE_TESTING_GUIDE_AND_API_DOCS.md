@@ -113,7 +113,7 @@ For **each user** in the table below, do these steps:
 
 ## A6. Register Users via the API (Creates DB Records)
 
-After creating users in Keycloak, you must also register them via the API so a DB record exists with `approval_status`. Without a DB record, the `ApprovalGateFilter` will block them.
+After creating users in Keycloak, you should also register them via the API so a DB record exists with `approval_status`. Without a DB record, approval status cannot be enforced and behavior becomes desynced/unpredictable across business endpoints.
 
 **Run these POST requests in order:**
 
@@ -265,7 +265,7 @@ All validation errors are returned **at once** — you never need to fix one fie
 | 400 | `INVALID_INVITE_CODE` | Invite expired/redeemed/revoked |
 | 400 | `TICKETS_SOLD_OUT` | No tickets left |
 | 401 | `AUTHENTICATION_FAILED` | No token / expired token |
-| 403 | `ACCESS_DENIED` | Wrong role, PENDING, REJECTED user |
+| 403 | `ACCESS_DENIED` | Wrong role or resource ownership/authorization failure |
 | 403 | `APPROVAL_PENDING` | Account awaiting approval |
 | 403 | `APPROVAL_REJECTED` | Account rejected + reason |
 | 404 | `EVENT_NOT_FOUND` | Event doesn't exist or you don't own it |
@@ -714,7 +714,7 @@ After registration every user starts `PENDING`. The `ApprovalGateFilter` blocks 
 |-------|------|----------|-----------|
 | `name` | String | ✅ | @NotBlank, max 200 |
 | `venue` | String | ✅ | @NotBlank, max 500 |
-| `status` | String | ✅ | @NotNull — `DRAFT`, `PUBLISHED`, or `CANCELLED` |
+| `status` | String | ✅ | @NotNull — `DRAFT`, `PUBLISHED`, `CANCELLED`, or `COMPLETED` |
 | `ticketTypes` | Array | ✅ | @NotEmpty, min 1 element |
 | `ticketTypes[].name` | String | ✅ | @NotBlank |
 | `ticketTypes[].price` | Decimal | ✅ | @NotNull, @DecimalMin("0.00") |
@@ -1604,7 +1604,7 @@ These tests prove every bug fix from the audit works correctly.
 | `Password1` (no special char) | 400 — "must contain special character `!@#$%^&*`" | Use `Password1!` |
 | Forgot to approve user | 403 `APPROVAL_PENDING` | POST /admin/approvals/{id}/approve |
 | Wrong token for endpoint | 403 `ACCESS_DENIED` | Check which token you're sending |
-| PUT event without ticket type id | 500 duplicate key | Always include `"id":"uuid"` for existing ticket types |
+| PUT event without ticket type id | May create a new ticket type unintentionally; name conflicts can return 409 `DATA_CONFLICT` | Always include `"id":"uuid"` for existing ticket types |
 | `method:"QR_CODE"` in validation | 400 | Use `"method":"QR_SCAN"` |
 | Token from `localhost:8081` | 401 | Tokens come from `localhost:9090` |
 | Other org's event | 404 (not 403) | Use your own organizer's event |
