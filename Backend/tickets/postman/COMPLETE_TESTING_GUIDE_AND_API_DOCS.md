@@ -122,7 +122,7 @@ Content-Type: application/json
 { "email": "organizer@test.com", "password": "Organizer1!", "name": "Test Organizer" }
 ```
 ```
-{ "email": "organizer2@test.com", "password": "Organizer1!", "name": "Organizer Two" }
+{ "email": "organizer2@test.com", "password": "Organizer2!", "name": "Organizer Two" }
 ```
 ```
 { "email": "staff@test.com", "password": "Staff1!", "name": "Test Staff" }
@@ -212,7 +212,7 @@ password=Admin123!
 |------|----------|----------|---------|
 | Admin | admin@test.com | Admin123! | `admin_token` |
 | Organizer | organizer@test.com | Organizer1! | `organizer_token` |
-| Organizer 2 | organizer2@test.com | Organizer1! | `organizer2_token` |
+| Organizer 2 | organizer2@test.com | Organizer2! | `organizer2_token` |
 | Attendee | attendee@test.com | Attendee1! | `attendee_token` |
 | Staff | staff@test.com | Staff1! | `staff_token` |
 

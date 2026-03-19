@@ -14,10 +14,12 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.time.Duration;
-import java.util.Base64;
 import java.util.concurrent.TimeUnit;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Component;
 
 /**
@@ -59,7 +61,7 @@ public class RateLimitingFilter implements Filter {
         if (isAuthEndpoint(path)) {
             bucket = authBuckets.get(clientIp, k -> createAuthBucket());
         } else {
-            String userId = extractUserIdFromJwt(httpRequest);
+            String userId = extractUserIdFromSecurityContext();
             if (userId != null) {
                 bucket = userBuckets.get(userId, k -> createAuthenticatedUserBucket());
             } else {
@@ -110,33 +112,15 @@ public class RateLimitingFilter implements Filter {
                 || path.contains("/token");
     }
 
-    private String extractUserIdFromJwt(HttpServletRequest request) {
-        try {
-            String authHeader = request.getHeader("Authorization");
-            if (authHeader == null || !authHeader.startsWith("Bearer ")) return null;
-            String token = authHeader.substring(7);
-            String[] parts = token.split("\\.");
-            if (parts.length != 3) return null;
-            byte[] payloadBytes = Base64.getUrlDecoder().decode(padBase64(parts[1]));
-            String payload = new String(payloadBytes);
-            int subIdx = payload.indexOf("\"sub\"");
-            if (subIdx == -1) return null;
-            int colonIdx = payload.indexOf(':', subIdx);
-            if (colonIdx == -1) return null;
-            int startQuote = payload.indexOf('"', colonIdx + 1);
-            if (startQuote == -1) return null;
-            int endQuote = payload.indexOf('"', startQuote + 1);
-            if (endQuote == -1) return null;
-            return payload.substring(startQuote + 1, endQuote);
-        } catch (Exception e) {
+    private String extractUserIdFromSecurityContext() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()) {
             return null;
         }
-    }
-
-    private String padBase64(String base64) {
-        int padding = 4 - (base64.length() % 4);
-        if (padding < 4) base64 = base64 + "=".repeat(padding);
-        return base64;
+        if (authentication.getPrincipal() instanceof Jwt jwt) {
+            return jwt.getSubject();
+        }
+        return null;
     }
 
     private String getClientIP(HttpServletRequest request) {

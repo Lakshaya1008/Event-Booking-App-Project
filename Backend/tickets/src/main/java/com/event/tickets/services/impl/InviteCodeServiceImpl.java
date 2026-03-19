@@ -268,7 +268,7 @@ public class InviteCodeServiceImpl implements InviteCodeService {
     // ── GET / LIST ────────────────────────────────────────────────────────────
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public InviteCodeResponseDto getInviteCode(UUID codeId) {
         InviteCode inviteCode = inviteCodeRepository.findById(codeId)
                 .orElseThrow(() -> new InviteCodeNotFoundException(

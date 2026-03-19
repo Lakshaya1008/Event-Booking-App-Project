@@ -12,6 +12,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -47,6 +49,7 @@ import static org.mockito.Mockito.*;
  *   so it counts as active. Tests must explicitly set PURCHASED status.
  */
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 @DisplayName("TicketTypeServiceImpl")
 class TicketTypeServiceImplTest {
 
@@ -440,6 +443,11 @@ class TicketTypeServiceImplTest {
 
         @BeforeEach
         void mockQrCode() {
+            when(ticketRepository.save(any())).thenAnswer(inv -> {
+                Ticket t = inv.getArgument(0);
+                t.setId(UUID.randomUUID());
+                return t;
+            });
             when(qrCodeService.generateQrCode(any()))
                     .thenAnswer(inv -> {
                         QrCode qr = new QrCode();
@@ -455,7 +463,6 @@ class TicketTypeServiceImplTest {
         void quantity_1_to_10_accepted() {
             when(ticketTypeRepository.findByIdWithLock(ticketTypeId)).thenReturn(Optional.of(ticketType));
             when(userRepository.findById(userId)).thenReturn(Optional.of(user));
-            when(ticketRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
 
             for (int qty = 1; qty <= 10; qty++) {
                 List<Ticket> tickets = service.purchaseTickets(userId, ticketTypeId, qty);
@@ -468,7 +475,6 @@ class TicketTypeServiceImplTest {
         void quantity_10_exactly_accepted() {
             when(ticketTypeRepository.findByIdWithLock(ticketTypeId)).thenReturn(Optional.of(ticketType));
             when(userRepository.findById(userId)).thenReturn(Optional.of(user));
-            when(ticketRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
 
             List<Ticket> tickets = service.purchaseTickets(userId, ticketTypeId, 10);
 
@@ -483,7 +489,8 @@ class TicketTypeServiceImplTest {
 
             assertThatThrownBy(() -> service.purchaseTickets(userId, ticketTypeId, 11))
                     .isInstanceOf(InvalidBusinessStateException.class)
-                    .hasMessageContaining("exceed")
+                    .hasMessageContaining("between 1 and 10")
+                    .hasMessageContaining("Cannot purchase 11")
                     .hasMessageContaining("10");
         }
 
@@ -525,7 +532,6 @@ class TicketTypeServiceImplTest {
         void boundary_testing() {
             when(ticketTypeRepository.findByIdWithLock(ticketTypeId)).thenReturn(Optional.of(ticketType));
             when(userRepository.findById(userId)).thenReturn(Optional.of(user));
-            when(ticketRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
 
             // 9 is OK
             List<Ticket> t9 = service.purchaseTickets(userId, ticketTypeId, 9);

@@ -39,11 +39,7 @@ public class DataInitializer implements ApplicationRunner {
         log.info("Starting ticket pricing data initialization...");
 
         try {
-            List<Ticket> ticketsNeedingUpdate = ticketRepository.findAll().stream()
-                    .filter(ticket -> ticket.getOriginalPrice() == null
-                            || ticket.getDiscountApplied() == null
-                            || ticket.getPricePaid() == null)
-                    .toList();
+            List<Ticket> ticketsNeedingUpdate = ticketRepository.findTicketsMissingPricingData();
 
             if (ticketsNeedingUpdate.isEmpty()) {
                 log.info("No tickets require pricing backfill. All data is up-to-date.");

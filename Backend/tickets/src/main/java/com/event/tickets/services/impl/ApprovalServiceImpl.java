@@ -83,14 +83,19 @@ public class ApprovalServiceImpl implements ApprovalService {
         user.setApprovedBy(admin);
         userRepository.save(user);
 
-        // Non-critical: Keycloak failure is logged but does not roll back the DB approval.
-        // If Keycloak is down, the user will be APPROVED in DB but disabled in Keycloak.
-        // Production fix: add keycloak_sync_pending flag + @Scheduled retry job.
+        // Keep DB and Keycloak state strongly consistent for approval outcome.
         try {
             keycloakAdminService.activateUser(userId);
         } catch (Exception e) {
-            log.error("Keycloak activation failed for user {}: {} — DB already updated. " +
-                    "User may not be able to log in until Keycloak is synced.", userId, e.getMessage());
+            log.error("CRITICAL: Keycloak activation failed for user {}: {}. Rolling back DB approval.",
+                    userId, e.getMessage());
+            user.setApprovalStatus(ApprovalStatus.PENDING);
+            user.setApprovedAt(null);
+            user.setApprovedBy(null);
+            userRepository.save(user);
+            throw new RuntimeException(
+                    "Keycloak synchronization failed. Approval rolled back to PENDING. " +
+                            "Please retry after Keycloak is restored.", e);
         }
 
         // Non-critical: email failure does not affect approval outcome

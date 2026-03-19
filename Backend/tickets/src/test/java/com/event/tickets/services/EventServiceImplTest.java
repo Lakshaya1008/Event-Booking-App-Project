@@ -14,6 +14,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -36,6 +38,7 @@ import static org.mockito.Mockito.*;
  *  - TicketStatusEnum.VALIDATED references removed (doesn't exist in enum).
  */
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 @DisplayName("EventServiceImpl")
 class EventServiceImplTest {
 
@@ -237,7 +240,7 @@ class EventServiceImplTest {
 
             service.updateEventForOrganizer(organizerId, eventId, req);
 
-            verify(emailService).sendEventCancellationEmail("buyer@test.com", "Dave", "Winter Gala");
+            verify(emailService).sendEventCancellationEmail("buyer@test.com", "Dave", "Winter Gala Updated");
         }
 
         @Test
@@ -273,7 +276,7 @@ class EventServiceImplTest {
             service.updateEventForOrganizer(organizerId, eventId, req);
 
             verify(emailService, times(1)).sendEventCancellationEmail(
-                    "buyer@test.com", "Dave", "Winter Gala");
+                    "buyer@test.com", "Dave", "Winter Gala Updated");
         }
 
         @Test

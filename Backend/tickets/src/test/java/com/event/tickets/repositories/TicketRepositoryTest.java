@@ -70,7 +70,6 @@ class TicketRepositoryTest {
         em.persist(purchaser);
 
         Event event = new Event();
-        event.setId(UUID.randomUUID());
         event.setName("Test Event");
         event.setVenue("Venue");
         event.setStatus(EventStatusEnum.PUBLISHED);
@@ -78,7 +77,6 @@ class TicketRepositoryTest {
         em.persist(event);
 
         TicketType ticketType = new TicketType();
-        ticketType.setId(UUID.randomUUID());
         ticketType.setName("GA");
         ticketType.setPrice(new BigDecimal("50.00"));
         ticketType.setTotalAvailable(100);
@@ -158,7 +156,6 @@ class TicketRepositoryTest {
         em.persist(organizer2);
 
         Event otherEvent = new Event();
-        otherEvent.setId(UUID.randomUUID());
         otherEvent.setName("Other Event");
         otherEvent.setVenue("Other Venue");
         otherEvent.setStatus(EventStatusEnum.PUBLISHED);
@@ -166,7 +163,6 @@ class TicketRepositoryTest {
         em.persist(otherEvent);
 
         TicketType otherType = new TicketType();
-        otherType.setId(UUID.randomUUID());
         otherType.setName("Other GA");
         otherType.setPrice(new BigDecimal("25.00"));
         otherType.setTotalAvailable(50);
@@ -180,7 +176,6 @@ class TicketRepositoryTest {
 
         // 1 ticket for other event — should NOT be counted
         Ticket otherTicket = new Ticket();
-        otherTicket.setId(UUID.randomUUID());
         otherTicket.setStatus(TicketStatusEnum.PURCHASED);
         otherTicket.setTicketType(em.find(TicketType.class, otherType.getId()));
         otherTicket.setPurchaser(em.find(User.class, purchaserId));
@@ -203,7 +198,6 @@ class TicketRepositoryTest {
         User       managedPurchaser = em.find(User.class, purchaserId);
 
         Ticket ticket = new Ticket();
-        ticket.setId(UUID.randomUUID());
         ticket.setStatus(status);
         ticket.setTicketType(managedType);
         ticket.setPurchaser(managedPurchaser);

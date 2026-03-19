@@ -202,6 +202,11 @@ public class TicketTypeServiceImpl implements TicketTypeService {
             createdTickets.add(savedTicket);
         }
 
+        if (createdTickets.isEmpty() || createdTickets.get(0) == null || createdTickets.get(0).getId() == null) {
+            throw new InvalidBusinessStateException(
+                    "Ticket purchase could not be completed because no valid ticket record was created.");
+        }
+
         emitTicketPurchasedAudit(user, event, ticketType, quantity);
 
         emailService.sendTicketConfirmationEmail(

@@ -61,16 +61,6 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
      * All sensitive business logic endpoints (/api/v1/events, /api/v1/tickets, etc.)
      * still require APPROVED status and are NOT bypassed.
      */
-    private static final String[] APPROVAL_BYPASS_PATHS = {
-            "/api/v1/auth/register",
-            "/actuator",               // all actuator endpoints including health, info, metrics
-            "/api/v1/invites/redeem",
-            // FIX ISSUE 9: Swagger/OpenAPI endpoints — docs must be accessible regardless of approval
-            "/swagger-ui",
-            "/v3/api-docs",
-            "/api-docs",
-    };
-
     @Override
     protected void doFilterInternal(
             HttpServletRequest request,
@@ -79,11 +69,17 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
 
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
 
-        if (authentication != null
-                && authentication.isAuthenticated()
-                && authentication.getPrincipal() instanceof Jwt jwt) {
+        if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
 
-            UUID userId = UUID.fromString(jwt.getSubject());
+            UUID userId;
+            try {
+                userId = UUID.fromString(jwt.getSubject());
+            } catch (IllegalArgumentException e) {
+                log.warn("Invalid JWT subject format in approval gate: sub={}", jwt.getSubject());
+                sendForbiddenResponse(response, "INVALID_TOKEN_SUBJECT",
+                        "Invalid authentication token subject.", "unknown");
+                return;
+            }
             String path = request.getRequestURI();
             String method = request.getMethod();
 
@@ -132,11 +128,18 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
-        for (String bypassPath : APPROVAL_BYPASS_PATHS) {
-            if (path.startsWith(bypassPath)) {
-                log.debug("Approval gate bypassed: {}", path);
-                return true;
-            }
+        if ("/api/v1/auth/register".equals(path)
+                || "/api/v1/invites/redeem".equals(path)
+                || "/actuator".equals(path)
+                || path.startsWith("/actuator/")
+                || "/swagger-ui".equals(path)
+                || path.startsWith("/swagger-ui/")
+                || "/v3/api-docs".equals(path)
+                || path.startsWith("/v3/api-docs/")
+                || "/api-docs".equals(path)
+                || path.startsWith("/api-docs/")) {
+            log.debug("Approval gate bypassed: {}", path);
+            return true;
         }
         return false;
     }

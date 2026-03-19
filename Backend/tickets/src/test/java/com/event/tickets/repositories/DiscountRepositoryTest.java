@@ -61,7 +61,6 @@ class DiscountRepositoryTest {
         em.persist(organizer);
 
         Event event = new Event();
-        event.setId(UUID.randomUUID());
         event.setName("Test Event");
         event.setVenue("Venue");
         event.setStatus(EventStatusEnum.PUBLISHED);
@@ -69,7 +68,6 @@ class DiscountRepositoryTest {
         em.persist(event);
 
         TicketType ticketType = new TicketType();
-        ticketType.setId(UUID.randomUUID());
         ticketType.setName("GA");
         ticketType.setPrice(new BigDecimal("50.00"));
         ticketType.setTotalAvailable(100);
@@ -89,7 +87,6 @@ class DiscountRepositoryTest {
         TicketType managedTicketType = em.find(TicketType.class, ticketTypeId);
 
         Discount expired = new Discount();
-        expired.setId(UUID.randomUUID());
         expired.setTicketType(managedTicketType);
         expired.setDiscountType(DiscountType.PERCENTAGE);
         expired.setValue(new BigDecimal("10"));
@@ -112,7 +109,6 @@ class DiscountRepositoryTest {
         TicketType managedTicketType = em.find(TicketType.class, ticketTypeId);
 
         Discount active = new Discount();
-        active.setId(UUID.randomUUID());
         active.setTicketType(managedTicketType);
         active.setDiscountType(DiscountType.PERCENTAGE);
         active.setValue(new BigDecimal("10"));
@@ -134,7 +130,6 @@ class DiscountRepositoryTest {
         TicketType managedTicketType = em.find(TicketType.class, ticketTypeId);
 
         Discount inactive = new Discount();
-        inactive.setId(UUID.randomUUID());
         inactive.setTicketType(managedTicketType);
         inactive.setDiscountType(DiscountType.PERCENTAGE);
         inactive.setValue(new BigDecimal("10"));
@@ -197,7 +192,6 @@ class DiscountRepositoryTest {
     private Discount buildDiscount(TicketType ticketType,
                                    LocalDateTime from, LocalDateTime to, boolean active) {
         Discount d = new Discount();
-        d.setId(UUID.randomUUID());
         d.setTicketType(ticketType);
         d.setDiscountType(DiscountType.PERCENTAGE);
         d.setValue(new BigDecimal("10"));

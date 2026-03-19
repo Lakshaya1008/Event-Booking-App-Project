@@ -2,6 +2,7 @@ package com.event.tickets.config;
 
 import lombok.Getter;
 import lombok.Setter;
+import org.keycloak.OAuth2Constants;
 import org.keycloak.admin.client.Keycloak;
 import org.keycloak.admin.client.KeycloakBuilder;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -44,12 +45,18 @@ public class KeycloakAdminConfig {
   @Bean
   @ConditionalOnMissingBean
   public Keycloak keycloakAdminClient() {
-    return KeycloakBuilder.builder()
+    KeycloakBuilder builder = KeycloakBuilder.builder()
         .serverUrl(serverUrl)
-        .realm("master") // Authenticate against master realm
+        .realm(realm)
+        .grantType(OAuth2Constants.PASSWORD)
         .username(username)
         .password(password)
-        .clientId("admin-cli") // Default admin CLI client
-        .build();
+        .clientId(clientId);
+
+    if (clientSecret != null && !clientSecret.isBlank()) {
+      builder.clientSecret(clientSecret);
+    }
+
+    return builder.build();
   }
 }

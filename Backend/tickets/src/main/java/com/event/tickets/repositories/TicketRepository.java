@@ -68,6 +68,9 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
 
     List<Ticket> findByTicketTypeEventId(UUID eventId);
 
+    @Query("SELECT t FROM Ticket t WHERE t.originalPrice IS NULL OR t.discountApplied IS NULL OR t.pricePaid IS NULL")
+    List<Ticket> findTicketsMissingPricingData();
+
     @Modifying
     @Query("UPDATE Ticket t SET t.status = :newStatus " +
             "WHERE t.ticketType.event.id = :eventId AND t.status = :currentStatus")

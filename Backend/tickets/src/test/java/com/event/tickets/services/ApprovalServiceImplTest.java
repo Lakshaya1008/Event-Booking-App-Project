@@ -164,15 +164,23 @@ class ApprovalServiceImplTest {
         }
 
         @Test
-        @DisplayName("Keycloak failure does not break approval (non-critical — swallowed)")
-        void keycloakFailureDoesNotBreakApproval() {
+        @DisplayName("Keycloak failure on approve — DB changes rolled back to PENDING")
+        void keycloakFailure_rollsBackApprovalToPending() {
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
             when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
             doThrow(new RuntimeException("Keycloak down")).when(keycloakAdminService).activateUser(userId);
 
-            assertThatCode(() -> service.approveUser(userId, adminId)).doesNotThrowAnyException();
-            verify(userRepository).save(any());
+            assertThatThrownBy(() -> service.approveUser(userId, adminId))
+                    .isInstanceOf(RuntimeException.class)
+                    .hasMessageContaining("Approval rolled back to PENDING");
+
+            ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
+            verify(userRepository, times(2)).save(captor.capture());
+            User rollbackSave = captor.getAllValues().get(1);
+            assertThat(rollbackSave.getApprovalStatus()).isEqualTo(ApprovalStatus.PENDING);
+            assertThat(rollbackSave.getApprovedAt()).isNull();
+            assertThat(rollbackSave.getApprovedBy()).isNull();
         }
 
         @Test

@@ -52,11 +52,16 @@ public class UserProvisioningFilter extends OncePerRequestFilter {
 
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
 
-        if (authentication != null
-                && authentication.isAuthenticated()
-                && authentication.getPrincipal() instanceof Jwt jwt) {
+        if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
 
-            UUID keycloakId = UUID.fromString(jwt.getSubject());
+            UUID keycloakId;
+            try {
+                keycloakId = UUID.fromString(jwt.getSubject());
+            } catch (IllegalArgumentException e) {
+                log.warn("Skipping provisioning check due to invalid JWT subject format: sub={}", jwt.getSubject());
+                filterChain.doFilter(request, response);
+                return;
+            }
 
             // Read-only check: log desync between Keycloak and DB for observability.
             // No auto-provisioning — see class Javadoc for rationale.

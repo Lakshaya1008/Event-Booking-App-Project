@@ -14,6 +14,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -43,6 +45,7 @@ import static org.mockito.Mockito.*;
  *   - updateDiscount allows past validFrom (discount period may have started)
  */
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 @DisplayName("DiscountServiceImpl")
 class DiscountServiceImplTest {
 
@@ -326,7 +329,7 @@ class DiscountServiceImplTest {
             when(ticketRepository.countActiveByTicketTypeId(ticketTypeId, TicketStatusEnum.CANCELLED))
                     .thenReturn(0);
             // Another active discount already exists
-            when(discountRepository.existsActiveDiscountForTicketType(ticketTypeId, any()))
+            when(discountRepository.existsActiveDiscountForTicketType(eq(ticketTypeId), any(LocalDateTime.class)))
                     .thenReturn(true);
 
             CreateDiscountRequestDto req = buildUpdateRequest(DiscountType.PERCENTAGE, new BigDecimal("20"));

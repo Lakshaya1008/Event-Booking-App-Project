@@ -5,11 +5,15 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.MethodParameter;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 import org.springframework.web.bind.support.WebDataBinderFactory;
 import org.springframework.web.context.request.NativeWebRequest;
 import org.springframework.web.method.support.HandlerMethodArgumentResolver;
 import org.springframework.web.method.support.ModelAndViewContainer;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * FIX #11: Global Pagination Security Validator
@@ -74,6 +78,13 @@ public class PageableSizeValidator implements HandlerMethodArgumentResolver {
             }
         }
 
+        if (requestedSize < 1) {
+            requestedSize = defaultPageSize;
+        }
+        if (pageNumber < 0) {
+            pageNumber = 0;
+        }
+
         // FIX #11: Enforce maximum page size
         if (requestedSize > maxPageSize) {
             log.warn(
@@ -82,13 +93,50 @@ public class PageableSizeValidator implements HandlerMethodArgumentResolver {
                     requestedSize,
                     maxPageSize,
                     webRequest.getDescription(false),
-                    webRequest.getRemoteUser()
+                    resolveClientIdentifier(webRequest)
             );
             requestedSize = maxPageSize;
         }
 
-        // Return capped Pageable
-        return PageRequest.of(pageNumber, requestedSize);
+        // Preserve client sort contract while enforcing page/size limits.
+        Sort sort = resolveSort(webRequest.getParameterValues("sort"));
+        return PageRequest.of(pageNumber, requestedSize, sort);
+    }
+
+    private Sort resolveSort(String[] sortParams) {
+        if (sortParams == null || sortParams.length == 0) {
+            return Sort.unsorted();
+        }
+
+        List<Sort.Order> orders = new ArrayList<>();
+        for (String rawSort : sortParams) {
+            if (rawSort == null || rawSort.isBlank()) {
+                continue;
+            }
+
+            String[] parts = rawSort.split(",");
+            String property = parts[0].trim();
+            if (property.isEmpty()) {
+                continue;
+            }
+
+            Sort.Direction direction = Sort.Direction.ASC;
+            if (parts.length > 1 && "desc".equalsIgnoreCase(parts[1].trim())) {
+                direction = Sort.Direction.DESC;
+            }
+            orders.add(new Sort.Order(direction, property));
+        }
+
+        return orders.isEmpty() ? Sort.unsorted() : Sort.by(orders);
+    }
+
+    private String resolveClientIdentifier(NativeWebRequest webRequest) {
+        String forwardedFor = webRequest.getHeader("X-Forwarded-For");
+        if (forwardedFor != null && !forwardedFor.isBlank()) {
+            return forwardedFor.split(",")[0].trim();
+        }
+        String remoteAddr = webRequest.getHeader("X-Real-IP");
+        return (remoteAddr != null && !remoteAddr.isBlank()) ? remoteAddr : "unknown";
     }
 }
 

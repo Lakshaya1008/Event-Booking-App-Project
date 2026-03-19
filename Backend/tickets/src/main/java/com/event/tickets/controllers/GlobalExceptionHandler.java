@@ -43,7 +43,7 @@ import org.springframework.web.servlet.NoHandlerFoundException;
 @Slf4j
 public class GlobalExceptionHandler {
 
-    @Value("${spring.profiles.active:dev}")
+    @Value("${spring.profiles.active:prod}")
     private String activeProfile;
 
     // ============= 400 BAD REQUEST — VALIDATION =============
@@ -432,14 +432,14 @@ public class GlobalExceptionHandler {
         errorDto.setPath(request.getRequestURI());
         errorDto.setPossibleCauses(Arrays.asList(
                 "Missing Authorization header",
-                "JWT token has expired",
-                "Token format is incorrect — should be: Bearer <token>",
-                "Token was issued by a different realm"
+                "JWT token is expired or malformed",
+                "Token issuer/realm does not match server configuration",
+                "Authentication service is temporarily unavailable"
         ));
         errorDto.setSolutions(Arrays.asList(
-                "Get a new token: POST /realms/event-ticket-platform/protocol/openid-connect/token",
-                "Set header: Authorization: Bearer <your-token>",
-                "Ensure the token is from the correct realm: event-ticket-platform"
+                "Set header: Authorization: Bearer <token>",
+                "Request a fresh access token from Keycloak",
+                "Verify token was issued for the expected realm and client"
         ));
         return new ResponseEntity<>(errorDto, HttpStatus.UNAUTHORIZED);
     }
@@ -452,20 +452,19 @@ public class GlobalExceptionHandler {
         log.warn("Access denied: {} {}", request.getMethod(), request.getRequestURI());
         ErrorDto errorDto = new ErrorDto();
         errorDto.setError("ACCESS_DENIED");
-        errorDto.setMessage(ex.getMessage());
+        errorDto.setMessage("You are not authorized to perform this action.");
         errorDto.setStatusCode(403);
         errorDto.setStatusDescription("FORBIDDEN - You are not authorized to perform this action");
         errorDto.setTimestamp(LocalDateTime.now().toString());
         errorDto.setPath(request.getRequestURI());
         errorDto.setPossibleCauses(Arrays.asList(
-                "Your account does not have the required role for this endpoint",
-                "You are trying to access a resource owned by another user",
-                "Your account is pending admin approval",
-                "Your account has been rejected"
+                "Authenticated user does not have required role",
+                "Resource belongs to another user or organizer",
+                "Account approval status blocks access"
         ));
         errorDto.setSolutions(Arrays.asList(
-                "Verify your JWT token contains the required role",
-                "Ensure you are only accessing your own resources",
+                "Use an account with the required role for this endpoint",
+                "Ensure you are accessing only your own resources",
                 "Contact an administrator if you need elevated access"
         ));
         return new ResponseEntity<>(errorDto, HttpStatus.FORBIDDEN);
