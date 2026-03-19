@@ -21,12 +21,12 @@ This document reflects the ACTUAL codebase state as of January 23, 2026 and show
 - Troubleshooting
 
 ## Prerequisites and environment
-- PostgreSQL: localhost:5432, DB: Event_Booking_App_db
+- PostgreSQL: localhost:5433, DB: Event_Booking_App_db
 - Keycloak: http://localhost:9090 (realm: event-ticket-platform)
 - Spring Boot app: runs on port 8081 (server.port=8081)
 
 Optional: docker-compose up to start Postgres, Adminer, and Keycloak:
-- DB: postgres:latest on 5432
+- DB: postgres:16 on 5433 (host) / 5432 (container)
 - Adminer UI: http://localhost:8888
 - Keycloak dev: http://localhost:9090
 

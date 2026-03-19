@@ -28,6 +28,7 @@ import org.keycloak.admin.client.resource.RoleResource;
 import org.keycloak.admin.client.resource.UserResource;
 import org.keycloak.representations.idm.RoleRepresentation;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -62,7 +63,7 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
     private final Keycloak keycloakAdminClient;
     private final UserRepository userRepository;
     private final AuditLogService auditLogService;
-    private final SystemUserProvider systemUserProvider;
+    private final ObjectProvider<SystemUserProvider> systemUserProviderProvider;
 
     @Value("${keycloak.admin.realm}")
     private String realm;
@@ -99,7 +100,7 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
             // Audit log - get current user (ADMIN who performed action)
             User actor = getCurrentUser();
             if (actor == null) {
-                actor = systemUserProvider.getSystemUser();
+                actor = systemUserProviderProvider.getObject().getSystemUser();
             }
             HttpServletRequest request = getCurrentRequest();
             String ipAddress = extractClientIp(request);
@@ -165,7 +166,7 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
             // Audit log
             User actor = getCurrentUser();
             if (actor == null) {
-                actor = systemUserProvider.getSystemUser();
+                actor = systemUserProviderProvider.getObject().getSystemUser();
             }
             HttpServletRequest request = getCurrentRequest();
             String ipAddress = extractClientIp(request);

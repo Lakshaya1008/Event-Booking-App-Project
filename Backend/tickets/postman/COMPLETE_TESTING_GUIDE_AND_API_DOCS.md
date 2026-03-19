@@ -21,7 +21,7 @@ docker-compose up -d
 |---------|-----|-------------|
 | Spring Boot App | http://localhost:8081 | — |
 | Keycloak Admin UI | http://localhost:9090 | admin / admin |
-| PostgreSQL | localhost:5432 | postgres / postgres123 |
+| PostgreSQL | localhost:5433 | postgres / postgres123 |
 | Adminer (DB UI) | http://localhost:8888 | System: PostgreSQL, Server: db, User: postgres, Pass: postgres123 |
 
 Wait ~30 seconds after `docker-compose up -d` before accessing Keycloak.
@@ -97,13 +97,13 @@ For **each user** in the table below, do these steps:
    - Filter by realm roles
    - Select the role → **Assign**
 
-| Username / Email | Password | Realm Role |
-|-----------------|----------|-----------|
-| admin@test.com | Admin123! | ADMIN |
+| Username / Email | Password    | Realm Role |
+|-----------------|-------------|-----------|
+| admin@test.com | Admin123!   | ADMIN |
 | organizer@test.com | Organizer1! | ORGANIZER |
-| organizer2@test.com | Organizer1! | ORGANIZER |
-| staff@test.com | Staff1! | STAFF |
-| attendee@test.com | Attendee1! | (no Keycloak role — gets ATTENDEE via registration invite) |
+| organizer2@test.com | Organizer2! | ORGANIZER |
+| staff@test.com | Staff1!     | STAFF |
+| attendee@test.com | Attendee1!  | (no Keycloak role — gets ATTENDEE via registration invite) |
 
 > **Password rule:** The `RegisterRequestDto` requires: uppercase + lowercase + digit + special character from `!@#$%^&*`. Always use `Password1!` style passwords, never `Password1`.
 

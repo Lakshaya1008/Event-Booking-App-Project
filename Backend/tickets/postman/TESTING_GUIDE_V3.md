@@ -20,7 +20,7 @@ docker-compose up -d
 |---------|-----|-------------|
 | Spring Boot App | http://localhost:8081 | — |
 | Keycloak Admin UI | http://localhost:9090 | admin / admin |
-| PostgreSQL | localhost:5432 | postgres / postgres123 |
+| PostgreSQL | localhost:5433 | postgres / postgres123 |
 | Adminer (DB UI) | http://localhost:8888 | System: PostgreSQL, Server: db, User: postgres, Pass: postgres123 |
 
 Wait **30 seconds** after starting before accessing Keycloak.

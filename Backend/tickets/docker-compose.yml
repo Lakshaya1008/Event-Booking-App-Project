@@ -2,11 +2,12 @@ services:
   # Our PostgreSQL database
   db:
     # Using the latest PostgreSQL image
-    image: postgres:latest
+    image: postgres:16
     ports:
-      - "5432:5432"
+      - "5433:5432"
     restart: always
     environment:
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres123
       POSTGRES_DB: Event_Booking_App_db
     volumes:

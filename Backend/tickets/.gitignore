@@ -41,7 +41,10 @@ application-local.properties
 # Environment-specific files with secrets
 .env
 .env.local
+.env.*
 .env.*.local
+!.env.example
+!.env.template
 
 # JaCoCo coverage reports (optional - can be large)
 jacoco.exec

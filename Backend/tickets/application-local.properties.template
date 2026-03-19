@@ -15,7 +15,7 @@
 # Database Configuration (Local)
 # ===============================
 # Your local PostgreSQL credentials
-spring.datasource.url=jdbc:postgresql://localhost:5432/Event_Booking_App_db
+spring.datasource.url=jdbc:postgresql://localhost:5433/Event_Booking_App_db
 spring.datasource.username=postgres
 spring.datasource.password=YOUR_ACTUAL_POSTGRES_PASSWORD_HERE
 

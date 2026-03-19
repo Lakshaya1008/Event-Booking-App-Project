@@ -281,7 +281,7 @@ $tokenResponse.access_token
 ```properties
 # src/main/resources/application.properties (already configured)
 server.port=8081
-spring.datasource.url=jdbc:postgresql://localhost:5432/Event_Booking_App_db
+spring.datasource.url=jdbc:postgresql://localhost:5433/Event_Booking_App_db
 spring.datasource.username=postgres
 spring.datasource.password=postgres123
 spring.security.oauth2.resourceserver.jwt.issuer-uri=http://localhost:9090/realms/event-ticket-platform
@@ -332,7 +332,7 @@ The project uses the **same PostgreSQL database** for both development and tests
 
 ```properties
 # src/test/resources/application.properties
-spring.datasource.url=jdbc:postgresql://localhost:5432/Event_Booking_App_db
+spring.datasource.url=jdbc:postgresql://localhost:5433/Event_Booking_App_db
 spring.datasource.username=postgres
 spring.datasource.password=postgres123
 spring.jpa.hibernate.ddl-auto=update
@@ -419,7 +419,7 @@ class EventControllerTest {
 class EventRepositoryIntegrationTest {
 
     @Container
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:latest");
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16");
 
     @Autowired
     private EventRepository eventRepository;
