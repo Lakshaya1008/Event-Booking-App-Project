@@ -1,5 +1,9 @@
 # Testing Guide V2
 
+> [!WARNING]
+> This file is legacy and may be out of date.
+> Use `postman/COMPLETE_TESTING_GUIDE_AND_API_DOCS.md` as the source-of-truth.
+
 This guide provides execution-ready test cases for all API endpoints. All tests are based on codebase audit and include exact requests and expected results.
 
 ## General Testing Notes

@@ -1,5 +1,9 @@
 # Testing Order
 
+> [!WARNING]
+> This file is legacy and may be out of date.
+> Use `postman/COMPLETE_TESTING_GUIDE_AND_API_DOCS.md` as the source-of-truth for endpoint definitions and expected responses.
+
 To test the Event Booking App backend efficiently, follow this sequence:
 
 1. **User Registration**

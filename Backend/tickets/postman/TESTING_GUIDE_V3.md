@@ -1,4 +1,9 @@
 # Event Booking Platform — Testing Guide
+
+> [!WARNING]
+> This file is legacy and may be out of date.
+> Use `postman/COMPLETE_TESTING_GUIDE_AND_API_DOCS.md` as the source-of-truth.
+
 **Base URL:** `http://localhost:8081` | **Keycloak:** `http://localhost:9090`
 
 ---

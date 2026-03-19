@@ -1,5 +1,9 @@
 # TESTING GUIDE - NEW FEATURES ADDENDUM
 
+> [!WARNING]
+> This file is legacy and may be out of date.
+> Use `postman/COMPLETE_TESTING_GUIDE_AND_API_DOCS.md` as the source-of-truth.
+
 **Version**: 2.1  
 **Date**: January 23, 2026  
 **Covers**: Event Update API Fix, QR Code Exports, Sales Report Export, Approval Gate System, Discount Management

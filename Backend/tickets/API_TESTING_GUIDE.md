@@ -1,5 +1,9 @@
 # API Testing Guide
 
+> [!WARNING]
+> This file is legacy and may be out of date.
+> Use `postman/COMPLETE_TESTING_GUIDE_AND_API_DOCS.md` as the source-of-truth for endpoint paths, role rules, approval-gate behavior, and error formats.
+
 This document lists all API endpoints, their HTTP methods, authentication/authorization requirements, request payloads (with mandatory/optional fields), and business rules. Use this as a reference for QA and development.
 
 ---

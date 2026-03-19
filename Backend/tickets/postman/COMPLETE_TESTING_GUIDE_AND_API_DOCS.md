@@ -2,6 +2,8 @@
 **All 50 Endpoints | Full Keycloak Setup | Every Test Case**
 **Base URL:** `http://localhost:8081` | **Keycloak:** `http://localhost:9090`
 
+**Documentation status:** This is the current source-of-truth API/testing guide for this repository.
+
 ---
 
 # PART A — KEYCLOAK SETUP (STEP BY STEP)
@@ -222,7 +224,7 @@ password=Admin123!
 
 # PART B — ERROR RESPONSE FORMAT
 
-Every API error returns this exact shape:
+Most API errors return the `ErrorDto` shape below:
 
 ```json
 {
@@ -241,11 +243,23 @@ Every API error returns this exact shape:
 }
 ```
 
+Approval-gate rejections (`APPROVAL_PENDING`, `APPROVAL_REJECTED`) are returned directly by `ApprovalGateFilter` and use a compact payload:
+
+```json
+{
+  "error": "APPROVAL_PENDING",
+  "message": "Your account is awaiting approval from an administrator. You will be notified once your account has been reviewed.",
+  "status": "403",
+  "timestamp": "2026-03-18T10:30:00Z"
+}
+```
+
 All validation errors are returned **at once** — you never need to fix one field, retry, find the next error.
 
 | HTTP Status | Error Code | When |
 |-------------|-----------|------|
 | 400 | `VALIDATION_ERROR` | @NotNull, @NotBlank, @Size, @Pattern failed |
+| 400 | `CONSTRAINT_VIOLATION` | Constraint validation failed (non-body parameters) |
 | 400 | `INVALID_INPUT` | Business rule input error |
 | 400 | `INVALID_ARGUMENT` | Event ID mismatch |
 | 400 | `INVALID_INVITE_CODE` | Invite expired/redeemed/revoked |
@@ -269,6 +283,7 @@ All validation errors are returned **at once** — you never need to fix one fie
 | 409 | `DATA_CONFLICT` | DB unique constraint violation |
 | 422 | `REGISTRATION_FAILED` | Keycloak / DB system error |
 | 500 | `INTERNAL_SERVER_ERROR` | QR generation, Keycloak admin down |
+| 500 | `UNEXPECTED_ERROR` | Unhandled server-side error |
 
 ---
 
@@ -282,6 +297,7 @@ After registration every user starts `PENDING`. The `ApprovalGateFilter` blocks 
 | `POST /api/v1/invites/redeem` | Part of invite workflow |
 | `/actuator/**` | Health checks |
 | `/swagger-ui/**` | Documentation |
+| `/api-docs/**` | Documentation |
 | `/v3/api-docs/**` | Documentation |
 
 ---

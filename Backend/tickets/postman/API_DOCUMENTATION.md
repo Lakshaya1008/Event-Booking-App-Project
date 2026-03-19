@@ -1,5 +1,9 @@
 # Event Booking App — Complete API Reference and Postman Guide
 
+> [!WARNING]
+> This file is legacy and may be out of date.
+> Use `postman/COMPLETE_TESTING_GUIDE_AND_API_DOCS.md` as the source-of-truth.
+
 This document reflects the ACTUAL codebase state as of January 23, 2026 and shows how to test every API in Postman.
 
 **Last Updated:** January 23, 2026  

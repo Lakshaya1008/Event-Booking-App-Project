@@ -1,5 +1,9 @@
 # Event Booking App - API Testing Guide (Codebase Derived)
 
+> [!WARNING]
+> This file is legacy and may be out of date.
+> Use `postman/COMPLETE_TESTING_GUIDE_AND_API_DOCS.md` as the source-of-truth for current API/testing behavior.
+
 This guide is generated from controller and DTO code under `src/main/java/com/event/tickets`.
 
 ## 1) Environment Setup

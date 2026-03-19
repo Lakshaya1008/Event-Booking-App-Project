@@ -1,5 +1,9 @@
 # API Documentation V2
 
+> [!WARNING]
+> This file is legacy and may be out of date.
+> Use `postman/COMPLETE_TESTING_GUIDE_AND_API_DOCS.md` as the source-of-truth.
+
 This document provides a complete, code-backed specification of all API endpoints in the Event Booking App backend. All information is derived directly from the codebase audit.
 
 ## Security & Authentication Overview

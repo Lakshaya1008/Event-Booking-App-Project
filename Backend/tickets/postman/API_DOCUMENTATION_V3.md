@@ -1,4 +1,9 @@
 # Event Booking Platform — API Documentation
+
+> [!WARNING]
+> This file is legacy and may be out of date.
+> Use `postman/COMPLETE_TESTING_GUIDE_AND_API_DOCS.md` as the source-of-truth.
+
 **Version:** 1.0 | **Base URL:** `http://localhost:8081` | **Auth:** OAuth2 Bearer JWT (Keycloak `http://localhost:9090`)
 
 ---
