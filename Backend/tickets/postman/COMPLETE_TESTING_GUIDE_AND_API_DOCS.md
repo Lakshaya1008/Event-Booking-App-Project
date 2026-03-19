@@ -99,13 +99,13 @@ For **each user** in the table below, do these steps:
    - Filter by realm roles
    - Select the role → **Assign**
 
-| Username / Email | Password    | Realm Role |
-|-----------------|-------------|-----------|
-| admin@test.com | Admin123!   | ADMIN |
-| organizer@test.com | Organizer1! | ORGANIZER |
+| Username / Email    | Password    | Realm Role |
+|---------------------|-------------|-----------|
+| admin@test.com      | Admin123!   | ADMIN |
+| organizer1@test.com | Organizer1! | ORGANIZER |
 | organizer2@test.com | Organizer2! | ORGANIZER |
-| staff@test.com | Staff1!     | STAFF |
-| attendee@test.com | Attendee1!  | (no Keycloak role — gets ATTENDEE via registration invite) |
+| staff@test.com      | Staff1!     | STAFF |
+| attendee@test.com   | Attendee1!  | (no Keycloak role — gets ATTENDEE via registration invite) |
 
 > **Password rule:** The `RegisterRequestDto` requires: uppercase + lowercase + digit + special character from `!@#$%^&*`. Always use `Password1!` style passwords, never `Password1`.
 
