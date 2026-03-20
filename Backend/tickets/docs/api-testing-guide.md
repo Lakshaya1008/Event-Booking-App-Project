@@ -216,15 +216,28 @@ Bypass paths (no approval check):
 
 ---
 
-## 6) Endpoint Test Matrix (URL + Method + Auth + Payload)
+## 6) Endpoint Testing (Execution Order + Full Request Details)
 
 Base URL: `http://localhost:8081`
 
-## 6.1 Auth
+### 6.1 Standard request headers
+- Public endpoints: `Content-Type: application/json` (if body is present)
+- Protected JSON endpoints:
+  - `Authorization: Bearer <JWT_TOKEN>`
+  - `Content-Type: application/json`
+  - `Accept: application/json`
+- Binary download endpoints:
+  - `Authorization: Bearer <JWT_TOKEN>`
+  - `Accept: */*`
 
-### `POST /api/v1/auth/register`
-- Auth: `PUBLIC`
-- Payload:
+### 6.2 Phase 1 - Registration and account bootstrap
+
+#### Test Case: Register user
+- URL: `POST /api/v1/auth/register`
+- Preconditions: none
+- Path params: none
+- Query params: none
+- Request body:
 ```json
 {
   "inviteCode": "ABCD-EFGH-IJKL-MNOP",
@@ -233,83 +246,87 @@ Base URL: `http://localhost:8081`
   "name": "New User"
 }
 ```
-- Success: `201 Created` (`RegisterResponseDto`)
-- Common failures:
-  - `400 VALIDATION_ERROR`
-  - `400 INVALID_INVITE_CODE`
-  - `404 INVITE_CODE_NOT_FOUND`
-  - `409 EMAIL_ALREADY_REGISTERED`
-  - `422 REGISTRATION_FAILED`
+- Expected success: `201 Created`, body = `RegisterResponseDto`
+- Possible failures: `400 VALIDATION_ERROR`, `400 INVALID_INVITE_CODE`, `404 INVITE_CODE_NOT_FOUND`, `409 EMAIL_ALREADY_REGISTERED`, `422 REGISTRATION_FAILED`, `500`
+- Verification: user exists in local DB with `PENDING` status.
 
-## 6.2 Admin approvals
+### 6.3 Phase 2 - Admin approval and role governance
 
-### `GET /api/v1/admin/approvals/pending`
-- Auth: `ADMIN`
-- Payload: none
-- Success: `200` page of `UserApprovalDto`
+#### Test Case: Get pending approvals
+- URL: `GET /api/v1/admin/approvals/pending`
+- Preconditions: admin JWT
+- Query params: `page`, `size`, `sort` (optional)
+- Request body: none
+- Expected success: `200 Page<UserApprovalDto>`
+- Possible failures: `401`, `403`
 
-### `POST /api/v1/admin/approvals/{userId}/approve`
-- Auth: `ADMIN`
-- Payload: none
-- Success: `200` map `{message,userId,status}`
-- Failure: `409 INVALID_APPROVAL_STATE`, `404 USER_NOT_FOUND`
+#### Test Case: Approve user
+- URL: `POST /api/v1/admin/approvals/{userId}/approve`
+- Preconditions: pending user exists
+- Path params: `userId` (UUID)
+- Request body: none
+- Expected success: `200` with `status=APPROVED`
+- Possible failures: `401`, `403`, `404 USER_NOT_FOUND`, `409 INVALID_APPROVAL_STATE`
 
-### `POST /api/v1/admin/approvals/{userId}/reject`
-- Auth: `ADMIN`
-- Payload:
+#### Test Case: Reject user
+- URL: `POST /api/v1/admin/approvals/{userId}/reject`
+- Preconditions: pending user exists
+- Path params: `userId` (UUID)
+- Request body:
 ```json
 { "reason": "Incomplete organizer profile details" }
 ```
-- Success: `200`
-- Failure: `400 VALIDATION_ERROR`, `409 INVALID_APPROVAL_STATE`
+- Expected success: `200` with `status=REJECTED`
+- Possible failures: `400 VALIDATION_ERROR`, `401`, `403`, `404 USER_NOT_FOUND`, `409 INVALID_APPROVAL_STATE`
 
-### `GET /api/v1/admin/approvals`
-- Auth: `ADMIN`
-- Success: `200` page of `UserApprovalDto`
+#### Test Case: List all users with approval status
+- URL: `GET /api/v1/admin/approvals`
+- Preconditions: admin JWT
+- Query params: `page`, `size`, `sort` (optional)
+- Request body: none
+- Expected success: `200 Page<UserApprovalDto>`
+- Possible failures: `401`, `403`
 
-## 6.3 Admin role governance
+#### Test Case: Get available roles
+- URL: `GET /api/v1/admin/roles`
+- Preconditions: admin JWT
+- Request body: none
+- Expected success: `200 AvailableRolesResponseDto`
+- Possible failures: `401`, `403`, `500`
 
-### `POST /api/v1/admin/users/{userId}/roles`
-- Auth: `ADMIN`
-- Payload:
+#### Test Case: Assign role
+- URL: `POST /api/v1/admin/users/{userId}/roles`
+- Preconditions: admin JWT, target user exists
+- Path params: `userId` (UUID)
+- Request body:
 ```json
 { "roleName": "STAFF" }
 ```
-- Success: `200 UserRolesResponseDto`
-- Failure: `400 VALIDATION_ERROR`, `404 USER_NOT_FOUND`, `500 KEYCLOAK_OPERATION_FAILED`
+- Expected success: `200 UserRolesResponseDto`
+- Possible failures: `400 VALIDATION_ERROR`, `401`, `403`, `404 USER_NOT_FOUND`, `500`
 
-### `DELETE /api/v1/admin/users/{userId}/roles/{roleName}`
-- Auth: `ADMIN`
-- Success: `200 UserRolesResponseDto`
+#### Test Case: Get user roles
+- URL: `GET /api/v1/admin/users/{userId}/roles`
+- Preconditions: admin JWT
+- Path params: `userId` (UUID)
+- Request body: none
+- Expected success: `200 UserRolesResponseDto`
+- Possible failures: `401`, `403`, `404 USER_NOT_FOUND`, `500`
 
-### `GET /api/v1/admin/users/{userId}/roles`
-- Auth: `ADMIN`
-- Success: `200 UserRolesResponseDto`
+#### Test Case: Revoke role
+- URL: `DELETE /api/v1/admin/users/{userId}/roles/{roleName}`
+- Preconditions: admin JWT
+- Path params: `userId` (UUID), `roleName` (string)
+- Request body: none
+- Expected success: `200 UserRolesResponseDto`
+- Possible failures: `401`, `403`, `404 USER_NOT_FOUND`, `500`
 
-### `GET /api/v1/admin/roles`
-- Auth: `ADMIN`
-- Success: `200 AvailableRolesResponseDto`
+### 6.4 Phase 3 - Organizer setup (event -> ticket type -> discount -> staff)
 
-## 6.4 Audit logs
-
-### `GET /api/v1/audit`
-- Auth: `ADMIN`
-- Success: `200` page of `AuditLogDto`
-
-### `GET /api/v1/audit/events/{eventId}`
-- Auth: `ORGANIZER` (must own event)
-- Success: `200`
-- Failure: `403 ACCESS_DENIED`, `404 EVENT_NOT_FOUND`
-
-### `GET /api/v1/audit/me`
-- Auth: any authenticated role
-- Success: `200`
-
-## 6.5 Events
-
-### `POST /api/v1/events`
-- Auth: `ORGANIZER`
-- Payload:
+#### Test Case: Create event
+- URL: `POST /api/v1/events`
+- Preconditions: approved organizer JWT
+- Request body (full example):
 ```json
 {
   "name": "Tech Summit 2026",
@@ -330,140 +347,127 @@ Base URL: `http://localhost:8081`
   ]
 }
 ```
-- Success: `201 CreateEventResponseDto`
-- Failures: `400 VALIDATION_ERROR`, `409 DATA_CONFLICT`
+- Expected success: `201 CreateEventResponseDto`
+- Possible failures: `400 VALIDATION_ERROR`, `401`, `403`, `409`, `500`
 
-### `PUT /api/v1/events/{eventId}`
-- Auth: `ORGANIZER` owner
-- Payload shape similar to create (`UpdateEventRequestDto`)
-- Success: `200 UpdateEventResponseDto`
-- Failures: `400 INVALID_ARGUMENT` (path/body ID mismatch), `404 EVENT_NOT_FOUND`
+#### Test Case: List organizer events
+- URL: `GET /api/v1/events`
+- Query params: `page`, `size`, `sort` (optional)
+- Request body: none
+- Expected success: `200 Page<ListEventResponseDto>`
+- Possible failures: `401`, `403`
 
-### `GET /api/v1/events`
-- Auth: `ORGANIZER`
-- Success: `200 Page<ListEventResponseDto>`
+#### Test Case: Get event details
+- URL: `GET /api/v1/events/{eventId}`
+- Path params: `eventId` (UUID)
+- Request body: none
+- Expected success: `200 GetEventDetailsResponseDto`
+- Possible failures: `401`, `403`, `404`
 
-### `GET /api/v1/events/{eventId}`
-- Auth: `ORGANIZER` owner
-- Success: `200 GetEventDetailsResponseDto`
-- Not found: `404` (controller returns notFound)
+#### Test Case: Update event
+- URL: `PUT /api/v1/events/{eventId}`
+- Path params: `eventId` (UUID)
+- Request body: `UpdateEventRequestDto`
+- Expected success: `200 UpdateEventResponseDto`
+- Possible failures: `400 INVALID_ARGUMENT|VALIDATION_ERROR`, `401`, `403`, `404`, `409`, `500`
 
-### `DELETE /api/v1/events/{eventId}`
-- Auth: `ORGANIZER` owner
-- Success: `204`
-
-### `GET /api/v1/events/{eventId}/sales-dashboard`
-- Auth: `ORGANIZER` owner
-- Success: `200 Map<String,Object>`
-
-### `GET /api/v1/events/{eventId}/attendees-report`
-- Auth: `ORGANIZER` owner
-- Success: `200 Map<String,Object>`
-
-### `GET /api/v1/events/{eventId}/sales-report.xlsx`
-- Auth: `ORGANIZER` owner
-- Success: `200` binary XLSX with attachment header
-- Failure: `500 REPORT_GENERATION_FAILED`
-
-## 6.6 Ticket types + purchases
-
-### `POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/tickets`
-- Auth: `ATTENDEE` or `ORGANIZER`
-- Payload:
+#### Test Case: Create ticket type
+- URL: `POST /api/v1/events/{eventId}/ticket-types`
+- Path params: `eventId` (UUID)
+- Request body:
 ```json
-{ "quantity": 2 }
+{
+  "name": "VIP",
+  "price": 1299.00,
+  "description": "Front-row + lounge",
+  "totalAvailable": 50
+}
 ```
-- Success: `201` list of `GetTicketResponseDto`
-- Failures:
-  - `400 TICKETS_SOLD_OUT`
-  - `400 VALIDATION_ERROR` (quantity out of range)
-  - `404 TICKET_TYPE_NOT_FOUND`
+- Expected success: `201 CreateTicketTypeResponseDto`
+- Possible failures: `400`, `401`, `403`, `404`, `409`, `500`
 
-### `POST /api/v1/events/{eventId}/ticket-types`
-- Auth: `ORGANIZER`
-- Payload: `CreateTicketTypeRequestDto`
-- Success: `201`
+#### Test Case: List ticket types
+- URL: `GET /api/v1/events/{eventId}/ticket-types`
+- Path params: `eventId` (UUID)
+- Request body: none
+- Expected success: `200 List<CreateTicketTypeResponseDto>`
+- Possible failures: `401`, `403`, `404`
 
-### `GET /api/v1/events/{eventId}/ticket-types`
-- Auth: `ORGANIZER`
-- Success: `200`
+#### Test Case: Get ticket type
+- URL: `GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}`
+- Path params: `eventId`, `ticketTypeId` (UUID)
+- Request body: none
+- Expected success: `200 CreateTicketTypeResponseDto`
+- Possible failures: `401`, `403`, `404`
 
-### `GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}`
-- Auth: `ORGANIZER`
-- Success: `200`
-- Not found: `404`
+#### Test Case: Update ticket type
+- URL: `PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}`
+- Path params: `eventId`, `ticketTypeId` (UUID)
+- Request body: `UpdateTicketTypeRequestDto`
+- Expected success: `200 UpdateTicketTypeResponseDto`
+- Possible failures: `400`, `401`, `403`, `404`, `409`, `500`
 
-### `PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}`
-- Auth: `ORGANIZER`
-- Payload: `UpdateTicketTypeRequestDto`
-- Success: `200`
+#### Test Case: Create discount
+- URL: `POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts`
+- Path params: `eventId`, `ticketTypeId` (UUID)
+- Request body:
+```json
+{
+  "discountType": "PERCENTAGE",
+  "value": 10.00,
+  "validFrom": "2026-06-01T00:00:00",
+  "validTo": "2026-07-01T00:00:00",
+  "active": true,
+  "description": "Early bird"
+}
+```
+- Expected success: `201 DiscountResponseDto`
+- Possible failures: `400`, `401`, `403`, `404`, `409 DISCOUNT_ALREADY_EXISTS`, `500`
 
-### `DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}`
-- Auth: `ORGANIZER`
-- Success: `204`
-- Failure: `409 TICKET_TYPE_DELETE_NOT_ALLOWED`
+#### Test Case: List discounts
+- URL: `GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts`
+- Path params: `eventId`, `ticketTypeId`
+- Request body: none
+- Expected success: `200 List<DiscountResponseDto>`
+- Possible failures: `401`, `403`, `404`
 
-## 6.7 Tickets + QR
+#### Test Case: Update discount
+- URL: `PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}`
+- Path params: `eventId`, `ticketTypeId`, `discountId`
+- Request body: `CreateDiscountRequestDto`
+- Expected success: `200 DiscountResponseDto`
+- Possible failures: `400`, `401`, `403`, `404`, `409`, `500`
 
-### `GET /api/v1/tickets`
-- Auth: `ATTENDEE` or `ORGANIZER`
-- Success: `200 Page<ListTicketResponseDto>`
+#### Test Case: Get discount
+- URL: `GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}`
+- Path params: `eventId`, `ticketTypeId`, `discountId`
+- Request body: none
+- Expected success: `200 DiscountResponseDto`
+- Possible failures: `401`, `403`, `404 DISCOUNT_NOT_FOUND`
 
-### `GET /api/v1/tickets/{ticketId}`
-- Auth: `ATTENDEE` or `ORGANIZER`
-- Success: `200 GetTicketResponseDto`
-- Not found: `404`
-
-### `GET /api/v1/tickets/{ticketId}/qr-codes`
-- Auth: `ATTENDEE` or `ORGANIZER`
-- Success: `200 image/png`
-
-### `GET /api/v1/tickets/{ticketId}/qr-codes/view`
-- Auth: `ATTENDEE` or `ORGANIZER`
-- Success: `200 image/png` (inline, private cache)
-
-### `GET /api/v1/tickets/{ticketId}/qr-codes/png`
-- Auth: `ATTENDEE` or `ORGANIZER`
-- Success: `200 image/png` attachment
-
-### `GET /api/v1/tickets/{ticketId}/qr-codes/pdf`
-- Auth: `ATTENDEE` or `ORGANIZER`
-- Success: `200 application/pdf` attachment
-
-## 6.8 Published events
-
-### `GET /api/v1/published-events?q=<optional>`
-- Auth: `ATTENDEE` or `ORGANIZER` or `STAFF`
-- Success: `200 Page<ListPublishedEventResponseDto>`
-
-### `GET /api/v1/published-events/{eventId}`
-- Auth: `ATTENDEE` or `ORGANIZER` or `STAFF`
-- Success: `200 GetPublishedEventDetailsResponseDto`
-- Not found: `404`
-
-## 6.9 Event staff
-
-### `POST /api/v1/events/{eventId}/staff`
-- Auth: `ORGANIZER` owner
-- Payload:
+#### Test Case: Assign staff
+- URL: `POST /api/v1/events/{eventId}/staff`
+- Path params: `eventId`
+- Request body:
 ```json
 { "userId": "11111111-1111-1111-1111-111111111111" }
 ```
-- Success: `201 EventStaffResponseDto`
+- Expected success: `201 EventStaffResponseDto`
+- Possible failures: `400`, `401`, `403`, `404`, `409`, `500`
 
-### `DELETE /api/v1/events/{eventId}/staff/{userId}`
-- Auth: `ORGANIZER` owner
-- Success: `200 EventStaffResponseDto`
+#### Test Case: List staff
+- URL: `GET /api/v1/events/{eventId}/staff`
+- Path params: `eventId`
+- Request body: none
+- Expected success: `200 EventStaffResponseDto`
+- Possible failures: `401`, `403`, `404`
 
-### `GET /api/v1/events/{eventId}/staff`
-- Auth: `ORGANIZER` owner
-- Success: `200 EventStaffResponseDto`
+### 6.5 Phase 4 - Invite flow
 
-## 6.10 Invite codes
-
-### `POST /api/v1/invites`
-- Auth: `ADMIN` or `ORGANIZER`
-- Payload:
+#### Test Case: Generate invite code
+- URL: `POST /api/v1/invites`
+- Preconditions: admin or organizer JWT
+- Request body:
 ```json
 {
   "roleName": "STAFF",
@@ -471,398 +475,220 @@ Base URL: `http://localhost:8081`
   "expirationHours": 48
 }
 ```
-- Success: `201 InviteCodeResponseDto`
-- Failures: `400 INVALID_ARGUMENT`, `400 VALIDATION_ERROR`
+- Expected success: `201 InviteCodeResponseDto`
+- Possible failures: `400 INVALID_ARGUMENT|VALIDATION_ERROR`, `401`, `403`, `404`, `409`, `500`
 
-### `POST /api/v1/invites/redeem`
-- Auth: authenticated user (`isAuthenticated`) and bypasses approval gate
-- Payload:
+#### Test Case: List all invite codes
+- URL: `GET /api/v1/invites`
+- Query params: `page`, `size`, `sort` (optional)
+- Request body: none
+- Expected success: `200 Page<InviteCodeResponseDto>`
+- Possible failures: `401`, `403`
+
+#### Test Case: List event invite codes
+- URL: `GET /api/v1/invites/events/{eventId}`
+- Path params: `eventId`
+- Query params: `page`, `size`, `sort` (optional)
+- Request body: none
+- Expected success: `200 Page<InviteCodeResponseDto>`
+- Possible failures: `401`, `403`, `404`
+
+#### Test Case: Redeem invite code
+- URL: `POST /api/v1/invites/redeem`
+- Preconditions: authenticated user JWT
+- Request body:
 ```json
 { "code": "ABCD-EFGH-IJKL-MNOP" }
 ```
-- Success: `200 RedeemInviteCodeResponseDto`
-- Failures: `400 INVALID_INVITE_CODE`, `404 INVITE_CODE_NOT_FOUND`
+- Expected success: `200 RedeemInviteCodeResponseDto`
+- Possible failures: `400 INVALID_INVITE_CODE|VALIDATION_ERROR`, `401`, `403`, `404 INVITE_CODE_NOT_FOUND`, `409`, `500`
 
-### `DELETE /api/v1/invites/{codeId}?reason=...`
-- Auth: `ADMIN` or `ORGANIZER`
-- Success: `204`
+#### Test Case: Revoke invite code
+- URL: `DELETE /api/v1/invites/{codeId}`
+- Path params: `codeId` (UUID)
+- Query params: `reason` (optional)
+- Request body: none
+- Expected success: `204 No Content`
+- Possible failures: `401`, `403`, `404`, `409`, `500`
 
-### `GET /api/v1/invites`
-- Auth: `ADMIN` or `ORGANIZER`
-- Success: `200 Page<InviteCodeResponseDto>`
+### 6.6 Phase 5 - Discovery and purchase
 
-### `GET /api/v1/invites/events/{eventId}`
-- Auth: `ADMIN` or event owner `ORGANIZER`
-- Success: `200 Page<InviteCodeResponseDto>`
+#### Test Case: List published events
+- URL: `GET /api/v1/published-events`
+- Query params: `q` (optional), `page`, `size`, `sort` (optional)
+- Request body: none
+- Expected success: `200 Page<ListPublishedEventResponseDto>`
+- Possible failures: `401`, `403`
 
-## 6.11 Ticket validations
+#### Test Case: Get published event details
+- URL: `GET /api/v1/published-events/{eventId}`
+- Path params: `eventId`
+- Request body: none
+- Expected success: `200 GetPublishedEventDetailsResponseDto`
+- Possible failures: `401`, `403`, `404`
 
-### `POST /api/v1/ticket-validations`
-- Auth: `STAFF` or `ORGANIZER`
-- Payload:
+#### Test Case: Purchase tickets
+- URL: `POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/tickets`
+- Path params: `eventId`, `ticketTypeId`
+- Request body:
+```json
+{ "quantity": 2 }
+```
+- Expected success: `201 List<GetTicketResponseDto>`
+- Possible failures: `400 TICKETS_SOLD_OUT|VALIDATION_ERROR`, `401`, `403`, `404 TICKET_TYPE_NOT_FOUND`, `409`, `500`
+
+### 6.7 Phase 6 - Ticket and QR retrieval
+
+#### Test Case: List tickets
+- URL: `GET /api/v1/tickets`
+- Query params: `page`, `size`, `sort` (optional)
+- Request body: none
+- Expected success: `200 Page<ListTicketResponseDto>`
+- Possible failures: `401`, `403`
+
+#### Test Case: Get ticket
+- URL: `GET /api/v1/tickets/{ticketId}`
+- Path params: `ticketId`
+- Request body: none
+- Expected success: `200 GetTicketResponseDto`
+- Possible failures: `401`, `403`, `404 TICKET_NOT_FOUND`
+
+#### Test Case: Download QR PNG (legacy)
+- URL: `GET /api/v1/tickets/{ticketId}/qr-codes`
+- Path params: `ticketId`
+- Request body: none
+- Expected success: `200 image/png`
+- Possible failures: `401`, `403`, `404 QR_CODE_NOT_FOUND`, `500`
+
+#### Test Case: View QR PNG inline
+- URL: `GET /api/v1/tickets/{ticketId}/qr-codes/view`
+- Path params: `ticketId`
+- Request body: none
+- Expected success: `200 image/png`
+- Possible failures: `401`, `403`, `404`, `500`
+
+#### Test Case: Download QR PNG file
+- URL: `GET /api/v1/tickets/{ticketId}/qr-codes/png`
+- Path params: `ticketId`
+- Request body: none
+- Expected success: `200 image/png` with attachment header
+- Possible failures: `401`, `403`, `404`, `500`
+
+#### Test Case: Download QR PDF file
+- URL: `GET /api/v1/tickets/{ticketId}/qr-codes/pdf`
+- Path params: `ticketId`
+- Request body: none
+- Expected success: `200 application/pdf` with attachment header
+- Possible failures: `401`, `403`, `404`, `500`
+
+### 6.8 Phase 7 - Ticket validation at entry
+
+#### Test Case: Validate ticket (manual)
+- URL: `POST /api/v1/ticket-validations`
+- Preconditions: staff or organizer JWT
+- Request body:
 ```json
 {
   "id": "33333333-3333-3333-3333-333333333333",
   "method": "MANUAL"
 }
 ```
-or
+- Expected success: `200 TicketValidationResponseDto`
+- Possible failures: `400 VALIDATION_ERROR`, `401`, `403`, `404 TICKET_NOT_FOUND`, `409`, `500`
+
+#### Test Case: Validate ticket (QR)
+- URL: `POST /api/v1/ticket-validations`
+- Request body:
 ```json
 {
   "id": "44444444-4444-4444-4444-444444444444",
   "method": "QR_SCAN"
 }
 ```
-- Success: `200 TicketValidationResponseDto`
-- Failures: `400 VALIDATION_ERROR`, `404 TICKET_NOT_FOUND` or `QR_CODE_NOT_FOUND`
-
-### `GET /api/v1/ticket-validations/events/{eventId}`
-- Auth: `STAFF` or `ORGANIZER`
-- Success: `200 Page<TicketValidationResponseDto>`
-
-### `GET /api/v1/ticket-validations/tickets/{ticketId}`
-- Auth: `STAFF` or `ORGANIZER`
-- Success: `200 List<TicketValidationResponseDto>`
-
-## 6.12 Payload Coverage for Every Endpoint (Complete)
-
-Use this as the strict payload reference. `None` means no JSON body is sent.
-
-- `POST /api/v1/auth/register`
-  - Path params: none
-  - Query params: none
-  - Body: `RegisterRequestDto` JSON
-
-- `GET /api/v1/admin/approvals/pending`
-  - Path params: none
-  - Query params: `page`, `size`, `sort` (optional)
-  - Body: none
-
-- `POST /api/v1/admin/approvals/{userId}/approve`
-  - Path params: `userId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `POST /api/v1/admin/approvals/{userId}/reject`
-  - Path params: `userId` (UUID)
-  - Query params: none
-  - Body: `{ "reason": "..." }`
-
-- `GET /api/v1/admin/approvals`
-  - Path params: none
-  - Query params: `page`, `size`, `sort` (optional)
-  - Body: none
-
-- `POST /api/v1/admin/users/{userId}/roles`
-  - Path params: `userId` (UUID)
-  - Query params: none
-  - Body: `{ "roleName": "ADMIN|ORGANIZER|ATTENDEE|STAFF" }`
-
-- `DELETE /api/v1/admin/users/{userId}/roles/{roleName}`
-  - Path params: `userId` (UUID), `roleName` (string)
-  - Query params: none
-  - Body: none
-
-- `GET /api/v1/admin/users/{userId}/roles`
-  - Path params: `userId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `GET /api/v1/admin/roles`
-  - Path params: none
-  - Query params: none
-  - Body: none
-
-- `GET /api/v1/audit`
-  - Path params: none
-  - Query params: `page`, `size`, `sort` (optional)
-  - Body: none
-
-- `GET /api/v1/audit/events/{eventId}`
-  - Path params: `eventId` (UUID)
-  - Query params: `page`, `size`, `sort` (optional)
-  - Body: none
-
-- `GET /api/v1/audit/me`
-  - Path params: none
-  - Query params: `page`, `size`, `sort` (optional)
-  - Body: none
-
-- `POST /api/v1/events`
-  - Path params: none
-  - Query params: none
-  - Body: `CreateEventRequestDto` JSON
-
-- `PUT /api/v1/events/{eventId}`
-  - Path params: `eventId` (UUID)
-  - Query params: none
-  - Body: `UpdateEventRequestDto` JSON
-
-- `GET /api/v1/events`
-  - Path params: none
-  - Query params: `page`, `size`, `sort` (optional)
-  - Body: none
-
-- `GET /api/v1/events/{eventId}`
-  - Path params: `eventId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `DELETE /api/v1/events/{eventId}`
-  - Path params: `eventId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `GET /api/v1/events/{eventId}/sales-dashboard`
-  - Path params: `eventId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `GET /api/v1/events/{eventId}/attendees-report`
-  - Path params: `eventId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `GET /api/v1/events/{eventId}/sales-report.xlsx`
-  - Path params: `eventId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/tickets`
-  - Path params: `eventId` (UUID), `ticketTypeId` (UUID)
-  - Query params: none
-  - Body: `{ "quantity": 1..10 }`
-
-- `POST /api/v1/events/{eventId}/ticket-types`
-  - Path params: `eventId` (UUID)
-  - Query params: none
-  - Body: `CreateTicketTypeRequestDto` JSON
-
-- `GET /api/v1/events/{eventId}/ticket-types`
-  - Path params: `eventId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}`
-  - Path params: `eventId` (UUID), `ticketTypeId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}`
-  - Path params: `eventId` (UUID), `ticketTypeId` (UUID)
-  - Query params: none
-  - Body: `UpdateTicketTypeRequestDto` JSON
-
-- `DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}`
-  - Path params: `eventId` (UUID), `ticketTypeId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts`
-  - Path params: `eventId` (UUID), `ticketTypeId` (UUID)
-  - Query params: none
-  - Body: `CreateDiscountRequestDto` JSON
-
-- `PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}`
-  - Path params: `eventId` (UUID), `ticketTypeId` (UUID), `discountId` (UUID)
-  - Query params: none
-  - Body: `CreateDiscountRequestDto` JSON
-
-- `DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}`
-  - Path params: `eventId` (UUID), `ticketTypeId` (UUID), `discountId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}`
-  - Path params: `eventId` (UUID), `ticketTypeId` (UUID), `discountId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts`
-  - Path params: `eventId` (UUID), `ticketTypeId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `GET /api/v1/tickets`
-  - Path params: none
-  - Query params: `page`, `size`, `sort` (optional)
-  - Body: none
-
-- `GET /api/v1/tickets/{ticketId}`
-  - Path params: `ticketId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `GET /api/v1/tickets/{ticketId}/qr-codes`
-  - Path params: `ticketId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `GET /api/v1/tickets/{ticketId}/qr-codes/view`
-  - Path params: `ticketId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `GET /api/v1/tickets/{ticketId}/qr-codes/png`
-  - Path params: `ticketId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `GET /api/v1/tickets/{ticketId}/qr-codes/pdf`
-  - Path params: `ticketId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `GET /api/v1/published-events`
-  - Path params: none
-  - Query params: `q` (optional), `page`, `size`, `sort` (optional)
-  - Body: none
-
-- `GET /api/v1/published-events/{eventId}`
-  - Path params: `eventId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `POST /api/v1/events/{eventId}/staff`
-  - Path params: `eventId` (UUID)
-  - Query params: none
-  - Body: `{ "userId": "<uuid>" }`
-
-- `DELETE /api/v1/events/{eventId}/staff/{userId}`
-  - Path params: `eventId` (UUID), `userId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `GET /api/v1/events/{eventId}/staff`
-  - Path params: `eventId` (UUID)
-  - Query params: none
-  - Body: none
-
-- `POST /api/v1/invites`
-  - Path params: none
-  - Query params: none
-  - Body: `{ "roleName": "ADMIN|ORGANIZER|ATTENDEE|STAFF", "eventId": "<uuid|null>", "expirationHours": <positive-int> }`
-
-- `POST /api/v1/invites/redeem`
-  - Path params: none
-  - Query params: none
-  - Body: `{ "code": "XXXX-XXXX-XXXX-XXXX" }`
-
-- `DELETE /api/v1/invites/{codeId}`
-  - Path params: `codeId` (UUID)
-  - Query params: `reason` (optional)
-  - Body: none
-
-- `GET /api/v1/invites`
-  - Path params: none
-  - Query params: `page`, `size`, `sort` (optional)
-  - Body: none
-
-- `GET /api/v1/invites/events/{eventId}`
-  - Path params: `eventId` (UUID)
-  - Query params: `page`, `size`, `sort` (optional)
-  - Body: none
-
-- `POST /api/v1/ticket-validations`
-  - Path params: none
-  - Query params: none
-  - Body: `{ "id": "<uuid>", "method": "MANUAL|QR_SCAN" }`
-
-- `GET /api/v1/ticket-validations/events/{eventId}`
-  - Path params: `eventId` (UUID)
-  - Query params: `page`, `size`, `sort` (optional)
-  - Body: none
-
-- `GET /api/v1/ticket-validations/tickets/{ticketId}`
-  - Path params: `ticketId` (UUID)
-  - Query params: none
-  - Body: none
-
----
-
-## 6.13 Endpoint Completeness Check (Headers + Body + Possible Responses)
-
-Use this section as the final checklist per endpoint. It fills gaps where earlier sections may have only payload or only success.
-
-Request header defaults:
-- Protected endpoints: `Authorization: Bearer <token>`
-- Endpoints with JSON body: `Content-Type: application/json`, `Accept: application/json`
-- GET/DELETE without JSON body: `Accept: application/json`
-- Binary endpoints: `Accept: */*` (or exact media type)
-
-Auth and registration:
-- `POST /api/v1/auth/register` -> Body: required JSON; Responses: `201`, `400`, `404`, `409`, `422`, `500`
-
-Admin approvals:
-- `GET /api/v1/admin/approvals/pending` -> Body: none; Responses: `200`, `401`, `403`
-- `POST /api/v1/admin/approvals/{userId}/approve` -> Body: none; Responses: `200`, `401`, `403`, `404`, `409`
-- `POST /api/v1/admin/approvals/{userId}/reject` -> Body: required JSON (`reason`); Responses: `200`, `400`, `401`, `403`, `404`, `409`
-- `GET /api/v1/admin/approvals` -> Body: none; Responses: `200`, `401`, `403`
-
-Admin role governance:
-- `POST /api/v1/admin/users/{userId}/roles` -> Body: required JSON (`roleName`); Responses: `200`, `400`, `401`, `403`, `404`, `500`
-- `DELETE /api/v1/admin/users/{userId}/roles/{roleName}` -> Body: none; Responses: `200`, `401`, `403`, `404`, `500`
-- `GET /api/v1/admin/users/{userId}/roles` -> Body: none; Responses: `200`, `401`, `403`, `404`, `500`
-- `GET /api/v1/admin/roles` -> Body: none; Responses: `200`, `401`, `403`, `500`
-
-Audit:
-- `GET /api/v1/audit` -> Body: none; Responses: `200`, `401`, `403`
-- `GET /api/v1/audit/events/{eventId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
-- `GET /api/v1/audit/me` -> Body: none; Responses: `200`, `401`, `403`
-
-Events:
-- `POST /api/v1/events` -> Body: required JSON; Responses: `201`, `400`, `401`, `403`, `409`, `500`
-- `PUT /api/v1/events/{eventId}` -> Body: required JSON; Responses: `200`, `400`, `401`, `403`, `404`, `409`, `500`
-- `GET /api/v1/events` -> Body: none; Responses: `200`, `401`, `403`
-- `GET /api/v1/events/{eventId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
-- `DELETE /api/v1/events/{eventId}` -> Body: none; Responses: `204`, `401`, `403`, `404`, `409`, `500`
-- `GET /api/v1/events/{eventId}/sales-dashboard` -> Body: none; Responses: `200`, `401`, `403`, `404`, `500`
-- `GET /api/v1/events/{eventId}/attendees-report` -> Body: none; Responses: `200`, `401`, `403`, `404`, `500`
-- `GET /api/v1/events/{eventId}/sales-report.xlsx` -> Body: none; Responses: `200` (`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`), `401`, `403`, `404`, `500`
-
-Ticket types and purchase:
-- `POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/tickets` -> Body: required JSON (`quantity`); Responses: `201`, `400`, `401`, `403`, `404`, `409`, `500`
-- `POST /api/v1/events/{eventId}/ticket-types` -> Body: required JSON; Responses: `201`, `400`, `401`, `403`, `404`, `409`, `500`
-- `GET /api/v1/events/{eventId}/ticket-types` -> Body: none; Responses: `200`, `401`, `403`, `404`
-- `GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
-- `PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}` -> Body: required JSON; Responses: `200`, `400`, `401`, `403`, `404`, `409`, `500`
-- `DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}` -> Body: none; Responses: `204`, `401`, `403`, `404`, `409`, `500`
-
-Discounts:
-- `POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts` -> Body: required JSON; Responses: `201`, `400`, `401`, `403`, `404`, `409`, `500`
-- `PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}` -> Body: required JSON; Responses: `200`, `400`, `401`, `403`, `404`, `409`, `500`
-- `DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}` -> Body: none; Responses: `204`, `401`, `403`, `404`, `409`, `500`
-- `GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
-- `GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts` -> Body: none; Responses: `200`, `401`, `403`, `404`
-
-Tickets and QR:
-- `GET /api/v1/tickets` -> Body: none; Responses: `200`, `401`, `403`
-- `GET /api/v1/tickets/{ticketId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
-- `GET /api/v1/tickets/{ticketId}/qr-codes` -> Body: none; Responses: `200` (`image/png`), `401`, `403`, `404`, `500`
-- `GET /api/v1/tickets/{ticketId}/qr-codes/view` -> Body: none; Responses: `200` (`image/png`), `401`, `403`, `404`, `500`
-- `GET /api/v1/tickets/{ticketId}/qr-codes/png` -> Body: none; Responses: `200` (`image/png`), `401`, `403`, `404`, `500`
-- `GET /api/v1/tickets/{ticketId}/qr-codes/pdf` -> Body: none; Responses: `200` (`application/pdf`), `401`, `403`, `404`, `500`
-
-Published events:
-- `GET /api/v1/published-events` -> Body: none; Responses: `200`, `401`, `403`
-- `GET /api/v1/published-events/{eventId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
-
-Event staff:
-- `POST /api/v1/events/{eventId}/staff` -> Body: required JSON (`userId`); Responses: `201`, `400`, `401`, `403`, `404`, `409`, `500`
-- `DELETE /api/v1/events/{eventId}/staff/{userId}` -> Body: none; Responses: `200`, `401`, `403`, `404`, `409`, `500`
-- `GET /api/v1/events/{eventId}/staff` -> Body: none; Responses: `200`, `401`, `403`, `404`
-
-Invite codes:
-- `POST /api/v1/invites` -> Body: required JSON (`roleName`, `expirationHours`, optional `eventId` by role rule); Responses: `201`, `400`, `401`, `403`, `404`, `409`, `500`
-- `POST /api/v1/invites/redeem` -> Body: required JSON (`code`); Responses: `200`, `400`, `401`, `403`, `404`, `409`, `500`
-- `DELETE /api/v1/invites/{codeId}` -> Body: none; Query: optional `reason`; Responses: `204`, `401`, `403`, `404`, `409`, `500`
-- `GET /api/v1/invites` -> Body: none; Responses: `200`, `401`, `403`
-- `GET /api/v1/invites/events/{eventId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
-
-Ticket validations:
-- `POST /api/v1/ticket-validations` -> Body: required JSON (`id`, `method`); Responses: `200`, `400`, `401`, `403`, `404`, `409`, `500`
-- `GET /api/v1/ticket-validations/events/{eventId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
-- `GET /api/v1/ticket-validations/tickets/{ticketId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
+- Expected success: `200 TicketValidationResponseDto`
+- Possible failures: `400 VALIDATION_ERROR`, `401`, `403`, `404 QR_CODE_NOT_FOUND`, `409`, `500`
+
+#### Test Case: List event validations
+- URL: `GET /api/v1/ticket-validations/events/{eventId}`
+- Path params: `eventId`
+- Query params: `page`, `size`, `sort` (optional)
+- Request body: none
+- Expected success: `200 Page<TicketValidationResponseDto>`
+- Possible failures: `401`, `403`, `404`
+
+#### Test Case: List validations by ticket
+- URL: `GET /api/v1/ticket-validations/tickets/{ticketId}`
+- Path params: `ticketId`
+- Request body: none
+- Expected success: `200 List<TicketValidationResponseDto>`
+- Possible failures: `401`, `403`, `404`
+
+### 6.9 Phase 8 - Audit and reports
+
+#### Test Case: My audit trail
+- URL: `GET /api/v1/audit/me`
+- Query params: `page`, `size`, `sort` (optional)
+- Request body: none
+- Expected success: `200 Page<AuditLogDto>`
+- Possible failures: `401`, `403`
+
+#### Test Case: Event audit (organizer)
+- URL: `GET /api/v1/audit/events/{eventId}`
+- Path params: `eventId`
+- Query params: `page`, `size`, `sort` (optional)
+- Request body: none
+- Expected success: `200 Page<AuditLogDto>`
+- Possible failures: `401`, `403`, `404`
+
+#### Test Case: All audit logs (admin)
+- URL: `GET /api/v1/audit`
+- Query params: `page`, `size`, `sort` (optional)
+- Request body: none
+- Expected success: `200 Page<AuditLogDto>`
+- Possible failures: `401`, `403`
+
+#### Test Case: Sales dashboard
+- URL: `GET /api/v1/events/{eventId}/sales-dashboard`
+- Path params: `eventId`
+- Request body: none
+- Expected success: `200 Map<String,Object>`
+- Possible failures: `401`, `403`, `404`, `500`
+
+#### Test Case: Attendees report
+- URL: `GET /api/v1/events/{eventId}/attendees-report`
+- Path params: `eventId`
+- Request body: none
+- Expected success: `200 Map<String,Object>`
+- Possible failures: `401`, `403`, `404`, `500`
+
+#### Test Case: Download sales report Excel
+- URL: `GET /api/v1/events/{eventId}/sales-report.xlsx`
+- Path params: `eventId`
+- Request body: none
+- Expected success: `200 application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
+- Possible failures: `401`, `403`, `404`, `500 REPORT_GENERATION_FAILED`
+
+### 6.10 Cleanup tests (optional)
+
+#### Test Case: Delete discount
+- URL: `DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}`
+- Expected success: `204`
+- Possible failures: `401`, `403`, `404`, `409`, `500`
+
+#### Test Case: Delete ticket type
+- URL: `DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}`
+- Expected success: `204`
+- Possible failures: `401`, `403`, `404`, `409 TICKET_TYPE_DELETE_NOT_ALLOWED`, `500`
+
+#### Test Case: Remove staff
+- URL: `DELETE /api/v1/events/{eventId}/staff/{userId}`
+- Expected success: `200 EventStaffResponseDto`
+- Possible failures: `401`, `403`, `404`, `409`, `500`
+
+#### Test Case: Delete event
+- URL: `DELETE /api/v1/events/{eventId}`
+- Expected success: `204`
+- Possible failures: `401`, `403`, `404`, `409`, `500`
 
 ## 7) Response Types You Can Get
 
