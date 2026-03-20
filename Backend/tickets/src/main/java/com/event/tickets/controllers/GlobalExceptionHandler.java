@@ -595,6 +595,40 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(errorDto, HttpStatus.CONFLICT);
     }
 
+    /**
+     * Handles optimistic locking failures — two concurrent requests modified the same
+     * entity (Event, TicketType, or InviteCode) and one of them lost the race.
+     *
+     * @Version on these entities means Hibernate adds "WHERE version = ?" to every UPDATE.
+     * When two transactions load version=5 and both try to save, the first commit succeeds
+     * (version becomes 6), the second commit finds version=6 ≠ 5 and throws this exception.
+     *
+     * Returns 409 CONFLICT — not 500. The client should retry the request.
+     * Without this handler, the exception bubbles to the catch-all and returns a raw 500.
+     */
+    @ExceptionHandler(org.springframework.orm.ObjectOptimisticLockingFailureException.class)
+    public ResponseEntity<ErrorDto> handleOptimisticLockingFailureException(
+            org.springframework.orm.ObjectOptimisticLockingFailureException ex,
+            HttpServletRequest request) {
+        log.warn("Optimistic locking conflict at {}: {}", request.getRequestURI(), ex.getMessage());
+        ErrorDto errorDto = new ErrorDto();
+        errorDto.setError("CONCURRENT_MODIFICATION");
+        errorDto.setMessage("This resource was modified by another request at the same time. Please retry your request.");
+        errorDto.setStatusCode(409);
+        errorDto.setStatusDescription("CONFLICT - Concurrent modification detected");
+        errorDto.setTimestamp(LocalDateTime.now().toString());
+        errorDto.setPath(request.getRequestURI());
+        errorDto.setPossibleCauses(Arrays.asList(
+                "Two requests modified the same event, ticket type, or invite code simultaneously",
+                "A background process updated this resource while your request was in progress"
+        ));
+        errorDto.setSolutions(Arrays.asList(
+                "Retry your request — the conflict is transient",
+                "Fetch the latest version of the resource before modifying it"
+        ));
+        return new ResponseEntity<>(errorDto, HttpStatus.CONFLICT);
+    }
+
     // FIX: DataIntegrityViolationException → 409 (not 500, and does NOT leak SQL)
     @ExceptionHandler(org.springframework.dao.DataIntegrityViolationException.class)
     public ResponseEntity<ErrorDto> handleDataIntegrityViolationException(

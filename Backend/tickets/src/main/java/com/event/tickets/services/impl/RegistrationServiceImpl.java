@@ -247,6 +247,7 @@ public class RegistrationServiceImpl implements RegistrationService {
             }
             if (e instanceof EmailAlreadyInUseException ||
                     e instanceof InvalidInviteCodeException ||
+                    e instanceof InviteCodeNotFoundException ||
                     e instanceof RegistrationException) {
                 throw e;
             }
