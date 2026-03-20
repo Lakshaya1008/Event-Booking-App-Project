@@ -780,6 +780,90 @@ Use this as the strict payload reference. `None` means no JSON body is sent.
 
 ---
 
+## 6.13 Endpoint Completeness Check (Headers + Body + Possible Responses)
+
+Use this section as the final checklist per endpoint. It fills gaps where earlier sections may have only payload or only success.
+
+Request header defaults:
+- Protected endpoints: `Authorization: Bearer <token>`
+- Endpoints with JSON body: `Content-Type: application/json`, `Accept: application/json`
+- GET/DELETE without JSON body: `Accept: application/json`
+- Binary endpoints: `Accept: */*` (or exact media type)
+
+Auth and registration:
+- `POST /api/v1/auth/register` -> Body: required JSON; Responses: `201`, `400`, `404`, `409`, `422`, `500`
+
+Admin approvals:
+- `GET /api/v1/admin/approvals/pending` -> Body: none; Responses: `200`, `401`, `403`
+- `POST /api/v1/admin/approvals/{userId}/approve` -> Body: none; Responses: `200`, `401`, `403`, `404`, `409`
+- `POST /api/v1/admin/approvals/{userId}/reject` -> Body: required JSON (`reason`); Responses: `200`, `400`, `401`, `403`, `404`, `409`
+- `GET /api/v1/admin/approvals` -> Body: none; Responses: `200`, `401`, `403`
+
+Admin role governance:
+- `POST /api/v1/admin/users/{userId}/roles` -> Body: required JSON (`roleName`); Responses: `200`, `400`, `401`, `403`, `404`, `500`
+- `DELETE /api/v1/admin/users/{userId}/roles/{roleName}` -> Body: none; Responses: `200`, `401`, `403`, `404`, `500`
+- `GET /api/v1/admin/users/{userId}/roles` -> Body: none; Responses: `200`, `401`, `403`, `404`, `500`
+- `GET /api/v1/admin/roles` -> Body: none; Responses: `200`, `401`, `403`, `500`
+
+Audit:
+- `GET /api/v1/audit` -> Body: none; Responses: `200`, `401`, `403`
+- `GET /api/v1/audit/events/{eventId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
+- `GET /api/v1/audit/me` -> Body: none; Responses: `200`, `401`, `403`
+
+Events:
+- `POST /api/v1/events` -> Body: required JSON; Responses: `201`, `400`, `401`, `403`, `409`, `500`
+- `PUT /api/v1/events/{eventId}` -> Body: required JSON; Responses: `200`, `400`, `401`, `403`, `404`, `409`, `500`
+- `GET /api/v1/events` -> Body: none; Responses: `200`, `401`, `403`
+- `GET /api/v1/events/{eventId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
+- `DELETE /api/v1/events/{eventId}` -> Body: none; Responses: `204`, `401`, `403`, `404`, `409`, `500`
+- `GET /api/v1/events/{eventId}/sales-dashboard` -> Body: none; Responses: `200`, `401`, `403`, `404`, `500`
+- `GET /api/v1/events/{eventId}/attendees-report` -> Body: none; Responses: `200`, `401`, `403`, `404`, `500`
+- `GET /api/v1/events/{eventId}/sales-report.xlsx` -> Body: none; Responses: `200` (`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`), `401`, `403`, `404`, `500`
+
+Ticket types and purchase:
+- `POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/tickets` -> Body: required JSON (`quantity`); Responses: `201`, `400`, `401`, `403`, `404`, `409`, `500`
+- `POST /api/v1/events/{eventId}/ticket-types` -> Body: required JSON; Responses: `201`, `400`, `401`, `403`, `404`, `409`, `500`
+- `GET /api/v1/events/{eventId}/ticket-types` -> Body: none; Responses: `200`, `401`, `403`, `404`
+- `GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
+- `PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}` -> Body: required JSON; Responses: `200`, `400`, `401`, `403`, `404`, `409`, `500`
+- `DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}` -> Body: none; Responses: `204`, `401`, `403`, `404`, `409`, `500`
+
+Discounts:
+- `POST /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts` -> Body: required JSON; Responses: `201`, `400`, `401`, `403`, `404`, `409`, `500`
+- `PUT /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}` -> Body: required JSON; Responses: `200`, `400`, `401`, `403`, `404`, `409`, `500`
+- `DELETE /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}` -> Body: none; Responses: `204`, `401`, `403`, `404`, `409`, `500`
+- `GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts/{discountId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
+- `GET /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts` -> Body: none; Responses: `200`, `401`, `403`, `404`
+
+Tickets and QR:
+- `GET /api/v1/tickets` -> Body: none; Responses: `200`, `401`, `403`
+- `GET /api/v1/tickets/{ticketId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
+- `GET /api/v1/tickets/{ticketId}/qr-codes` -> Body: none; Responses: `200` (`image/png`), `401`, `403`, `404`, `500`
+- `GET /api/v1/tickets/{ticketId}/qr-codes/view` -> Body: none; Responses: `200` (`image/png`), `401`, `403`, `404`, `500`
+- `GET /api/v1/tickets/{ticketId}/qr-codes/png` -> Body: none; Responses: `200` (`image/png`), `401`, `403`, `404`, `500`
+- `GET /api/v1/tickets/{ticketId}/qr-codes/pdf` -> Body: none; Responses: `200` (`application/pdf`), `401`, `403`, `404`, `500`
+
+Published events:
+- `GET /api/v1/published-events` -> Body: none; Responses: `200`, `401`, `403`
+- `GET /api/v1/published-events/{eventId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
+
+Event staff:
+- `POST /api/v1/events/{eventId}/staff` -> Body: required JSON (`userId`); Responses: `201`, `400`, `401`, `403`, `404`, `409`, `500`
+- `DELETE /api/v1/events/{eventId}/staff/{userId}` -> Body: none; Responses: `200`, `401`, `403`, `404`, `409`, `500`
+- `GET /api/v1/events/{eventId}/staff` -> Body: none; Responses: `200`, `401`, `403`, `404`
+
+Invite codes:
+- `POST /api/v1/invites` -> Body: required JSON (`roleName`, `expirationHours`, optional `eventId` by role rule); Responses: `201`, `400`, `401`, `403`, `404`, `409`, `500`
+- `POST /api/v1/invites/redeem` -> Body: required JSON (`code`); Responses: `200`, `400`, `401`, `403`, `404`, `409`, `500`
+- `DELETE /api/v1/invites/{codeId}` -> Body: none; Query: optional `reason`; Responses: `204`, `401`, `403`, `404`, `409`, `500`
+- `GET /api/v1/invites` -> Body: none; Responses: `200`, `401`, `403`
+- `GET /api/v1/invites/events/{eventId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
+
+Ticket validations:
+- `POST /api/v1/ticket-validations` -> Body: required JSON (`id`, `method`); Responses: `200`, `400`, `401`, `403`, `404`, `409`, `500`
+- `GET /api/v1/ticket-validations/events/{eventId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
+- `GET /api/v1/ticket-validations/tickets/{ticketId}` -> Body: none; Responses: `200`, `401`, `403`, `404`
+
 ## 7) Response Types You Can Get
 
 ## 7.1 Success status codes
