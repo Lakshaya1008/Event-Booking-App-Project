@@ -27,11 +27,16 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * Event Staff Management Controller
  *
- * Provides ORGANIZER-only endpoints for managing event-scoped staff assignments.
+ * FIX S-6: Controller simplified — mutating service methods now return EventStaffResponseDto.
  *
- * All data access goes through EventStaffService — no direct repository calls here.
- * Event name is fetched via eventStaffService.getEventName() to avoid the redundant
- * eventRepository.findById() that previously existed after every staff operation.
+ * BEFORE: After assignStaffToEvent() (void) and removeStaffFromEvent() (void), the controller
+ * made two extra service calls to build the response:
+ *   1. eventStaffService.listEventStaff(organizerId, eventId)  — reloaded event + staff
+ *   2. eventStaffService.getEventName(eventId)                 — reloaded event again
+ * That was 3+ extra DB round-trips per mutating request.
+ *
+ * AFTER: The service returns the complete EventStaffResponseDto built inside the same
+ * transaction. The controller just returns what it receives — thin and correct.
  *
  * Endpoints:
  * - POST   /api/v1/events/{eventId}/staff           - Assign staff to event
@@ -46,6 +51,10 @@ public class EventStaffController {
 
     private final EventStaffService eventStaffService;
 
+    /**
+     * FIX S-6: assignStaffToEvent() returns EventStaffResponseDto directly.
+     * No extra listEventStaff() or getEventName() calls needed.
+     */
     @PostMapping
     @PreAuthorize("hasRole('ORGANIZER')")
     public ResponseEntity<EventStaffResponseDto> assignStaffToEvent(
@@ -57,16 +66,17 @@ public class EventStaffController {
         UUID userId = request.getUserId();
         log.info("Organizer '{}' assigning staff '{}' to event '{}'", organizerId, userId, eventId);
 
-        eventStaffService.assignStaffToEvent(organizerId, eventId, userId);
-
-        List<StaffMemberDto> staffList = eventStaffService.listEventStaff(organizerId, eventId);
-        String eventName = eventStaffService.getEventName(eventId);
+        // FIX S-6: service returns the complete response — no extra calls needed
+        EventStaffResponseDto response = eventStaffService.assignStaffToEvent(organizerId, eventId, userId);
 
         log.info("Successfully assigned staff '{}' to event '{}'", userId, eventId);
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(new EventStaffResponseDto(eventId, eventName, staffList, staffList.size()));
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
+    /**
+     * FIX S-6: removeStaffFromEvent() returns EventStaffResponseDto directly.
+     * No extra listEventStaff() or getEventName() calls needed.
+     */
     @DeleteMapping("/{userId}")
     @PreAuthorize("hasRole('ORGANIZER')")
     public ResponseEntity<EventStaffResponseDto> removeStaffFromEvent(
@@ -77,13 +87,11 @@ public class EventStaffController {
         UUID organizerId = parseUserId(jwt);
         log.info("Organizer '{}' removing staff '{}' from event '{}'", organizerId, userId, eventId);
 
-        eventStaffService.removeStaffFromEvent(organizerId, eventId, userId);
-
-        List<StaffMemberDto> staffList = eventStaffService.listEventStaff(organizerId, eventId);
-        String eventName = eventStaffService.getEventName(eventId);
+        // FIX S-6: service returns the complete response — no extra calls needed
+        EventStaffResponseDto response = eventStaffService.removeStaffFromEvent(organizerId, eventId, userId);
 
         log.info("Successfully removed staff '{}' from event '{}'", userId, eventId);
-        return ResponseEntity.ok(new EventStaffResponseDto(eventId, eventName, staffList, staffList.size()));
+        return ResponseEntity.ok(response);
     }
 
     @GetMapping

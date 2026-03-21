@@ -1,5 +1,6 @@
 package com.event.tickets.services;
 
+import com.event.tickets.domain.dtos.EventStaffResponseDto;
 import com.event.tickets.domain.dtos.StaffMemberDto;
 import java.util.List;
 import java.util.UUID;
@@ -7,74 +8,57 @@ import java.util.UUID;
 /**
  * Event Staff Management Service
  *
- * Manages event-scoped staff assignments.
+ * FIX S-6: assignStaffToEvent() and removeStaffFromEvent() now return EventStaffResponseDto
+ * instead of void.
  *
- * Business Rules:
- * - Only event organizers can manage staff for their events
- * - STAFF role in Keycloak is prerequisite (assigned via ADMIN)
- * - Event-staff relationship persisted in database
- * - STAFF role alone provides no access without event assignment
+ * BEFORE: Both mutating methods returned void. The controller called them, then made
+ * two additional service calls to build the response:
+ *   1. eventStaffService.listEventStaff(organizerId, eventId)  — reloads event + staff
+ *   2. eventStaffService.getEventName(eventId)                 — reloads event again
+ * That was 3 extra DB queries per assign/remove request, on top of the mutations themselves.
  *
- * Authorization:
- * - Enforced via AuthorizationService (organizer ownership)
- * - No direct Keycloak calls from organizers
- * - Database is source of truth for event-staff assignments
+ * AFTER: The service builds and returns the complete EventStaffResponseDto from within
+ * the same transaction that performed the mutation. The event and staff data are already
+ * in memory — no extra DB round-trips needed. The controller just returns what it receives.
+ *
+ * getEventName() is kept on the interface for any other callers, but is no longer
+ * called by EventStaffController after assign/remove.
  */
 public interface EventStaffService {
 
     /**
-     * Assigns a staff member to an event.
+     * Assigns a staff member to an event and returns the updated staff list.
      *
      * Requirements:
      * - User must have STAFF role in Keycloak
      * - Organizer must own the event
-     * - Creates entry in user_staffing_events table
      *
-     * @param organizerId The ID of the organizer (for authorization)
-     * @param eventId The ID of the event
-     * @param userId The ID of the user to assign as staff
+     * @return Complete EventStaffResponseDto with updated staff list — no extra queries needed.
      */
-    void assignStaffToEvent(UUID organizerId, UUID eventId, UUID userId);
+    EventStaffResponseDto assignStaffToEvent(UUID organizerId, UUID eventId, UUID userId);
 
     /**
-     * Removes a staff member from an event.
+     * Removes a staff member from an event and returns the updated staff list.
      *
-     * Requirements:
-     * - Organizer must own the event
-     * - Removes entry from user_staffing_events table
-     *
-     * @param organizerId The ID of the organizer (for authorization)
-     * @param eventId The ID of the event
-     * @param userId The ID of the staff member to remove
+     * @return Complete EventStaffResponseDto with updated staff list — no extra queries needed.
      */
-    void removeStaffFromEvent(UUID organizerId, UUID eventId, UUID userId);
+    EventStaffResponseDto removeStaffFromEvent(UUID organizerId, UUID eventId, UUID userId);
 
     /**
-     * Lists all staff members assigned to an event.
-     *
-     * @param organizerId The ID of the organizer (for authorization)
-     * @param eventId The ID of the event
-     * @return List of staff members assigned to the event
+     * Lists all staff members for an event as a flat DTO list.
+     * Uses a projection query — only id, name, email loaded per staff member.
      */
     List<StaffMemberDto> listEventStaff(UUID organizerId, UUID eventId);
 
     /**
-     * Returns the name of an event.
-     * Used by EventStaffController to build response DTOs without a redundant DB query —
-     * the event was already loaded inside the service during the preceding operation.
-     *
-     * @param eventId The ID of the event
-     * @return The event name
-     * @throws com.event.tickets.exceptions.EventNotFoundException if event does not exist
+     * Returns the event name. Retained for external callers.
+     * EventStaffController no longer calls this separately after mutations.
      */
     String getEventName(UUID eventId);
 
     /**
      * Checks if a user is assigned as staff to an event.
-     *
-     * @param eventId The ID of the event
-     * @param userId The ID of the user to check
-     * @return true if user is assigned as staff, false otherwise
+     * Uses an EXISTS query — no collection loaded.
      */
     boolean isStaffAssignedToEvent(UUID eventId, UUID userId);
 }
