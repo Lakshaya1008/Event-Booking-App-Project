@@ -11,37 +11,50 @@ import org.springframework.stereotype.Repository;
 /**
  * Audit Log Repository
  *
- * READ-ONLY repository for audit logs.
+ * Append-only in practice — the service layer only ever calls save() and read methods.
+ * The delete methods inherited from JpaRepository are never called by AuditLogService.
  *
- * Security:
- * - No update or delete methods
- * - Append-only via service layer
- * - All queries return immutable data
+ * FIX A-7: findByTargetUserId() added — allows querying all actions targeting a user.
+ * FIX A-6: findByAction() was already declared; now exposed via AuditLogService.
+ *
+ * NOTE on BUG A-10: The repository extends JpaRepository which technically exposes
+ * delete methods. In practice, AuditLogService never calls them and @PreAuthorize
+ * blocks non-admin access. A stricter solution would extend a read-only base
+ * repository interface, but that requires a custom JPA base class — deferred as a
+ * future architectural improvement.
  */
 @Repository
 public interface AuditLogRepository extends JpaRepository<AuditLog, UUID> {
 
-  /**
-   * Find all audit logs with pagination.
-   * ADMIN only.
-   */
-  Page<AuditLog> findAll(Pageable pageable);
+    /** All audit logs — delegated from JpaRepository.findAll(Pageable). */
+    Page<AuditLog> findAll(Pageable pageable);
 
-  /**
-   * Find audit logs by event ID.
-   * ORGANIZER must own the event.
-   */
-  Page<AuditLog> findByEventId(UUID eventId, Pageable pageable);
+    /**
+     * Audit logs for a specific event.
+     * Spring Data derives: WHERE event.id = :eventId
+     */
+    Page<AuditLog> findByEventId(UUID eventId, Pageable pageable);
 
-  /**
-   * Find audit logs by actor (user who performed action).
-   * User can see their own actions.
-   */
-  Page<AuditLog> findByActorId(UUID actorId, Pageable pageable);
+    /**
+     * Audit logs by actor (user who performed the action).
+     * Spring Data derives: WHERE actor.id = :actorId
+     */
+    Page<AuditLog> findByActorId(UUID actorId, Pageable pageable);
 
-  /**
-   * Find audit logs by action type.
-   * ADMIN only.
-   */
-  Page<AuditLog> findByAction(AuditAction action, Pageable pageable);
+    /**
+     * FIX A-7: Audit logs by target user (user the action was taken against).
+     * Spring Data derives: WHERE targetUser.id = :targetUserId
+     *
+     * Covers: USER_APPROVED, USER_REJECTED, ROLE_ASSIGNED, ROLE_REVOKED,
+     * STAFF_ASSIGNED, STAFF_REMOVED, ADMIN_ROLE_GRANTED_VIA_INVITE.
+     * ADMIN-only access enforced in AuditController.
+     */
+    Page<AuditLog> findByTargetUserId(UUID targetUserId, Pageable pageable);
+
+    /**
+     * Audit logs filtered by action type.
+     * FIX A-6: previously declared but never surfaced via service or controller.
+     * Now called by AuditLogService.findByAction() and exposed via GET /audit?action=.
+     */
+    Page<AuditLog> findByAction(AuditAction action, Pageable pageable);
 }

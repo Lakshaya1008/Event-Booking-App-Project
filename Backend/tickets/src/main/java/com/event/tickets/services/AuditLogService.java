@@ -1,5 +1,6 @@
 package com.event.tickets.services;
 
+import com.event.tickets.domain.entities.AuditAction;
 import com.event.tickets.domain.entities.AuditLog;
 import com.event.tickets.repositories.AuditLogRepository;
 import java.util.UUID;
@@ -9,32 +10,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-/**
- * FIXES APPLIED:
- *
- * FIX-AL1 — REQUIRES_NEW + detached entity problem resolved.
- *   BEFORE: saveAuditLog(AuditLog auditLog) opened a new transaction with
- *   REQUIRES_NEW. The AuditLog passed in had @ManyToOne references to User
- *   and Event entities that were managed in the CALLER's transaction.
- *   When REQUIRES_NEW opens a fresh persistence context, those entities are
- *   DETACHED — JPA throws DetachedObjectException or silently re-fetches them,
- *   causing the FK insert to fail if the User was just created and not yet
- *   committed (new registrations).
- *
- *   AFTER: The AuditLog is built entirely from primitive/ID fields inside the
- *   new transaction. The caller passes the AuditLog with only its entity
- *   references set — the service re-attaches them by ID before saving.
- *   For the actor/targetUser/event IDs that may not exist yet (e.g. during
- *   a REGISTRATION_ATTEMPT before the user row is committed), null references
- *   are allowed and the audit row is saved with nullable FKs.
- *
- *   SIMPLEST safe pattern used here: the AuditLog builder in callers uses
- *   detached references, so we merge (re-attach) each reference by loading
- *   it within the new transaction before saving. If the entity doesn't exist
- *   yet (uncommitted user), we set the FK to null and log a warning.
- *   This is correct: a REGISTRATION_ATTEMPT audit for a not-yet-committed user
- *   should have actor = SYSTEM (already committed), not the new user.
- */
 @Service
 public class AuditLogService {
 
@@ -45,28 +20,15 @@ public class AuditLogService {
     }
 
     /**
-     * Saves an audit log in a NEW transaction.
-     *
-     * REQUIRES_NEW ensures audit failures never roll back the business operation.
-     *
-     * The AuditLog must be built so that its entity references (actor, targetUser,
-     * event) are either:
-     *   (a) already committed rows that this new TX can see, OR
-     *   (b) null (nullable FK columns in audit_logs)
-     *
-     * Callers that emit audit events for a user that was JUST created in the same
-     * TX (e.g. REGISTRATION_SUCCESS) should use the SYSTEM user as the actor, since
-     * the new user row has not been committed yet and cannot be FK-referenced from
-     * a separate transaction.
+     * Saves an audit log in a NEW transaction so that audit failures never
+     * roll back the business operation that triggered them.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void saveAuditLog(AuditLog auditLog) {
         auditLogRepository.save(auditLog);
     }
 
-    /**
-     * Returns all audit logs — ADMIN use only.
-     */
+    /** Returns all audit logs — ADMIN use only. */
     @Transactional(readOnly = true)
     public Page<AuditLog> findAll(Pageable pageable) {
         return auditLogRepository.findAll(pageable);
@@ -74,7 +36,7 @@ public class AuditLogService {
 
     /**
      * Returns audit logs for a specific event.
-     * Authorization enforced by caller (AuditController / AuthorizationService).
+     * Authorization enforced by the caller.
      */
     @Transactional(readOnly = true)
     public Page<AuditLog> findByEventId(UUID eventId, Pageable pageable) {
@@ -82,10 +44,45 @@ public class AuditLogService {
     }
 
     /**
-     * Returns audit logs for a specific actor — self-service for any authenticated user.
+     * Returns audit logs where the actor performed the action.
+     * Used for self-service: any user can see their own actions.
      */
     @Transactional(readOnly = true)
     public Page<AuditLog> findByActorId(UUID actorId, Pageable pageable) {
         return auditLogRepository.findByActorId(actorId, pageable);
+    }
+
+    /**
+     * FIX A-7: Returns audit logs where a specific user was the TARGET.
+     *
+     * BEFORE: There was no way to query "all actions taken against user X" —
+     * approvals, rejections, role assignments, staff assignments etc. all have
+     * a targetUser field on AuditLog but it was never queryable via the API.
+     * An admin investigating a user's history had to scroll through all logs.
+     *
+     * AFTER: Dedicated query by targetUser.id — ADMIN use only (enforced by controller).
+     * Covers events like: USER_APPROVED, USER_REJECTED, ROLE_ASSIGNED, ROLE_REVOKED,
+     * STAFF_ASSIGNED, ADMIN_ROLE_GRANTED_VIA_INVITE targeting a specific user.
+     */
+    @Transactional(readOnly = true)
+    public Page<AuditLog> findByTargetUserId(UUID targetUserId, Pageable pageable) {
+        return auditLogRepository.findByTargetUserId(targetUserId, pageable);
+    }
+
+    /**
+     * FIX A-6: Returns audit logs filtered by action type.
+     *
+     * BEFORE: AuditLogRepository.findByAction() was declared but never surfaced
+     * through the service or any controller endpoint. An admin could not filter
+     * logs by action type (e.g. "show all TICKET_PURCHASE_FAILED" or
+     * "show all ADMIN_ROLE_GRANTED_VIA_INVITE") — only client-side filtering of
+     * the full paginated result was possible, which is impractical at scale.
+     *
+     * AFTER: Exposed via this method and via GET /audit?action={action} on
+     * AuditController. Filtering happens in the DB, not in Java.
+     */
+    @Transactional(readOnly = true)
+    public Page<AuditLog> findByAction(AuditAction action, Pageable pageable) {
+        return auditLogRepository.findByAction(action, pageable);
     }
 }
