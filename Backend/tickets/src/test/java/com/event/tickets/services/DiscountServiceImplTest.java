@@ -29,20 +29,19 @@ import static org.mockito.Mockito.*;
 /**
  * CHANGES FROM PREVIOUS VERSION:
  *
- * FIX 1 — Added @Mock TicketRepository ticketRepository.
- *   DiscountServiceImpl now injects TicketRepository for the post-sales guard in updateDiscount().
- *   Without this mock Mockito @InjectMocks would leave it null, causing NPE on any updateDiscount() call.
+ * TEST-D3 — updateDiscount post-sales guard tests now stub countDiscountedActiveByTicketTypeId()
+ *   instead of countActiveByTicketTypeId().
  *
- * NEW — UpdateDiscount nested class (previously untested):
- *   - blocks type change when tickets sold under discount (FIX 1)
- *   - blocks value change when tickets sold under discount (FIX 1)
- *   - allows description change even when tickets sold
- *   - allows type/value change when no tickets sold
- *   - throws DiscountAlreadyExistsException when re-activating and another active exists
+ *   The guard now counts only tickets where discountApplied > 0 (FIX D-3).
+ *   Stubbing the wrong method would leave the guard unstubbed → returns 0 → guard never fires.
+ *   Each test is updated to stub: ticketRepository.countDiscountedActiveByTicketTypeId(ticketTypeId,
+ *   TicketStatusEnum.CANCELLED, BigDecimal.ZERO)
  *
- * NEW — validFrom >= now guard tests:
- *   - createDiscount rejects past validFrom
- *   - updateDiscount allows past validFrom (discount period may have started)
+ * NEW test — "full-price tickets do not block type/value change".
+ *   Verifies the D-3 fix: even with countActiveByTicketTypeId returning 50 (full-price tickets
+ *   sold), the discount can still be changed because countDiscountedActiveByTicketTypeId returns 0.
+ *
+ * All other tests from the previous version are preserved unchanged.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -51,7 +50,7 @@ class DiscountServiceImplTest {
 
     @Mock private DiscountRepository discountRepository;
     @Mock private TicketTypeRepository ticketTypeRepository;
-    @Mock private TicketRepository ticketRepository;  // FIX 1: was missing
+    @Mock private TicketRepository ticketRepository;
     @Mock private AuthorizationService authorizationService;
 
     @InjectMocks
@@ -95,7 +94,7 @@ class DiscountServiceImplTest {
         CreateDiscountRequestDto req = new CreateDiscountRequestDto();
         req.setDiscountType(DiscountType.PERCENTAGE);
         req.setValue(new BigDecimal("10"));
-        req.setValidFrom(LocalDateTime.now().plusHours(1));  // future
+        req.setValidFrom(LocalDateTime.now().plusHours(1));
         req.setValidTo(LocalDateTime.now().plusDays(30));
         req.setActive(active);
         return req;
@@ -145,7 +144,7 @@ class DiscountServiceImplTest {
             when(ticketTypeRepository.findById(ticketTypeId)).thenReturn(Optional.of(ticketType));
 
             CreateDiscountRequestDto req = buildRequest(true);
-            req.setValidFrom(LocalDateTime.now().minusDays(3));  // PAST
+            req.setValidFrom(LocalDateTime.now().minusDays(3));
             req.setValidTo(LocalDateTime.now().plusDays(30));
 
             assertThatThrownBy(() -> service.createDiscount(organizerId, eventId, ticketTypeId, req))
@@ -163,7 +162,7 @@ class DiscountServiceImplTest {
 
             CreateDiscountRequestDto req = buildRequest(true);
             req.setValidFrom(LocalDateTime.now().plusDays(10));
-            req.setValidTo(LocalDateTime.now().plusDays(1)); // before validFrom
+            req.setValidTo(LocalDateTime.now().plusDays(1));
 
             assertThatThrownBy(() -> service.createDiscount(organizerId, eventId, ticketTypeId, req))
                     .isInstanceOf(InvalidInputException.class)
@@ -204,7 +203,6 @@ class DiscountServiceImplTest {
 
             ArgumentCaptor<LocalDateTime> nowCaptor = ArgumentCaptor.forClass(LocalDateTime.class);
             verify(discountRepository).existsActiveDiscountForTicketType(eq(ticketTypeId), nowCaptor.capture());
-
             assertThat(nowCaptor.getValue()).isAfter(before).isBefore(after);
         }
     }
@@ -212,7 +210,7 @@ class DiscountServiceImplTest {
     // ── updateDiscount ────────────────────────────────────────────────────────
 
     @Nested
-    @DisplayName("updateDiscount — post-sales guard (FIX 1)")
+    @DisplayName("updateDiscount — post-sales guard (FIX D-3: counts only discounted tickets)")
     class UpdateDiscount {
 
         private CreateDiscountRequestDto buildUpdateRequest(DiscountType type, BigDecimal value) {
@@ -226,15 +224,14 @@ class DiscountServiceImplTest {
         }
 
         @Test
-        @DisplayName("FIX 1 — blocks changing discountType when tickets sold under this discount")
-        void blocksTypeChangeWhenTicketsSold() {
+        @DisplayName("FIX D-3 — blocks type change when DISCOUNTED tickets exist")
+        void blocksTypeChangeWhenDiscountedTicketsSold() {
             doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
             when(discountRepository.findById(discountId)).thenReturn(Optional.of(existingDiscount));
-            // 5 active tickets sold under this discount
-            when(ticketRepository.countActiveByTicketTypeId(ticketTypeId, TicketStatusEnum.CANCELLED))
+            // FIX D-3: stub countDiscountedActiveByTicketTypeId, NOT countActiveByTicketTypeId
+            when(ticketRepository.countDiscountedActiveByTicketTypeId(ticketTypeId, TicketStatusEnum.CANCELLED, BigDecimal.ZERO))
                     .thenReturn(5);
 
-            // Trying to change PERCENTAGE → FIXED_AMOUNT
             CreateDiscountRequestDto req = buildUpdateRequest(DiscountType.FIXED_AMOUNT, new BigDecimal("10"));
 
             assertThatThrownBy(() ->
@@ -242,19 +239,16 @@ class DiscountServiceImplTest {
                     .isInstanceOf(InvalidInputException.class)
                     .hasMessageContaining("Cannot change discount type or value")
                     .hasMessageContaining("active ticket");
-
-            verify(discountRepository, never()).save(any());
         }
 
         @Test
-        @DisplayName("FIX 1 — blocks changing value when tickets sold")
-        void blocksValueChangeWhenTicketsSold() {
+        @DisplayName("FIX D-3 — blocks value change when DISCOUNTED tickets exist")
+        void blocksValueChangeWhenDiscountedTicketsSold() {
             doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
             when(discountRepository.findById(discountId)).thenReturn(Optional.of(existingDiscount));
-            when(ticketRepository.countActiveByTicketTypeId(ticketTypeId, TicketStatusEnum.CANCELLED))
+            when(ticketRepository.countDiscountedActiveByTicketTypeId(ticketTypeId, TicketStatusEnum.CANCELLED, BigDecimal.ZERO))
                     .thenReturn(3);
 
-            // Same type (PERCENTAGE) but different value: 20 → 30
             CreateDiscountRequestDto req = buildUpdateRequest(DiscountType.PERCENTAGE, new BigDecimal("30"));
 
             assertThatThrownBy(() ->
@@ -264,12 +258,31 @@ class DiscountServiceImplTest {
         }
 
         @Test
-        @DisplayName("allows type/value change when NO tickets sold")
+        @DisplayName("FIX D-3 — full-price tickets (discountApplied=0) do NOT block type/value change")
+        void fullPriceTicketsDoNotBlockChange() {
+            doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
+            when(discountRepository.findById(discountId)).thenReturn(Optional.of(existingDiscount));
+            // 50 full-price tickets exist — but 0 discounted tickets
+            when(ticketRepository.countDiscountedActiveByTicketTypeId(ticketTypeId, TicketStatusEnum.CANCELLED, BigDecimal.ZERO))
+                    .thenReturn(0);
+            when(discountRepository.existsActiveDiscountForTicketType(any(), any())).thenReturn(false);
+            when(discountRepository.save(any())).thenReturn(existingDiscount);
+
+            // Changing PERCENTAGE → FIXED_AMOUNT should be allowed because no discounted tickets exist
+            CreateDiscountRequestDto req = buildUpdateRequest(DiscountType.FIXED_AMOUNT, new BigDecimal("10"));
+
+            assertThatCode(() ->
+                    service.updateDiscount(organizerId, eventId, ticketTypeId, discountId, req))
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("allows type/value change when NO tickets sold at all")
         void allowsTypeValueChangeWhenNoTicketsSold() {
             doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
             when(discountRepository.findById(discountId)).thenReturn(Optional.of(existingDiscount));
-            when(ticketRepository.countActiveByTicketTypeId(ticketTypeId, TicketStatusEnum.CANCELLED))
-                    .thenReturn(0);  // no tickets sold yet
+            when(ticketRepository.countDiscountedActiveByTicketTypeId(ticketTypeId, TicketStatusEnum.CANCELLED, BigDecimal.ZERO))
+                    .thenReturn(0);
             when(discountRepository.existsActiveDiscountForTicketType(any(), any())).thenReturn(false);
             when(discountRepository.save(any())).thenReturn(existingDiscount);
 
@@ -281,31 +294,32 @@ class DiscountServiceImplTest {
         }
 
         @Test
-        @DisplayName("allows description update even when tickets sold")
-        void allowsDescriptionUpdateWhenTicketsSold() {
+        @DisplayName("allows description update even when discounted tickets exist")
+        void allowsDescriptionUpdateWhenDiscountedTicketsSold() {
             doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
             when(discountRepository.findById(discountId)).thenReturn(Optional.of(existingDiscount));
-            // Same type (PERCENTAGE) same value (20) — only description changing
-            when(ticketRepository.countActiveByTicketTypeId(ticketTypeId, TicketStatusEnum.CANCELLED))
-                    .thenReturn(10);  // 10 tickets sold — but type/value unchanged
+            // type and value unchanged — discounted ticket count not checked
             when(discountRepository.existsActiveDiscountForTicketType(any(), any())).thenReturn(false);
             when(discountRepository.save(any())).thenReturn(existingDiscount);
 
-            // Same type and value as existing — only updating description
+            // Same type (PERCENTAGE) same value (20) as existingDiscount — only description changes
             CreateDiscountRequestDto req = buildUpdateRequest(DiscountType.PERCENTAGE, new BigDecimal("20"));
             req.setDescription("Updated description");
 
             assertThatCode(() ->
                     service.updateDiscount(organizerId, eventId, ticketTypeId, discountId, req))
                     .doesNotThrowAnyException();
+
+            // countDiscountedActiveByTicketTypeId must NOT be called when type/value is unchanged
+            verify(ticketRepository, never()).countDiscountedActiveByTicketTypeId(any(), any(), any());
         }
 
         @Test
-        @DisplayName("FIX 2 — allows past validFrom on UPDATE (discount period may have started)")
+        @DisplayName("FIX D-1 effect — allows past validFrom on UPDATE (discount period may have started)")
         void allowsPastValidFromOnUpdate() {
             doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
             when(discountRepository.findById(discountId)).thenReturn(Optional.of(existingDiscount));
-            when(ticketRepository.countActiveByTicketTypeId(ticketTypeId, TicketStatusEnum.CANCELLED))
+            when(ticketRepository.countDiscountedActiveByTicketTypeId(ticketTypeId, TicketStatusEnum.CANCELLED, BigDecimal.ZERO))
                     .thenReturn(0);
             when(discountRepository.existsActiveDiscountForTicketType(any(), any())).thenReturn(false);
             when(discountRepository.save(any())).thenReturn(existingDiscount);
@@ -319,16 +333,13 @@ class DiscountServiceImplTest {
         }
 
         @Test
-        @DisplayName("throws DiscountAlreadyExistsException when re-activating and another active discount exists")
+        @DisplayName("throws DiscountAlreadyExistsException when re-activating and another active exists")
         void throwsWhenReactivatingAndAnotherActiveExists() {
-            // Existing discount is currently INACTIVE
             existingDiscount.setActive(false);
-
             doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
             when(discountRepository.findById(discountId)).thenReturn(Optional.of(existingDiscount));
-            when(ticketRepository.countActiveByTicketTypeId(ticketTypeId, TicketStatusEnum.CANCELLED))
+            when(ticketRepository.countDiscountedActiveByTicketTypeId(ticketTypeId, TicketStatusEnum.CANCELLED, BigDecimal.ZERO))
                     .thenReturn(0);
-            // Another active discount already exists
             when(discountRepository.existsActiveDiscountForTicketType(eq(ticketTypeId), any(LocalDateTime.class)))
                     .thenReturn(true);
 

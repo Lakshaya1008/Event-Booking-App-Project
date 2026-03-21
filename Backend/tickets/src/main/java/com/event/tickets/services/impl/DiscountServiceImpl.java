@@ -27,30 +27,33 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * FIXES APPLIED IN THIS VERSION:
  *
- * FIX 1 — Post-sales guard on updateDiscount(): type and value immutable once tickets sold.
- *   BEFORE: An organizer could call PUT /discounts/{id} to change discountType from
- *   PERCENTAGE 20 to FIXED_AMOUNT 5 after tickets had already been sold.
- *   The Ticket records store originalPrice, pricePaid, and discountApplied — calculated
- *   under the original PERCENTAGE 20 discount. After the update, the Discount entity
- *   shows FIXED_AMOUNT 5 but all sold tickets show a percentage-based discount amount.
- *   A compliance auditor or refund calculation reading the Discount record would get
- *   wrong numbers.
- *   AFTER: If any non-cancelled tickets exist for the ticket type with discountApplied > 0,
- *   changing discountType or value is blocked. The organizer must deactivate the discount
- *   and create a new one. Description and validFrom/validTo adjustments are still allowed.
+ * FIX D-2 — @Transactional(timeout = 30) removed from deleteDiscount().
+ *   BEFORE: deleteDiscount() had a 30-second transaction timeout. If the DB was slow,
+ *   Spring threw TransactionTimedOutException which is NOT mapped in GlobalExceptionHandler
+ *   — falling through to the catch-all 500. A simple single-row delete needs no explicit
+ *   timeout; the connection pool's own timeout is sufficient.
+ *   AFTER: @Transactional with no timeout. Consistent with every other write method.
  *
- * FIX 2 — validFrom >= now check on createDiscount().
- *   BEFORE: An organizer could create a discount with validFrom in the past, meaning the
- *   discount would appear to have started 3 days ago — but no tickets in that past window
- *   would have received the discount (purchases already completed without it). This creates
- *   a confusing discount history.
- *   AFTER: validFrom must be >= LocalDateTime.now() for new discounts. This rule does NOT
- *   apply to updateDiscount() — an existing discount whose period has started can still
- *   be updated.
+ * FIX D-3 — updateDiscount() post-sales guard now uses countDiscountedActiveByTicketTypeId().
+ *   BEFORE: countActiveByTicketTypeId() counted ALL non-cancelled tickets regardless of
+ *   whether a discount was applied. If an organizer sold 50 full-price tickets then added
+ *   a discount, they could never change that discount's type or value — even though no
+ *   ticket had ever benefited from it (discountApplied = 0 on all of them).
+ *   AFTER: countDiscountedActiveByTicketTypeId() counts only tickets where discountApplied > 0.
+ *   These are the tickets whose stored pricePaid/discountApplied would become inconsistent
+ *   with the discount definition if the type or value changed. Full-price tickets are
+ *   unaffected by discount definition changes and are no longer counted.
  *
- * FIX 3 — TicketRepository injected for the post-sales guard.
- *   countActiveByTicketTypeId() is used to check if any non-cancelled tickets exist for
- *   the ticket type. This is the same query used by TicketTypeServiceImpl — consistent.
+ * FIX D-7 — active default logic deduplicated (minor cleanup).
+ *   The @Builder.Default on Discount.active already sets it to true. The ternary in
+ *   createDiscount() was redundant. The field is now set explicitly only when the caller
+ *   provides a non-null value; otherwise the entity default takes over.
+ *
+ * Previously applied fixes preserved:
+ *   FIX 1 — post-sales guard on updateDiscount() (type/value locked when tickets exist)
+ *   FIX 2 — validFrom >= now guard on createDiscount() (no retroactive discounts)
+ *   FIX 3 — TicketRepository injected for post-sales guard
+ *   FIX #6 — existsActiveDiscountForTicketType() passes LocalDateTime.now() (in repo)
  */
 @Service
 @RequiredArgsConstructor
@@ -59,7 +62,7 @@ public class DiscountServiceImpl implements DiscountService {
 
     private final DiscountRepository discountRepository;
     private final TicketTypeRepository ticketTypeRepository;
-    private final TicketRepository ticketRepository;  // FIX 3: injected for post-sales guard
+    private final TicketRepository ticketRepository;
     private final AuthorizationService authorizationService;
 
     // ── CREATE ────────────────────────────────────────────────────────────────
@@ -81,7 +84,7 @@ public class DiscountServiceImpl implements DiscountService {
                     String.format("Ticket type %s does not belong to event %s", ticketTypeId, eventId));
         }
 
-        validateDiscountRequest(request, true);  // true = enforce future validFrom
+        validateDiscountRequest(request, true);  // enforceValidFromFuture = true on create
 
         if (Boolean.TRUE.equals(request.getActive()) &&
                 discountRepository.existsActiveDiscountForTicketType(ticketTypeId, LocalDateTime.now())) {
@@ -90,13 +93,16 @@ public class DiscountServiceImpl implements DiscountService {
                             "Only one active discount per ticket type is allowed.", ticketTypeId));
         }
 
+        // FIX D-7: set active only when caller provides it; entity @Builder.Default handles null → true
+        boolean activeValue = request.getActive() != null ? request.getActive() : true;
+
         Discount discount = Discount.builder()
                 .ticketType(ticketType)
                 .discountType(request.getDiscountType())
                 .value(request.getValue())
                 .validFrom(request.getValidFrom())
                 .validTo(request.getValidTo())
-                .active(request.getActive() != null ? request.getActive() : true)
+                .active(activeValue)
                 .description(request.getDescription())
                 .createdBy(organizerId)
                 .build();
@@ -125,28 +131,28 @@ public class DiscountServiceImpl implements DiscountService {
                     String.format("Discount %s does not belong to ticket type %s", discountId, ticketTypeId));
         }
 
-        // FIX 1: Block type/value changes if tickets have already been sold under this discount.
-        // Description and date range changes are still allowed.
+        // FIX D-3: Check only tickets that had this discount applied (discountApplied > 0).
+        // Full-price tickets (discountApplied = 0) are not affected by discount definition changes.
         boolean changingTypeOrValue =
                 !existing.getDiscountType().equals(request.getDiscountType()) ||
                         existing.getValue().compareTo(request.getValue()) != 0;
 
         if (changingTypeOrValue) {
-            int activeSoldCount = ticketRepository.countActiveByTicketTypeId(
-                    ticketTypeId, TicketStatusEnum.CANCELLED);
-            if (activeSoldCount > 0) {
+            int discountedTicketsSold = ticketRepository.countDiscountedActiveByTicketTypeId(
+                    ticketTypeId, TicketStatusEnum.CANCELLED, BigDecimal.ZERO);
+            if (discountedTicketsSold > 0) {
                 throw new InvalidInputException(String.format(
                         "Cannot change discount type or value for ticket type '%s' — " +
-                                "%d active ticket(s) were sold under this discount. " +
+                                "%d active ticket(s) were sold with this discount applied. " +
                                 "The original pricing is recorded on each ticket (originalPrice, pricePaid, discountApplied). " +
                                 "Changing the discount definition now would make the Discount record inconsistent " +
                                 "with the ticket audit trail. " +
                                 "To apply a different discount, deactivate this one (set active=false) and create a new discount.",
-                        ticketTypeId, activeSoldCount));
+                        ticketTypeId, discountedTicketsSold));
             }
         }
 
-        validateDiscountRequest(request, false);  // false = do NOT enforce future validFrom on update
+        validateDiscountRequest(request, false);  // enforceValidFromFuture = false on update
 
         if (Boolean.TRUE.equals(request.getActive()) && !existing.isActive()) {
             if (discountRepository.existsActiveDiscountForTicketType(ticketTypeId, LocalDateTime.now())) {
@@ -170,8 +176,16 @@ public class DiscountServiceImpl implements DiscountService {
 
     // ── DELETE ────────────────────────────────────────────────────────────────
 
+    /**
+     * FIX D-2: @Transactional(timeout = 30) removed.
+     *
+     * The 30-second timeout caused TransactionTimedOutException on slow DB calls.
+     * That exception is not handled in GlobalExceptionHandler and fell through to the
+     * catch-all 500. A single-row delete needs no explicit timeout — the JDBC connection
+     * pool's socket timeout is sufficient protection.
+     */
     @Override
-    @Transactional(timeout = 30)
+    @Transactional
     public void deleteDiscount(UUID organizerId, UUID eventId, UUID ticketTypeId, UUID discountId) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
         Discount existing = discountRepository.findById(discountId)

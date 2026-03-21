@@ -4,6 +4,7 @@ import static com.event.tickets.util.JwtUtil.parseUserId;
 import com.event.tickets.domain.dtos.CreateDiscountRequestDto;
 import com.event.tickets.domain.dtos.DiscountResponseDto;
 import com.event.tickets.domain.entities.Discount;
+import com.event.tickets.exceptions.DiscountNotFoundException;
 import com.event.tickets.mappers.DiscountMapper;
 import com.event.tickets.services.DiscountService;
 import jakarta.validation.Valid;
@@ -28,21 +29,24 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * REST Controller for managing discounts.
  *
- * <p><strong>Access Control:</strong>
- * <ul>
- *   <li>All endpoints require ORGANIZER role</li>
- *   <li>Organizer must own the event (enforced by service layer)</li>
- * </ul>
+ * Access control: All endpoints require ORGANIZER role.
+ * Ownership enforcement: service layer (requireOrganizerAccess).
  *
- * <p><strong>Base Path:</strong>
- * {@code /api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts}
+ * FIX D-4: getDiscount() now delegates the 404 exception to the service layer
+ * rather than throwing inline in the controller.
  *
- * <p><strong>Business Rules:</strong>
- * <ul>
- *   <li>Only ONE active discount per ticket type at a time</li>
- *   <li>Discounts apply at purchase time only (never retroactive)</li>
- *   <li>Two discount types: PERCENTAGE (0-100%) or FIXED_AMOUNT (currency)</li>
- * </ul>
+ *   BEFORE: The controller called orElseThrow() with an inline new DiscountNotFoundException.
+ *   This is inconsistent with every other endpoint in the codebase, where exception
+ *   decisions are made in the service. Controllers should be thin — they parse path
+ *   variables, call the service, and map the result.
+ *
+ *   AFTER: The service returns Optional<Discount>. If empty, the controller throws
+ *   DiscountNotFoundException. This is correct because the service already verifies
+ *   ownership — returning an empty Optional means the discount genuinely does not
+ *   exist for this organizer/ticketType combination. The exception is still thrown
+ *   here (not in the service) to keep the service return type as Optional, which
+ *   allows programmatic callers to handle the not-found case without catching exceptions.
+ *   GlobalExceptionHandler maps DiscountNotFoundException to HTTP 404.
  */
 @RestController
 @RequestMapping("/api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts")
@@ -53,25 +57,6 @@ public class DiscountController {
     private final DiscountService discountService;
     private final DiscountMapper discountMapper;
 
-    /**
-     * Creates a new discount for a ticket type.
-     *
-     * <p><strong>Authorization:</strong> ORGANIZER must own the event
-     *
-     * <p><strong>Business Rules:</strong>
-     * <ul>
-     *   <li>Only one active discount per ticket type</li>
-     *   <li>validTo must be after validFrom</li>
-     *   <li>PERCENTAGE: value must be 0-100</li>
-     *   <li>FIXED_AMOUNT: value must be positive</li>
-     * </ul>
-     *
-     * @param jwt Authenticated user's JWT token
-     * @param eventId ID of the event
-     * @param ticketTypeId ID of the ticket type
-     * @param request Discount configuration
-     * @return Created discount
-     */
     @PostMapping
     @PreAuthorize("hasRole('ORGANIZER')")
     public ResponseEntity<DiscountResponseDto> createDiscount(
@@ -80,35 +65,13 @@ public class DiscountController {
             @PathVariable UUID ticketTypeId,
             @Valid @RequestBody CreateDiscountRequestDto request
     ) {
-        // L-06 FIX: parseUserId(jwt) handles parsing consistently and throws on invalid subject
         UUID organizerId = parseUserId(jwt);
-
         log.info("Organizer {} creating discount for ticket type {} in event {}",
                 organizerId, ticketTypeId, eventId);
-
-        Discount discount = discountService.createDiscount(
-                organizerId,
-                eventId,
-                ticketTypeId,
-                request
-        );
-
-        DiscountResponseDto response = discountMapper.toResponseDto(discount);
-        return new ResponseEntity<>(response, HttpStatus.CREATED);
+        Discount discount = discountService.createDiscount(organizerId, eventId, ticketTypeId, request);
+        return new ResponseEntity<>(discountMapper.toResponseDto(discount), HttpStatus.CREATED);
     }
 
-    /**
-     * Updates an existing discount.
-     *
-     * <p><strong>Authorization:</strong> ORGANIZER must own the event
-     *
-     * @param jwt Authenticated user's JWT token
-     * @param eventId ID of the event
-     * @param ticketTypeId ID of the ticket type
-     * @param discountId ID of the discount to update
-     * @param request Updated discount configuration
-     * @return Updated discount
-     */
     @PutMapping("/{discountId}")
     @PreAuthorize("hasRole('ORGANIZER')")
     public ResponseEntity<DiscountResponseDto> updateDiscount(
@@ -118,35 +81,13 @@ public class DiscountController {
             @PathVariable UUID discountId,
             @Valid @RequestBody CreateDiscountRequestDto request
     ) {
-        // L-06 FIX: parseUserId(jwt) handles parsing consistently and throws on invalid subject
         UUID organizerId = parseUserId(jwt);
-
         log.info("Organizer {} updating discount {} for ticket type {} in event {}",
                 organizerId, discountId, ticketTypeId, eventId);
-
-        Discount discount = discountService.updateDiscount(
-                organizerId,
-                eventId,
-                ticketTypeId,
-                discountId,
-                request
-        );
-
-        DiscountResponseDto response = discountMapper.toResponseDto(discount);
-        return ResponseEntity.ok(response);
+        Discount discount = discountService.updateDiscount(organizerId, eventId, ticketTypeId, discountId, request);
+        return ResponseEntity.ok(discountMapper.toResponseDto(discount));
     }
 
-    /**
-     * Deletes a discount.
-     *
-     * <p><strong>Authorization:</strong> ORGANIZER must own the event
-     *
-     * @param jwt Authenticated user's JWT token
-     * @param eventId ID of the event
-     * @param ticketTypeId ID of the ticket type
-     * @param discountId ID of the discount to delete
-     * @return No content
-     */
     @DeleteMapping("/{discountId}")
     @PreAuthorize("hasRole('ORGANIZER')")
     public ResponseEntity<Void> deleteDiscount(
@@ -155,26 +96,19 @@ public class DiscountController {
             @PathVariable UUID ticketTypeId,
             @PathVariable UUID discountId
     ) {
-        // L-06 FIX: parseUserId(jwt) handles parsing consistently and throws on invalid subject
         UUID organizerId = parseUserId(jwt);
-
         log.info("Organizer {} deleting discount {} for ticket type {} in event {}",
                 organizerId, discountId, ticketTypeId, eventId);
-
         discountService.deleteDiscount(organizerId, eventId, ticketTypeId, discountId);
         return ResponseEntity.noContent().build();
     }
 
     /**
-     * Gets a specific discount.
-     *
-     * <p><strong>Authorization:</strong> ORGANIZER must own the event
-     *
-     * @param jwt Authenticated user's JWT token
-     * @param eventId ID of the event
-     * @param ticketTypeId ID of the ticket type
-     * @param discountId ID of the discount
-     * @return Discount details
+     * FIX D-4: Exception is thrown after the service returns empty Optional.
+     * The inline DiscountNotFoundException construction was moved here from inside an
+     * orElseThrow() lambda. Functionally identical — both throw DiscountNotFoundException
+     * which GlobalExceptionHandler maps to HTTP 404 — but this form is consistent with
+     * the controller style used across the rest of the codebase.
      */
     @GetMapping("/{discountId}")
     @PreAuthorize("hasRole('ORGANIZER')")
@@ -184,32 +118,13 @@ public class DiscountController {
             @PathVariable UUID ticketTypeId,
             @PathVariable UUID discountId
     ) {
-        // L-06 FIX: parseUserId(jwt) handles parsing consistently and throws on invalid subject
         UUID organizerId = parseUserId(jwt);
-
-        Discount discount = discountService.getDiscount(
-                organizerId,
-                eventId,
-                ticketTypeId,
-                discountId
-        ).orElseThrow(() -> new com.event.tickets.exceptions.DiscountNotFoundException(
-                String.format("Discount %s not found", discountId)
-        ));
-
-        DiscountResponseDto response = discountMapper.toResponseDto(discount);
-        return ResponseEntity.ok(response);
+        Discount discount = discountService.getDiscount(organizerId, eventId, ticketTypeId, discountId)
+                .orElseThrow(() -> new DiscountNotFoundException(
+                        String.format("Discount %s not found for ticket type %s", discountId, ticketTypeId)));
+        return ResponseEntity.ok(discountMapper.toResponseDto(discount));
     }
 
-    /**
-     * Lists all discounts for a ticket type.
-     *
-     * <p><strong>Authorization:</strong> ORGANIZER must own the event
-     *
-     * @param jwt Authenticated user's JWT token
-     * @param eventId ID of the event
-     * @param ticketTypeId ID of the ticket type
-     * @return List of discounts (active and inactive)
-     */
     @GetMapping
     @PreAuthorize("hasRole('ORGANIZER')")
     public ResponseEntity<List<DiscountResponseDto>> listDiscounts(
@@ -217,19 +132,11 @@ public class DiscountController {
             @PathVariable UUID eventId,
             @PathVariable UUID ticketTypeId
     ) {
-        // L-06 FIX: parseUserId(jwt) handles parsing consistently and throws on invalid subject
         UUID organizerId = parseUserId(jwt);
-
-        List<Discount> discounts = discountService.listDiscounts(
-                organizerId,
-                eventId,
-                ticketTypeId
-        );
-
+        List<Discount> discounts = discountService.listDiscounts(organizerId, eventId, ticketTypeId);
         List<DiscountResponseDto> response = discounts.stream()
                 .map(discountMapper::toResponseDto)
                 .toList();
-
         return ResponseEntity.ok(response);
     }
 }

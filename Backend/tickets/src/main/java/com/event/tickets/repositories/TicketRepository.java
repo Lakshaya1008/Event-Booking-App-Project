@@ -2,6 +2,7 @@ package com.event.tickets.repositories;
 
 import com.event.tickets.domain.entities.Ticket;
 import com.event.tickets.domain.entities.TicketStatusEnum;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -18,19 +19,59 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
 
     int countByTicketTypeId(UUID ticketTypeId);
 
-    @Query("SELECT COUNT(t) FROM Ticket t " +
-            "WHERE t.ticketType.id = :ticketTypeId " +
-            "AND t.status != :excludedStatus")
+    /**
+     * H-06 / H-07 FIX: Counts only non-CANCELLED tickets for a ticket type.
+     * Used by purchaseTickets() and updateTicketType() to check capacity.
+     */
+    @Query("SELECT COUNT(t) FROM Ticket t WHERE t.ticketType.id = :ticketTypeId AND t.status <> :excludedStatus")
     int countActiveByTicketTypeId(
             @Param("ticketTypeId") UUID ticketTypeId,
             @Param("excludedStatus") TicketStatusEnum excludedStatus
     );
 
-    int countByTicketTypeEventId(UUID eventId);
+    /**
+     * FIX D-3 (BUG D-3): Counts non-cancelled tickets for a ticket type where a
+     * discount was actually applied (discountApplied > 0).
+     *
+     * WHY THIS IS NEEDED:
+     * The post-sales guard in DiscountServiceImpl.updateDiscount() previously used
+     * countActiveByTicketTypeId() which counts ALL active tickets — even full-price
+     * ones where discountApplied = 0. This was over-restrictive:
+     *
+     *   Scenario: Organizer sells 50 full-price tickets (discountApplied=0).
+     *   Then adds a 20% discount. Tries to change the discount value from 20% to 25%.
+     *   OLD: countActiveByTicketTypeId() returns 50 → BLOCKED.
+     *   NEW: countByTicketTypeIdAndDiscountApplied() returns 0 → ALLOWED.
+     *
+     * The real risk the guard protects against: tickets that were purchased UNDER
+     * this discount have their pricePaid/discountApplied amounts stored per-ticket.
+     * If the discount definition (type or value) changes, those stored amounts
+     * would be inconsistent with the current discount record. That is the actual
+     * data integrity concern — not full-price tickets.
+     *
+     * QUERY: Counts tickets for a given ticket type where:
+     *   - status is not CANCELLED (only active tickets matter)
+     *   - discountApplied > 0 (ticket was purchased with a discount)
+     *
+     * Called by: DiscountServiceImpl.updateDiscount() post-sales guard.
+     */
+    @Query("""
+        SELECT COUNT(t) FROM Ticket t
+        WHERE t.ticketType.id = :ticketTypeId
+        AND t.status <> :excludedStatus
+        AND t.discountApplied > :zero
+        """)
+    int countDiscountedActiveByTicketTypeId(
+            @Param("ticketTypeId") UUID ticketTypeId,
+            @Param("excludedStatus") TicketStatusEnum excludedStatus,
+            @Param("zero") BigDecimal zero
+    );
 
-    @Query("SELECT COUNT(t) FROM Ticket t " +
-            "WHERE t.ticketType.event.id = :eventId " +
-            "AND t.status != :excludedStatus")
+    @Query("""
+        SELECT COUNT(t) FROM Ticket t
+        WHERE t.ticketType.event.id = :eventId
+        AND t.status <> :excludedStatus
+        """)
     int countActiveTicketsByEventId(
             @Param("eventId") UUID eventId,
             @Param("excludedStatus") TicketStatusEnum excludedStatus
@@ -42,7 +83,16 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
 
     Optional<Ticket> findByIdAndPurchaserId(UUID id, UUID purchaserId);
 
-    List<Ticket> findByTicketTypeEventId(UUID eventId);
+    @Query("""
+        SELECT t FROM Ticket t
+        JOIN FETCH t.purchaser
+        WHERE t.ticketType.id = :ticketTypeId
+        AND t.status <> :excludedStatus
+        """)
+    List<Ticket> findActiveByTicketTypeId(
+            @Param("ticketTypeId") UUID ticketTypeId,
+            @Param("excludedStatus") TicketStatusEnum excludedStatus
+    );
 
     @Query("SELECT t FROM Ticket t WHERE t.originalPrice IS NULL OR t.discountApplied IS NULL OR t.pricePaid IS NULL")
     List<Ticket> findTicketsMissingPricingData();
@@ -56,73 +106,28 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
             @Param("newStatus") TicketStatusEnum newStatus
     );
 
-    /**
-     * FIX-E2: Aggregate sales stats per ticket type for getSalesDashboard().
-     *
-     * Returns one row per ticket type with pre-computed SUM/COUNT —
-     * no Ticket entities loaded into memory regardless of how many tickets exist.
-     *
-     * Result columns per row:
-     *   [0] UUID          ticketTypeId
-     *   [1] Long          soldCount         (non-cancelled tickets)
-     *   [2] BigDecimal    sumOriginalPrice  (revenue before discount)
-     *   [3] BigDecimal    sumDiscountApplied
-     *   [4] BigDecimal    sumPricePaid      (final revenue)
-     */
-    @Query("SELECT t.ticketType.id, " +
-            "       COUNT(t), " +
-            "       SUM(COALESCE(t.originalPrice,  t.ticketType.price)), " +
-            "       SUM(COALESCE(t.discountApplied, 0)), " +
-            "       SUM(COALESCE(t.pricePaid,       t.ticketType.price)) " +
-            "FROM Ticket t " +
-            "WHERE t.ticketType.event.id = :eventId " +
-            "  AND t.status != :excludedStatus " +
-            "GROUP BY t.ticketType.id")
+    @Query("""
+        SELECT DISTINCT t.purchaser FROM Ticket t
+        WHERE t.ticketType.event.id = :eventId
+        AND t.status <> :excludedStatus
+        """)
+    List<com.event.tickets.domain.entities.User> findDistinctPurchasersByEventId(
+            @Param("eventId") UUID eventId,
+            @Param("excludedStatus") TicketStatusEnum excludedStatus
+    );
+
+    @Query("""
+        SELECT t.ticketType.id AS ticketTypeId,
+               t.ticketType.name AS ticketTypeName,
+               COUNT(t) AS totalSold,
+               SUM(t.pricePaid) AS totalRevenue
+        FROM Ticket t
+        WHERE t.ticketType.event.id = :eventId
+        AND t.status <> :excludedStatus
+        GROUP BY t.ticketType.id, t.ticketType.name
+        """)
     List<Object[]> findSalesStatsByEventId(
             @Param("eventId") UUID eventId,
             @Param("excludedStatus") TicketStatusEnum excludedStatus
     );
-
-    /**
-     * FIX-E3: Attendee report projection for getAttendeesReport().
-     *
-     * Returns one row per non-cancelled ticket with only the fields
-     * needed for the report — no Ticket or User entities in memory.
-     *
-     * Result columns per row:
-     *   [0] String            purchaser name
-     *   [1] String            purchaser email
-     *   [2] String            ticket type name
-     *   [3] TicketStatusEnum  ticket status
-     *   [4] LocalDateTime     purchase date (createdAt)
-     *   [5] Long              validation count
-     */
-    @Query("SELECT p.name, p.email, tt.name, t.status, t.createdAt, SIZE(t.validations) " +
-            "FROM Ticket t " +
-            "JOIN t.purchaser p " +
-            "JOIN t.ticketType tt " +
-            "WHERE tt.event.id = :eventId " +
-            "  AND t.status != :excludedStatus " +
-            "ORDER BY p.name ASC")
-    List<Object[]> findAttendeeReportByEventId(
-            @Param("eventId") UUID eventId,
-            @Param("excludedStatus") TicketStatusEnum excludedStatus
-    );
-
-    /**
-     * FIX-E4: Returns distinct purchaser (email, name) pairs for cancellation emails.
-     *
-     * Uses DISTINCT on purchaser ID so each person gets exactly one email
-     * even if they bought multiple tickets for the event.
-     * Returns only the two fields needed — no entity loading.
-     *
-     * Result columns per row:
-     *   [0] String  purchaser email
-     *   [1] String  purchaser name
-     */
-    @Query("SELECT DISTINCT p.email, p.name " +
-            "FROM Ticket t " +
-            "JOIN t.purchaser p " +
-            "WHERE t.ticketType.event.id = :eventId")
-    List<Object[]> findDistinctPurchasersByEventId(@Param("eventId") UUID eventId);
 }

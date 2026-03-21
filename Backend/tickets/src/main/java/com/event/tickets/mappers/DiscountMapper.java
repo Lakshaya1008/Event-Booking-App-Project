@@ -7,17 +7,17 @@ import org.mapstruct.Mapping;
 
 /**
  * MapStruct mapper for converting between Discount entity and DTOs.
+ *
+ * FIX D-5: createdBy mapping added.
+ *   Discount.createdBy (UUID) is now mapped to DiscountResponseDto.createdBy.
+ *   MapStruct maps same-name primitive/UUID fields automatically, but the explicit
+ *   @Mapping is added here for clarity and to prevent accidental regression.
  */
 @Mapper(componentModel = "spring")
 public interface DiscountMapper {
 
-  /**
-   * Converts Discount entity to response DTO.
-   *
-   * @param discount Discount entity
-   * @return Response DTO
-   */
-  @Mapping(source = "ticketType.id", target = "ticketTypeId")
-  @Mapping(source = "ticketType.name", target = "ticketTypeName")
-  DiscountResponseDto toResponseDto(Discount discount);
+    @Mapping(source = "ticketType.id",   target = "ticketTypeId")
+    @Mapping(source = "ticketType.name", target = "ticketTypeName")
+    @Mapping(source = "createdBy",       target = "createdBy")    // FIX D-5
+    DiscountResponseDto toResponseDto(Discount discount);
 }
