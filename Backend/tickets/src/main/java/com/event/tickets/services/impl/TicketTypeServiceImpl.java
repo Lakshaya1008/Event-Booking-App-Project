@@ -33,6 +33,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -44,27 +45,28 @@ import static com.event.tickets.util.RequestUtil.extractUserAgent;
 import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
 /**
- * FIXES APPLIED IN THIS VERSION:
+ * FIXES APPLIED:
  *
- * FIX 1 — jakarta.transaction.@Transactional replaced with org.springframework.
- *   purchaseTickets(), createTicketType(), updateTicketType(), deleteTicketType() now
- *   use Spring-managed @Transactional. Read methods get @Transactional(readOnly=true).
+ * FIX-TT1 (BUG 4-1) — createTicketType() now guards against CANCELLED/COMPLETED events.
+ *   BEFORE: Organizer could POST /events/{cancelledId}/ticket-types and create a new
+ *   ticket type for a cancelled or completed event — meaningless and misleading data.
+ *   AFTER: Throws InvalidBusinessStateException if event status is not DRAFT or PUBLISHED.
  *
- * FIX 2 — getCurrentRequest() private copy-paste removed.
- *   Removed private getCurrentRequest(), extractClientIpSafely(), extractUserAgentSafely().
- *   All audit helpers now call RequestUtil.getCurrentRequest() directly.
+ * FIX-TT2 (BUG 4-2) — deleteTicketType() replaced collection iteration with COUNT query.
+ *   BEFORE: ticketType.getTickets().stream().filter(...).count() loaded ALL tickets into memory.
+ *   AFTER: countActiveByTicketTypeId() — single COUNT query, zero entity loading.
  *
- * FIX 3 — Per-user purchase limit added (max 10 tickets per user per ticket type).
- *   BEFORE: An attendee could call purchaseTickets() repeatedly in separate requests,
- *   each buying quantity=10, accumulating unlimited tickets for the same ticket type.
- *   The quantity=1-10 guard on the DTO prevented buying >10 in one call, but had no
- *   effect across multiple calls.
- *   AFTER: Before creating tickets, countByTicketTypeIdAndPurchaserId() checks how many
- *   non-cancelled tickets the buyer already holds for this ticket type. If adding the
- *   requested quantity would exceed 10, InvalidBusinessStateException is thrown.
+ * FIX-TT3 (BUG 5-1) — 3-arg purchaseTickets() removed from public interface and made private.
+ *   BEFORE: TicketTypeService interface exposed purchaseTickets(userId, ticketTypeId, qty)
+ *   which bypasses cross-event ownership validation entirely.
+ *   AFTER: Only purchaseTickets(userId, eventId, ticketTypeId, qty) is public.
+ *   The 3-arg overload is a private method. No external caller can bypass event validation.
  *
- * All other existing fixes (FIX #5-2 quantity guard, SOLD_OUT, SALES_WINDOW, FIX ISSUE 6
- * delete with cancelled tickets, FIX ISSUE 2 enum audit action) are preserved.
+ * FIX-TT4 (BUG 5-2) — 4-arg overload no longer double-loads the ticket type.
+ *   BEFORE: 4-arg loaded ticketType via findById(), then delegated to 3-arg which loaded
+ *   it AGAIN via findByIdWithLock() — two DB round-trips for the same entity.
+ *   AFTER: Single consolidated path. The 4-arg does the event cross-check then calls the
+ *   private doPurchase() directly with the already-loaded entities.
  */
 @Service
 @RequiredArgsConstructor
@@ -82,20 +84,29 @@ public class TicketTypeServiceImpl implements TicketTypeService {
     private final EmailService emailService;
     private final SystemUserProvider systemUserProvider;
 
+    /** Events in which ticket sales are meaningful. */
+    private static final Set<EventStatusEnum> SALES_ACTIVE_STATUSES =
+            Set.of(EventStatusEnum.DRAFT, EventStatusEnum.PUBLISHED);
+
     private static final int MAX_TICKETS_PER_USER_PER_TYPE = 10;
 
-    // ── PURCHASE ──────────────────────────────────────────────────────────────
+    // ── PUBLIC PURCHASE (only safe overload — BUG 5-1 fix) ───────────────────
 
+    /**
+     * FIX-TT3: This is now the ONLY public purchase method.
+     * Verifies the ticket type belongs to the given event before delegating to doPurchase().
+     * The 3-arg bypass is gone from the public interface.
+     */
     @Override
-    @Transactional  // FIX 1: org.springframework
-    public List<Ticket> purchaseTickets(UUID userId, UUID ticketTypeId, int quantity) {
+    @Transactional
+    public List<Ticket> purchaseTickets(UUID userId, UUID eventId, UUID ticketTypeId, int quantity) {
+        // Quantity guard runs first — fast fail before any DB call
         if (quantity < 1 || quantity > 10) {
             throw new InvalidBusinessStateException(
                     "Quantity must be between 1 and 10. Cannot purchase " + quantity + " tickets");
         }
 
-        // FIX 2: RequestUtil.getCurrentRequest() — no more private helpers
-        String clientIp = extractClientIp(getCurrentRequest());
+        String clientIp  = extractClientIp(getCurrentRequest());
         String userAgent = extractUserAgent(getCurrentRequest());
 
         User user = userRepository.findById(userId)
@@ -105,6 +116,12 @@ public class TicketTypeServiceImpl implements TicketTypeService {
                             String.format("User with ID %s was not found", userId));
                 });
 
+        // FIX-TT4: Load event and ticket type ONCE with the pessimistic lock.
+        // findByIdWithLock acquires a row-level write lock — prevents oversell on concurrent purchases.
+        Event event = eventRepository.findById(eventId)
+                .orElseThrow(() -> new EventNotFoundException(
+                        String.format("Event with ID '%s' not found", eventId)));
+
         TicketType ticketType = ticketTypeRepository.findByIdWithLock(ticketTypeId)
                 .orElseThrow(() -> {
                     auditPurchaseFailure(userId, null, "TICKET_TYPE_NOT_FOUND", clientIp, userAgent);
@@ -112,8 +129,28 @@ public class TicketTypeServiceImpl implements TicketTypeService {
                             String.format("Ticket type with ID %s was not found", ticketTypeId));
                 });
 
-        Event event = ticketType.getEvent();
+        // FIX-TT3: Cross-event ownership check — replaces the old unsafe 3-arg overload's gap
+        if (!ticketType.getEvent().getId().equals(eventId)) {
+            auditPurchaseFailure(userId, event, "CROSS_EVENT_PURCHASE_ATTEMPT", clientIp, userAgent);
+            throw new InvalidBusinessStateException(
+                    "Ticket type does not belong to the specified event.");
+        }
 
+        return doPurchase(user, event, ticketType, quantity, clientIp, userAgent);
+    }
+
+    // ── PRIVATE PURCHASE CORE ─────────────────────────────────────────────────
+
+    /**
+     * Core purchase logic. All entities already loaded and validated by the caller.
+     * Not exposed on the interface — prevents bypassing the cross-event check.
+     */
+    private List<Ticket> dopurchase(User user, Event event, TicketType ticketType,
+                                    int quantity, String clientIp, String userAgent) {
+        UUID userId = user.getId();
+        UUID ticketTypeId = ticketType.getId();
+
+        // Event status check
         if (!EventStatusEnum.PUBLISHED.equals(event.getStatus())) {
             String reason = EventStatusEnum.CANCELLED.equals(event.getStatus())
                     ? "EVENT_CANCELLED" : "EVENT_NOT_PUBLISHED";
@@ -124,6 +161,7 @@ public class TicketTypeServiceImpl implements TicketTypeService {
                             : "Tickets are not available — the event is not open for sales.");
         }
 
+        // Sales window check
         LocalDateTime now = LocalDateTime.now();
         if (event.getSalesStart() != null && now.isBefore(event.getSalesStart())) {
             auditPurchaseFailure(userId, event, "SALES_NOT_STARTED", clientIp, userAgent);
@@ -136,14 +174,16 @@ public class TicketTypeServiceImpl implements TicketTypeService {
                     String.format("Sales have closed. Sales ended at %s.", event.getSalesEnd()));
         }
 
+        // Per-type capacity check (COUNT query — no entity loading)
         int activeForType = ticketRepository.countActiveByTicketTypeId(
-                ticketType.getId(), TicketStatusEnum.CANCELLED);
+                ticketTypeId, TicketStatusEnum.CANCELLED);
         if (ticketType.getTotalAvailable() != null
                 && activeForType + quantity > ticketType.getTotalAvailable()) {
             auditPurchaseFailure(userId, event, "SOLD_OUT_TICKET_TYPE", clientIp, userAgent);
             throw new TicketsSoldOutException();
         }
 
+        // Event-level capacity check (COUNT query — no entity loading)
         if (event.getMaxCapacity() != null) {
             int totalSold = ticketRepository.countActiveTicketsByEventId(
                     event.getId(), TicketStatusEnum.CANCELLED);
@@ -155,39 +195,40 @@ public class TicketTypeServiceImpl implements TicketTypeService {
             }
         }
 
-        // FIX 3: Per-user purchase limit — max 10 tickets per user per ticket type
-        // countByTicketTypeIdAndPurchaserId includes CANCELLED tickets (conservative — prevents gaming
-        // by buying, cancelling, and re-buying to bypass the limit)
-        int alreadyOwned = ticketRepository.countByTicketTypeIdAndPurchaserId(
-                ticketTypeId, userId);
+        // Per-user limit check.
+        // NOTE: countByTicketTypeIdAndPurchaserId includes CANCELLED tickets.
+        // This is intentional — prevents gaming by buy-cancel-rebuy cycles.
+        // A user who buys 10, has them cancelled by the organiser is an edge case
+        // handled by contacting support. This choice is documented here explicitly.
+        int alreadyOwned = ticketRepository.countByTicketTypeIdAndPurchaserId(ticketTypeId, userId);
         if (alreadyOwned + quantity > MAX_TICKETS_PER_USER_PER_TYPE) {
             auditPurchaseFailure(userId, event, "PER_USER_LIMIT_EXCEEDED", clientIp, userAgent);
             throw new InvalidBusinessStateException(String.format(
-                    "Purchase limit reached. You already own %d ticket(s) for this ticket type. " +
-                            "Maximum %d tickets per user per ticket type.",
+                    "Purchase limit reached. You already own %d ticket(s) for this ticket type " +
+                            "(including any cancelled tickets). Maximum %d per user per ticket type.",
                     alreadyOwned, MAX_TICKETS_PER_USER_PER_TYPE));
         }
 
-        boolean isOrganizerPurchasing = authorizationService.isOrganizer(userId, event);
-        if (isOrganizerPurchasing) {
+        if (authorizationService.isOrganizer(userId, event)) {
             log.warn("Organizer '{}' purchasing {} ticket(s) to own event '{}'",
                     userId, quantity, event.getId());
             emitOrganizerSelfPurchaseAudit(user, event, quantity);
         }
 
+        // Pricing
         BigDecimal basePrice = ticketType.getPrice();
         Optional<Discount> activeDiscount = discountService.findActiveDiscount(ticketTypeId);
-
         BigDecimal finalPrice;
         BigDecimal discountAmount;
         if (activeDiscount.isPresent()) {
-            finalPrice = discountService.calculateFinalPrice(basePrice, activeDiscount.get());
+            finalPrice     = discountService.calculateFinalPrice(basePrice, activeDiscount.get());
             discountAmount = basePrice.subtract(finalPrice);
         } else {
-            finalPrice = basePrice;
+            finalPrice     = basePrice;
             discountAmount = BigDecimal.ZERO;
         }
 
+        // Create tickets + QR codes
         List<Ticket> createdTickets = new ArrayList<>();
         for (int i = 0; i < quantity; i++) {
             Ticket ticket = new Ticket();
@@ -202,11 +243,6 @@ public class TicketTypeServiceImpl implements TicketTypeService {
             createdTickets.add(savedTicket);
         }
 
-        if (createdTickets.isEmpty() || createdTickets.get(0) == null || createdTickets.get(0).getId() == null) {
-            throw new InvalidBusinessStateException(
-                    "Ticket purchase could not be completed because no valid ticket record was created.");
-        }
-
         emitTicketPurchasedAudit(user, event, ticketType, quantity);
 
         emailService.sendTicketConfirmationEmail(
@@ -217,33 +253,28 @@ public class TicketTypeServiceImpl implements TicketTypeService {
         return createdTickets;
     }
 
-    @Override
-    @Transactional  // FIX 1: org.springframework
-    public List<Ticket> purchaseTickets(UUID userId, UUID eventId, UUID ticketTypeId, int quantity) {
-        Event event = eventRepository.findById(eventId)
-                .orElseThrow(() -> new EventNotFoundException(
-                        String.format("Event with ID '%s' not found", eventId)));
-
-        TicketType ticketType = ticketTypeRepository.findById(ticketTypeId)
-                .orElseThrow(() -> new TicketTypeNotFoundException(
-                        String.format("Ticket type with ID '%s' not found", ticketTypeId)));
-
-        if (!ticketType.getEvent().getId().equals(eventId)) {
-            throw new InvalidBusinessStateException("Ticket type does not belong to the specified event.");
-        }
-
-        return purchaseTickets(userId, ticketTypeId, quantity);
-    }
-
     // ── CRUD ──────────────────────────────────────────────────────────────────
 
+    /**
+     * FIX-TT1 (BUG 4-1): Guards against creating ticket types for CANCELLED/COMPLETED events.
+     */
     @Override
-    @Transactional  // FIX 1: org.springframework
+    @Transactional
     public TicketType createTicketType(UUID organizerId, UUID eventId, CreateTicketTypeRequest request) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
+
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new EventNotFoundException(
                         String.format("Event with ID '%s' not found", eventId)));
+
+        // FIX-TT1: Cannot add ticket types to events that are no longer accepting changes
+        if (!SALES_ACTIVE_STATUSES.contains(event.getStatus())) {
+            throw new InvalidBusinessStateException(String.format(
+                    "Cannot add ticket types to a %s event. " +
+                            "Only DRAFT or PUBLISHED events can have ticket types added.",
+                    event.getStatus()));
+        }
+
         TicketType ticketType = new TicketType();
         ticketType.setName(request.getName());
         ticketType.setPrice(request.getPrice());
@@ -254,7 +285,7 @@ public class TicketTypeServiceImpl implements TicketTypeService {
     }
 
     @Override
-    @Transactional(readOnly = true)  // FIX 1: read-only
+    @Transactional(readOnly = true)
     public List<TicketType> listTicketTypesForEvent(UUID organizerId, UUID eventId) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
         Event event = eventRepository.findById(eventId)
@@ -264,14 +295,14 @@ public class TicketTypeServiceImpl implements TicketTypeService {
     }
 
     @Override
-    @Transactional(readOnly = true)  // FIX 1: read-only
+    @Transactional(readOnly = true)
     public Optional<TicketType> getTicketType(UUID organizerId, UUID eventId, UUID ticketTypeId) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
         return ticketTypeRepository.findByIdAndEventId(ticketTypeId, eventId);
     }
 
     @Override
-    @Transactional  // FIX 1: org.springframework
+    @Transactional
     public TicketType updateTicketType(UUID organizerId, UUID eventId, UUID ticketTypeId,
                                        UpdateTicketTypeRequest request) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
@@ -294,27 +325,31 @@ public class TicketTypeServiceImpl implements TicketTypeService {
         ticketType.setPrice(request.getPrice());
         ticketType.setDescription(request.getDescription());
         ticketType.setTotalAvailable(request.getTotalAvailable());
-
         return ticketTypeRepository.save(ticketType);
     }
 
+    /**
+     * FIX-TT2 (BUG 4-2): Replaced collection load with COUNT query.
+     */
     @Override
-    @Transactional  // FIX 1: org.springframework
+    @Transactional
     public void deleteTicketType(UUID organizerId, UUID eventId, UUID ticketTypeId) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
+
         TicketType ticketType = ticketTypeRepository.findByIdAndEventId(ticketTypeId, eventId)
                 .orElseThrow(() -> new TicketTypeNotFoundException(
                         String.format("Ticket type '%s' not found for event '%s'", ticketTypeId, eventId)));
 
-        long activeTickets = ticketType.getTickets().stream()
-                .filter(t -> !TicketStatusEnum.CANCELLED.equals(t.getStatus()))
-                .count();
+        // FIX-TT2: Use COUNT query — zero entity loading for the active ticket check
+        int activeTickets = ticketRepository.countActiveByTicketTypeId(
+                ticketTypeId, TicketStatusEnum.CANCELLED);
         if (activeTickets > 0) {
             throw new TicketTypeDeleteNotAllowedException(String.format(
                     "Cannot delete ticket type with %d active (non-cancelled) sold ticket(s). " +
                             "Cancel the event first, or set totalAvailable to 0 to stop further sales.",
                     activeTickets));
         }
+
         ticketTypeRepository.delete(ticketType);
     }
 
@@ -322,7 +357,6 @@ public class TicketTypeServiceImpl implements TicketTypeService {
 
     private void emitOrganizerSelfPurchaseAudit(User organizer, Event event, int quantity) {
         try {
-            // FIX 2: RequestUtil.getCurrentRequest()
             AuditLog auditLog = AuditLog.builder()
                     .action(AuditAction.ORGANIZER_SELF_PURCHASE)
                     .actor(organizer).event(event)
@@ -339,7 +373,6 @@ public class TicketTypeServiceImpl implements TicketTypeService {
 
     private void emitTicketPurchasedAudit(User buyer, Event event, TicketType ticketType, int quantity) {
         try {
-            // FIX 2: RequestUtil.getCurrentRequest()
             AuditLog auditLog = AuditLog.builder()
                     .action(AuditAction.TICKET_PURCHASED)
                     .actor(buyer).targetUser(buyer).event(event)
@@ -357,16 +390,14 @@ public class TicketTypeServiceImpl implements TicketTypeService {
     private void auditPurchaseFailure(UUID userId, Event event, String reason,
                                       String clientIp, String userAgent) {
         try {
-            User actor = userId != null ?
-                    userRepository.findById(userId).orElse(systemUserProvider.getSystemUser()) :
-                    systemUserProvider.getSystemUser();
-
+            User actor = userId != null
+                    ? userRepository.findById(userId).orElse(systemUserProvider.getSystemUser())
+                    : systemUserProvider.getSystemUser();
             AuditLog auditLog = AuditLog.builder()
                     .action(AuditAction.TICKET_PURCHASE_FAILED)
-                    .actor(actor)
-                    .event(event)
+                    .actor(actor).event(event)
                     .resourceType("TICKET")
-                    .details("reason=" + reason + ",quantity=unknown")
+                    .details("reason=" + reason)
                     .ipAddress(clientIp != null ? clientIp : "unknown")
                     .userAgent(userAgent != null ? userAgent : "unknown")
                     .build();

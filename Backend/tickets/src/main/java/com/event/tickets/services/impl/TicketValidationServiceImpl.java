@@ -39,30 +39,23 @@ import static com.event.tickets.util.RequestUtil.extractUserAgent;
 import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
 /**
- * FIXES APPLIED IN THIS VERSION:
+ * FIXES APPLIED:
  *
- * FIX 1 — Ticket.status transitions to VALIDATED on first successful scan.
- *   BEFORE: TicketStatusEnum.VALIDATED existed in the enum but was NEVER written
- *   to the database. A ticket scanned at the door remained status=PURCHASED
- *   forever. The double-scan prevention worked by checking ticket.getValidations()
- *   for a prior VALID record — which is correct — but:
- *     (a) ticket.status was perpetually stale (always PURCHASED after scan)
- *     (b) any report grouping by ticket.status to count "checked-in attendees"
- *         would return 0 regardless of how many people walked through the door
- *     (c) the VALIDATED guard in validateTicket() (FIX #7-1) could never fire
- *         because status was never actually set to VALIDATED
- *   AFTER: On the FIRST VALID scan, ticket.setStatus(VALIDATED) is called and
- *   ticketRepository.save(ticket) persists it. On all subsequent scans the
- *   existing VALIDATED guard fires immediately, before even checking validations.
+ * FIX-TV1 (BUG 6-2) — validateTicket() replaced collection load with EXISTS query.
  *
- * FIX 2 — @Transactional import standardised to org.springframework.
- *   jakarta.transaction.@Transactional was replaced with
- *   org.springframework.transaction.annotation.@Transactional for consistency
- *   with all other services and to enable readOnly=true on query methods.
+ *   BEFORE: ticket.getValidations().stream().filter(VALID).findFirst() loaded ALL
+ *   TicketValidation records for the ticket into the JPA session to detect a prior scan.
+ *   At a busy event a ticket might have been scanned many times (each retry producing
+ *   an INVALID record). All of those loaded just to find the first VALID one.
  *
- * FIX 3 — getCurrentRequest() now uses RequestUtil.getCurrentRequest().
- *   Removed the private helper copy-paste; delegates to the centralised
- *   RequestUtil method.
+ *   AFTER: ticketValidationRepository.existsByTicketIdAndStatus(ticketId, VALID)
+ *   Executes one EXISTS query. Zero TicketValidation entities loaded into memory.
+ *   This runs on every scan at the venue door — keeping it lean is critical.
+ *
+ * All previous fixes preserved:
+ *   FIX 1 (previous) — Ticket.status transitions to VALIDATED on first valid scan.
+ *   FIX 2 (previous) — Spring @Transactional throughout.
+ *   FIX 3 (previous) — RequestUtil.getCurrentRequest() for audits.
  */
 @Service
 @RequiredArgsConstructor
@@ -85,21 +78,16 @@ public class TicketValidationServiceImpl implements TicketValidationService {
     public TicketValidation validateTicketByQrCode(UUID userId, UUID qrCodeId) {
         User validator = userRepository.findById(userId)
                 .orElseThrow(() -> new UserNotFoundException("User not found: " + userId));
-
         try {
             QrCode qrCode = qrCodeRepository.findByIdAndStatus(qrCodeId, QrCodeStatusEnum.ACTIVE)
                     .orElseThrow(() -> new QrCodeNotFoundException(
-                            String.format("QR Code with ID %s was not found", qrCodeId)));
-
+                            String.format("QR Code with ID %s was not found or is not active", qrCodeId)));
             Ticket ticket = qrCode.getTicket();
             Event event = ticket.getTicketType().getEvent();
-
             authorizationService.requireOrganizerOrStaffAccess(userId, event);
-
             TicketValidation result = validateTicket(ticket, TicketValidationMethod.QR_SCAN, validator);
             emitSuccessfulTicketValidation(validator, ticket, "QR_SCAN");
             return result;
-
         } catch (QrCodeNotFoundException e) {
             emitFailedTicketValidation(validator, null, "QR_CODE_NOT_FOUND: " + e.getMessage(), "QR_SCAN");
             throw e;
@@ -112,18 +100,14 @@ public class TicketValidationServiceImpl implements TicketValidationService {
     public TicketValidation validateTicketManually(UUID userId, UUID ticketId) {
         User validator = userRepository.findById(userId)
                 .orElseThrow(() -> new UserNotFoundException("User not found: " + userId));
-
         try {
             Ticket ticket = ticketRepository.findById(ticketId)
                     .orElseThrow(TicketNotFoundException::new);
-
             Event event = ticket.getTicketType().getEvent();
             authorizationService.requireOrganizerOrStaffAccess(userId, event);
-
             TicketValidation result = validateTicket(ticket, TicketValidationMethod.MANUAL, validator);
             emitSuccessfulTicketValidation(validator, ticket, "MANUAL");
             return result;
-
         } catch (TicketNotFoundException e) {
             emitFailedTicketValidation(validator, null, "TICKET_NOT_FOUND: " + e.getMessage(), "MANUAL");
             throw e;
@@ -133,52 +117,39 @@ public class TicketValidationServiceImpl implements TicketValidationService {
     // ── CORE VALIDATION LOGIC ─────────────────────────────────────────────────
 
     /**
-     * Core validation logic with ticket status transition.
-     *
      * State machine:
-     *   CANCELLED → throws immediately (cancelled tickets cannot be validated)
-     *   VALIDATED → throws immediately (already validated, FIX #7-1 guard)
-     *   PURCHASED with no prior VALID scan → creates VALID TicketValidation,
-     *                                        transitions Ticket.status to VALIDATED
-     *   PURCHASED with prior VALID scan   → creates INVALID TicketValidation
-     *                                        (duplicate scan — person re-scanned)
-     *
-     * The PURCHASED + prior-VALID branch handles the window between the first
-     * scan (VALID created) and the DB flush that writes VALIDATED to the ticket.
-     * In a highly concurrent scenario two scans for the same ticket could both
-     * read PURCHASED and both reach the validations stream check, where the second
-     * one will find the first's VALID record and correctly produce INVALID.
+     *   CANCELLED  → throws (cannot validate a cancelled ticket)
+     *   VALIDATED  → throws (already validated — fast path, no query needed)
+     *   PURCHASED  → checks for prior VALID scan via EXISTS query
+     *                  - no prior VALID → creates VALID record, transitions ticket to VALIDATED
+     *                  - prior VALID found → creates INVALID record (duplicate scan)
      */
     private TicketValidation validateTicket(Ticket ticket, TicketValidationMethod method, User validator) {
-
-        // Guard 1: CANCELLED tickets — must check first
         if (TicketStatusEnum.CANCELLED.equals(ticket.getStatus())) {
             throw new InvalidBusinessStateException(
                     "Ticket " + ticket.getId() + " has been cancelled and cannot be validated.");
         }
 
-        // Guard 2: Already VALIDATED — fast path, no need to check validations list
+        // Fast path — VALIDATED status written after first scan, so second scan never reaches the DB check
         if (TicketStatusEnum.VALIDATED.equals(ticket.getStatus())) {
             throw new InvalidBusinessStateException(
                     "Ticket " + ticket.getId() + " has already been validated and cannot be validated again.");
         }
 
-        // Guard 3: Must be PURCHASED to proceed
         if (!TicketStatusEnum.PURCHASED.equals(ticket.getStatus())) {
             throw new InvalidBusinessStateException(
                     "Ticket must be in PURCHASED status to validate, but is " + ticket.getStatus());
         }
 
-        // Determine validation result from prior scan history
-        TicketValidationStatusEnum validationStatus = ticket.getValidations().stream()
-                .filter(v -> TicketValidationStatusEnum.VALID.equals(v.getStatus()))
-                .findFirst()
-                .map(v -> TicketValidationStatusEnum.INVALID)   // prior VALID scan found → INVALID
-                .orElse(TicketValidationStatusEnum.VALID);       // no prior VALID → first scan → VALID
+        // FIX-TV1: Single EXISTS query — no TicketValidation collection loaded
+        boolean hasPriorValidScan = ticketValidationRepository
+                .existsByTicketIdAndStatus(ticket.getId(), TicketValidationStatusEnum.VALID);
 
-        // FIX: Transition Ticket.status to VALIDATED on first successful scan.
-        // This makes ticket.status meaningful for reporting and prevents the VALIDATED
-        // enum value from being permanently dead code.
+        TicketValidationStatusEnum validationStatus = hasPriorValidScan
+                ? TicketValidationStatusEnum.INVALID   // duplicate scan
+                : TicketValidationStatusEnum.VALID;    // first valid scan
+
+        // Transition ticket status to VALIDATED on first successful scan
         if (TicketValidationStatusEnum.VALID.equals(validationStatus)) {
             ticket.setStatus(TicketStatusEnum.VALIDATED);
             ticketRepository.save(ticket);
@@ -190,7 +161,6 @@ public class TicketValidationServiceImpl implements TicketValidationService {
         validation.setValidationMethod(method);
         validation.setValidatedBy(validator);
         validation.setStatus(validationStatus);
-
         return ticketValidationRepository.save(validation);
     }
 
@@ -224,8 +194,7 @@ public class TicketValidationServiceImpl implements TicketValidationService {
                     .actor(validator)
                     .targetUser(ticket.getPurchaser())
                     .event(ticket.getTicketType().getEvent())
-                    .resourceType("TICKET")
-                    .resourceId(ticket.getId())
+                    .resourceType("TICKET").resourceId(ticket.getId())
                     .details("method=" + method + ",validatorId=" + validator.getId())
                     .ipAddress(extractClientIp(getCurrentRequest()))
                     .userAgent(extractUserAgent(getCurrentRequest()))
@@ -241,8 +210,7 @@ public class TicketValidationServiceImpl implements TicketValidationService {
             if (user == null) user = systemUserProvider.getSystemUser();
             AuditLog auditLog = AuditLog.builder()
                     .action(AuditAction.FAILED_TICKET_VALIDATION)
-                    .actor(user)
-                    .targetUser(user)
+                    .actor(user).targetUser(user)
                     .event(ticket != null ? ticket.getTicketType().getEvent() : null)
                     .resourceType("TICKET")
                     .resourceId(ticket != null ? ticket.getId() : null)

@@ -278,7 +278,7 @@ class EventServiceImplTest {
                     new BigDecimal("270.00")  // [4] sumPricePaid
             };
             when(ticketRepository.findSalesStatsByEventId(eventId, TicketStatusEnum.CANCELLED))
-                    .thenReturn((List<Object[]>) List.of(statsRow));
+                    .thenReturn(List.of(statsRow));
 
             Map<String, Object> dashboard = service.getSalesDashboard(organizerId, eventId);
 

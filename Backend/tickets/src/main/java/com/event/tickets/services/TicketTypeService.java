@@ -8,42 +8,51 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+/**
+ * FIX-TT3 (BUG 5-1): The 3-arg purchaseTickets(userId, ticketTypeId, quantity) overload
+ * has been REMOVED from this interface.
+ *
+ * WHY IT WAS DANGEROUS:
+ * The 3-arg overload had no eventId parameter. Any internal caller using it bypassed the
+ * cross-event ownership check that verifies the ticket type actually belongs to the event
+ * in the URL. A crafted request could buy a ticket for Event A by calling Event B's endpoint
+ * if the 3-arg overload was used.
+ *
+ * WHAT TO USE INSTEAD:
+ * All purchase flows must go through purchaseTickets(userId, eventId, ticketTypeId, quantity).
+ * This validates the ticket type belongs to the given event before proceeding.
+ *
+ * There is no "internal caller without eventId context" — that justification was incorrect.
+ * Any caller that has a ticketTypeId can get its eventId from ticketType.getEvent().getId().
+ */
 public interface TicketTypeService {
 
     /**
-     * Purchase tickets without path-level event validation.
-     * Used by internal callers that do not have an eventId context.
-     */
-    List<Ticket> purchaseTickets(UUID userId, UUID ticketTypeId, int quantity);
-
-    /**
-     * Purchase tickets WITH path-level event validation.
-     * Called by the controller so the eventId from the URL is verified
-     * against the ticketType's actual event (prevents cross-event purchases).
+     * Purchase tickets with mandatory event ownership validation.
      *
-     * Also enforces:
+     * Enforces:
+     * - ticketTypeId belongs to eventId (cross-event purchase prevention)
      * - Event status must be PUBLISHED
-     * - Current time must be within salesStart / salesEnd window
+     * - Current time within salesStart/salesEnd window
+     * - Per-type capacity not exceeded (active tickets only)
+     * - Event maxCapacity not exceeded (active tickets only)
+     * - Per-user limit not exceeded (max 10 per user per type, including cancelled)
+     *
+     * Uses PESSIMISTIC_WRITE lock on the ticket type row to prevent oversell
+     * on concurrent purchase requests.
      */
     List<Ticket> purchaseTickets(UUID userId, UUID eventId, UUID ticketTypeId, int quantity);
 
-    /**
-     * L-16 FIX: Default purchaseTicket() removed.
-     *
-     * The default method delegated to purchaseTickets(userId, ticketTypeId, 1) —
-     * the overload WITHOUT eventId. This allowed any caller to bypass the cross-event
-     * validation that verifies the ticketType actually belongs to the given eventId
-     * (preventing a crafted request from buying a ticket across unrelated events).
-     *
-     * All purchase paths must go through purchaseTickets(userId, eventId, ticketTypeId, quantity)
-     * which enforces event ownership. The method is removed from the interface to force
-     * compile-time errors if any caller tries to use the unsafe path.
-     */
+    // ── Organizer CRUD operations ─────────────────────────────────────────────
 
-    // Organizer CRUD operations
     TicketType createTicketType(UUID organizerId, UUID eventId, CreateTicketTypeRequest request);
+
     List<TicketType> listTicketTypesForEvent(UUID organizerId, UUID eventId);
+
     Optional<TicketType> getTicketType(UUID organizerId, UUID eventId, UUID ticketTypeId);
-    TicketType updateTicketType(UUID organizerId, UUID eventId, UUID ticketTypeId, UpdateTicketTypeRequest request);
+
+    TicketType updateTicketType(UUID organizerId, UUID eventId, UUID ticketTypeId,
+                                UpdateTicketTypeRequest request);
+
     void deleteTicketType(UUID organizerId, UUID eventId, UUID ticketTypeId);
 }
