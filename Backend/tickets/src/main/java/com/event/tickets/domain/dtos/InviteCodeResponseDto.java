@@ -8,24 +8,26 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * Response DTO for invite code generation and retrieval.
- *
  * FIXES APPLIED:
  *
- * FIX-DTO5 — Added revokedAt and revokedReason fields.
- *   BEFORE: The InviteCode entity has revokedAt and revokedReason columns
- *   but this DTO had no corresponding fields. When an admin viewed a REVOKED
- *   code the API response showed status=REVOKED but gave no information about
- *   when it was revoked or why — making the revocation audit trail invisible
- *   in the API layer.
- *   AFTER: Both fields included. mapToResponseDto() in InviteCodeServiceImpl
- *   must be updated to populate them (see InviteCodeServiceImpl fix).
+ * FIX I-3 — revokedAt and revokedReason added.
  *
- * FIX-DTO6 — Added createdByUserId alongside createdBy name.
- *   BEFORE: createdBy was a display name string only. If two users share a
- *   name, the admin cannot distinguish who created the code.
- *   AFTER: createdByUserId (UUID) added so the API consumer can link back
- *   to the specific user record. Name kept for display convenience.
+ *   BEFORE: A caller listing invite codes could see a REVOKED status but had
+ *   no way to know when it was revoked or why. The InviteCode entity stores
+ *   both fields but mapToResponseDto() silently dropped them.
+ *
+ *   AFTER: revokedAt and revokedReason are now returned in all invite code
+ *   responses. They are null for non-REVOKED codes. mapToResponseDto() in
+ *   InviteCodeServiceImpl is updated to populate them.
+ *
+ * FIX I-7 — createdByUserId UUID added alongside createdBy name.
+ *
+ *   BEFORE: createdBy was only a display name string. If a user's name
+ *   changed, or two users shared the same name, the response was ambiguous.
+ *   An admin querying invite code history had no stable identifier for the creator.
+ *
+ *   AFTER: createdByUserId (UUID) is returned in addition to createdBy (name).
+ *   The name is kept for display convenience. The UUID is the stable reference.
  */
 @Data
 @NoArgsConstructor
@@ -34,36 +36,34 @@ import lombok.NoArgsConstructor;
 public class InviteCodeResponseDto {
 
     private UUID id;
-
-    /** The actual invite code string (XXXX-XXXX-XXXX-XXXX format). */
     private String code;
-
-    /** Role that will be assigned when this code is redeemed. */
     private String roleName;
-
-    /** Event this code is scoped to (null for global / non-STAFF codes). */
     private UUID eventId;
     private String eventName;
-
-    /** Current status: PENDING, REDEEMED, EXPIRED, REVOKED. */
     private String status;
 
-    /** FIX-DTO6: UUID of the user who created this code. */
-    private UUID createdByUserId;
-
-    /** Display name of the user who created this code. */
+    /** Display name of the user who generated this code. */
     private String createdBy;
+
+    /**
+     * FIX I-7: UUID of the user who generated this code.
+     * Stable identifier — does not change if the user's display name changes.
+     */
+    private UUID createdByUserId;
 
     private LocalDateTime createdAt;
     private LocalDateTime expiresAt;
 
-    /** Display name of the user who redeemed this code. Null if not redeemed. */
     private String redeemedBy;
     private LocalDateTime redeemedAt;
 
-    /** FIX-DTO5: When the code was revoked. Null if not revoked. */
+    /**
+     * FIX I-3: When was this code revoked? Null for non-REVOKED codes.
+     */
     private LocalDateTime revokedAt;
 
-    /** FIX-DTO5: Reason provided when the code was revoked. Null if not revoked. */
+    /**
+     * FIX I-3: Why was this code revoked? Null for non-REVOKED codes.
+     */
     private String revokedReason;
 }

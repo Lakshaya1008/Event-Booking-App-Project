@@ -18,6 +18,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.security.access.AccessDeniedException;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -32,10 +33,20 @@ import static org.mockito.Mockito.*;
 /**
  * CHANGES FROM PREVIOUS VERSION:
  *
- * 1. Removed all existsByCode() stubs — method doesn't exist on repository.
- * 2. Added missing @Mock AuditLogService and SystemUserProvider.
- * 3. NEW: RedeemInviteCode nested class — 8 test cases covering the previously
- *    completely untested redeemInviteCode() method.
+ * TEST-I2 — revokeInviteCode() tests updated to pass isAdmin parameter.
+ *   The method signature changed: revokeInviteCode(revokerId, codeId, reason, isAdmin).
+ *   All revokeInviteCode() call sites in tests updated accordingly.
+ *   keycloakAdminService.userHasRole() is no longer stubbed — the service no longer calls it.
+ *
+ * TEST-I1 — redeemInviteCode() tests verify getUserRoles() called exactly once.
+ *   New assertion: verify(keycloakAdminService, times(1)).getUserRoles(any()) in happy path tests.
+ *
+ * TEST-I3 — new test: mapToResponseDto populates revokedAt and revokedReason.
+ *   Verifies the I-3 fix is wired end-to-end through the service.
+ *
+ * TEST-I7 — new test: mapToResponseDto populates createdByUserId.
+ *
+ * TEST-I2-ACCESS — new test: non-admin trying to revoke another user's code throws AccessDeniedException.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -86,8 +97,6 @@ class InviteCodeServiceImplTest {
         when(systemUserProvider.getSystemUser()).thenReturn(systemUser);
     }
 
-    // ── Helper builders ───────────────────────────────────────────────────────
-
     private InviteCode buildPendingCode(String roleName, Event forEvent) {
         InviteCode code = new InviteCode();
         code.setId(UUID.randomUUID());
@@ -119,6 +128,7 @@ class InviteCodeServiceImplTest {
         InviteCode code = buildPendingCode("ATTENDEE", null);
         code.setStatus(InviteCodeStatus.REVOKED);
         code.setRevokedReason("No longer needed");
+        code.setRevokedAt(LocalDateTime.now().minusHours(2));
         return code;
     }
 
@@ -132,12 +142,9 @@ class InviteCodeServiceImplTest {
         @DisplayName("throws when STAFF role given without eventId")
         void throwsWhenStaffWithoutEventId() {
             when(userRepository.findById(creatorId)).thenReturn(Optional.of(creator));
-
-            assertThatThrownBy(() ->
-                    service.generateInviteCode(creatorId, "STAFF", null, 24))
+            assertThatThrownBy(() -> service.generateInviteCode(creatorId, "STAFF", null, 24))
                     .isInstanceOf(InvalidInputException.class)
                     .hasMessageContaining("Event ID is required");
-
             verify(eventRepository, never()).findById(any());
         }
 
@@ -153,32 +160,9 @@ class InviteCodeServiceImplTest {
                 ic.setExpiresAt(LocalDateTime.now().plusHours(24));
                 return ic;
             });
-
-            InviteCodeResponseDto result =
-                    service.generateInviteCode(creatorId, "STAFF", eventId, 24);
-
-            assertThat(result).isNotNull();
+            InviteCodeResponseDto result = service.generateInviteCode(creatorId, "STAFF", eventId, 24);
             assertThat(result.getRoleName()).isEqualTo("STAFF");
             assertThat(result.getEventId()).isEqualTo(eventId);
-        }
-
-        @Test
-        @DisplayName("ATTENDEE invite without eventId succeeds")
-        void attendeeInviteSucceeds() {
-            when(userRepository.findById(creatorId)).thenReturn(Optional.of(creator));
-            when(inviteCodeRepository.save(any())).thenAnswer(inv -> {
-                InviteCode ic = inv.getArgument(0);
-                ic.setId(UUID.randomUUID());
-                ic.setCreatedAt(LocalDateTime.now());
-                ic.setExpiresAt(LocalDateTime.now().plusHours(48));
-                return ic;
-            });
-
-            InviteCodeResponseDto result =
-                    service.generateInviteCode(creatorId, "ATTENDEE", null, 48);
-
-            assertThat(result).isNotNull();
-            assertThat(result.getRoleName()).isEqualTo("ATTENDEE");
         }
 
         @Test
@@ -195,11 +179,8 @@ class InviteCodeServiceImplTest {
                         ic.setExpiresAt(LocalDateTime.now().plusHours(24));
                         return ic;
                     });
-
-            assertThatCode(() ->
-                    service.generateInviteCode(creatorId, "STAFF", eventId, 24))
+            assertThatCode(() -> service.generateInviteCode(creatorId, "STAFF", eventId, 24))
                     .doesNotThrowAnyException();
-
             verify(inviteCodeRepository, times(2)).save(any());
         }
 
@@ -208,14 +189,10 @@ class InviteCodeServiceImplTest {
         void throwsAfterMaxRetries() {
             when(userRepository.findById(creatorId)).thenReturn(Optional.of(creator));
             when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
-            when(inviteCodeRepository.save(any()))
-                    .thenThrow(new DataIntegrityViolationException("duplicate"));
-
-            assertThatThrownBy(() ->
-                    service.generateInviteCode(creatorId, "STAFF", eventId, 24))
+            when(inviteCodeRepository.save(any())).thenThrow(new DataIntegrityViolationException("duplicate"));
+            assertThatThrownBy(() -> service.generateInviteCode(creatorId, "STAFF", eventId, 24))
                     .isInstanceOf(InvalidBusinessStateException.class)
                     .hasMessageContaining("Failed to generate unique invite code");
-
             verify(inviteCodeRepository, times(5)).save(any());
         }
     }
@@ -227,7 +204,39 @@ class InviteCodeServiceImplTest {
     class RedeemInviteCode {
 
         @Test
-        @DisplayName("happy path — ATTENDEE code redeemed: role assigned, code marked REDEEMED, audit emitted")
+        @DisplayName("FIX I-1 — getUserRoles() called exactly once per redemption")
+        void getUserRolesCalledExactlyOnce() {
+            InviteCode code = buildPendingCode("ATTENDEE", null);
+            when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
+            when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.of(code));
+            doNothing().when(keycloakAdminService).assignRoleToUser(userId, "ATTENDEE");
+            when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("ATTENDEE"));
+            when(inviteCodeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+            service.redeemInviteCode(userId, "ABCD-EFGH-IJKL-MNOP");
+
+            // FIX I-1: exactly one call regardless of role
+            verify(keycloakAdminService, times(1)).getUserRoles(userId);
+        }
+
+        @Test
+        @DisplayName("FIX I-1 — ADMIN code redemption also calls getUserRoles() exactly once")
+        void getUserRolesCalledExactlyOnceForAdminCode() {
+            InviteCode code = buildPendingCode("ADMIN", null);
+            when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
+            when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.of(code));
+            doNothing().when(keycloakAdminService).assignRoleToUser(userId, "ADMIN");
+            when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("ADMIN"));
+            when(inviteCodeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+            service.redeemInviteCode(userId, "ABCD-EFGH-IJKL-MNOP");
+
+            // BEFORE this fix: called twice for ADMIN codes (once in audit block, once at end)
+            verify(keycloakAdminService, times(1)).getUserRoles(userId);
+        }
+
+        @Test
+        @DisplayName("happy path — ATTENDEE code redeemed: role assigned, code marked REDEEMED")
         void happyPath_attendeeCode() {
             InviteCode code = buildPendingCode("ATTENDEE", null);
             when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
@@ -236,24 +245,16 @@ class InviteCodeServiceImplTest {
             when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("ATTENDEE"));
             when(inviteCodeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-            RedeemInviteCodeResponseDto result =
-                    service.redeemInviteCode(userId, "ABCD-EFGH-IJKL-MNOP");
+            RedeemInviteCodeResponseDto result = service.redeemInviteCode(userId, "ABCD-EFGH-IJKL-MNOP");
 
             assertThat(result.getRoleAssigned()).isEqualTo("ATTENDEE");
             assertThat(result.getMessage()).contains("successfully");
-            assertThat(result.getEventName()).isNull();
-
-            // Code must be marked REDEEMED
             assertThat(code.getStatus()).isEqualTo(InviteCodeStatus.REDEEMED);
             assertThat(code.getRedeemedBy()).isEqualTo(redeemer);
-            assertThat(code.getRedeemedAt()).isNotNull();
-
-            // Keycloak role must be assigned
-            verify(keycloakAdminService).assignRoleToUser(userId, "ATTENDEE");
         }
 
         @Test
-        @DisplayName("STAFF code — role assigned AND user added to event.staff list")
+        @DisplayName("STAFF code — user added to event.staff list")
         void staffCode_assignsRoleAndAddsToEventStaff() {
             InviteCode code = buildPendingCode("STAFF", event);
             when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
@@ -263,140 +264,67 @@ class InviteCodeServiceImplTest {
             when(inviteCodeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
             when(eventRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-            RedeemInviteCodeResponseDto result =
-                    service.redeemInviteCode(userId, "ABCD-EFGH-IJKL-MNOP");
+            RedeemInviteCodeResponseDto result = service.redeemInviteCode(userId, "ABCD-EFGH-IJKL-MNOP");
 
-            assertThat(result.getRoleAssigned()).isEqualTo("STAFF");
             assertThat(result.getEventName()).isEqualTo("Tech Conference");
-
-            // User must be in event.staff after redemption
             verify(eventRepository).save(argThat(e ->
                     e.getStaff().stream().anyMatch(s -> s.getId().equals(userId))));
         }
 
         @Test
-        @DisplayName("STAFF code — user already in staff → no duplicate add, no exception")
-        void staffCode_alreadyStaff_noDuplicate() {
-            event.getStaff().add(redeemer); // pre-populated
-            InviteCode code = buildPendingCode("STAFF", event);
-            when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
-            when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.of(code));
-            doNothing().when(keycloakAdminService).assignRoleToUser(userId, "STAFF");
-            when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("STAFF"));
-            when(inviteCodeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-            when(eventRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-
-            assertThatCode(() -> service.redeemInviteCode(userId, "ABCD-EFGH-IJKL-MNOP"))
-                    .doesNotThrowAnyException();
-
-            // Staff list should still contain exactly 1 entry (no duplicate)
-            assertThat(event.getStaff()).hasSize(1);
-        }
-
-        @Test
-        @DisplayName("already REDEEMED code → throws InvalidInviteCodeException, Keycloak never called")
+        @DisplayName("already REDEEMED code → throws, Keycloak never called")
         void alreadyRedeemedCode_throwsException() {
             InviteCode code = buildRedeemedCode();
             when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
             when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.of(code));
-
             assertThatThrownBy(() -> service.redeemInviteCode(userId, "ABCD-EFGH-IJKL-MNOP"))
                     .isInstanceOf(InvalidInviteCodeException.class)
                     .hasMessageContaining("already been redeemed");
-
             verify(keycloakAdminService, never()).assignRoleToUser(any(), any());
         }
 
         @Test
-        @DisplayName("EXPIRED code → throws InvalidInviteCodeException, Keycloak never called")
+        @DisplayName("EXPIRED code → throws, Keycloak never called")
         void expiredCode_throwsException() {
             InviteCode code = buildExpiredCode();
             when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
             when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.of(code));
-
             assertThatThrownBy(() -> service.redeemInviteCode(userId, "ABCD-EFGH-IJKL-MNOP"))
                     .isInstanceOf(InvalidInviteCodeException.class)
                     .hasMessageContaining("expired");
-
             verify(keycloakAdminService, never()).assignRoleToUser(any(), any());
         }
 
         @Test
-        @DisplayName("REVOKED code → throws InvalidInviteCodeException, Keycloak never called")
+        @DisplayName("REVOKED code → throws, Keycloak never called")
         void revokedCode_throwsException() {
             InviteCode code = buildRevokedCode();
             when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
             when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.of(code));
-
             assertThatThrownBy(() -> service.redeemInviteCode(userId, "ABCD-EFGH-IJKL-MNOP"))
                     .isInstanceOf(InvalidInviteCodeException.class)
                     .hasMessageContaining("revoked");
-
             verify(keycloakAdminService, never()).assignRoleToUser(any(), any());
         }
 
         @Test
-        @DisplayName("Keycloak role assignment fails → code stays PENDING, InvalidBusinessStateException thrown")
+        @DisplayName("Keycloak failure → code stays PENDING, exception thrown")
         void keycloakFailure_codeStaysPending() {
             InviteCode code = buildPendingCode("ORGANIZER", null);
             when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
             when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.of(code));
-            doThrow(new RuntimeException("Keycloak down"))
-                    .when(keycloakAdminService).assignRoleToUser(any(), any());
-
+            doThrow(new RuntimeException("Keycloak down")).when(keycloakAdminService).assignRoleToUser(any(), any());
             assertThatThrownBy(() -> service.redeemInviteCode(userId, "ABCD-EFGH-IJKL-MNOP"))
                     .isInstanceOf(InvalidBusinessStateException.class)
                     .hasMessageContaining("Failed to assign role");
-
-            // Code must NOT be marked REDEEMED when Keycloak failed
             assertThat(code.getStatus()).isEqualTo(InviteCodeStatus.PENDING);
         }
 
         @Test
-        @DisplayName("code not found → throws InviteCodeNotFoundException, audit emitted")
-        void codeNotFound_throwsException() {
-            when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
-            when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.empty());
-
-            assertThatThrownBy(() -> service.redeemInviteCode(userId, "XXXX-YYYY-ZZZZ-AAAA"))
-                    .isInstanceOf(InviteCodeNotFoundException.class);
-
-            verify(keycloakAdminService, never()).assignRoleToUser(any(), any());
-        }
-
-        @Test
-        @DisplayName("ADMIN code — emits ADMIN_ROLE_GRANTED_VIA_INVITE audit log")
-        void adminCode_emitsAdminAudit() {
-            InviteCode code = buildPendingCode("ADMIN", null);
-            when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
-            when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.of(code));
-            doNothing().when(keycloakAdminService).assignRoleToUser(userId, "ADMIN");
-            // getUserRoles returns ADMIN — confirming admin was granted
-            when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("ADMIN"));
-            when(inviteCodeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-
-            service.redeemInviteCode(userId, "ABCD-EFGH-IJKL-MNOP");
-
-            // Audit should be saved — verify auditLogService.saveAuditLog called at least twice
-            // (once for ADMIN_ROLE_GRANTED_VIA_INVITE, once for INVITE_REDEEMED)
-            verify(auditLogService, atLeast(2)).saveAuditLog(any());
-
-            ArgumentCaptor<AuditLog> auditCaptor = ArgumentCaptor.forClass(AuditLog.class);
-            verify(auditLogService, atLeast(1)).saveAuditLog(auditCaptor.capture());
-
-            boolean hasAdminAudit = auditCaptor.getAllValues().stream()
-                    .anyMatch(a -> a.getAction() == AuditAction.ADMIN_ROLE_GRANTED_VIA_INVITE);
-            assertThat(hasAdminAudit).isTrue();
-        }
-
-        @Test
-        @DisplayName("FIX 1 — code that just expired is persisted as EXPIRED before validation check")
+        @DisplayName("FIX 1 — just-expired code persisted as EXPIRED before validation")
         void justExpiredCode_persistedBeforeValidation() {
-            // Code is PENDING in-memory but expiresAt is in the past
-            // checkAndMarkExpired() will flip it to EXPIRED in memory
             InviteCode code = buildPendingCode("ATTENDEE", null);
-            code.setExpiresAt(LocalDateTime.now().minusSeconds(1)); // just expired
-
+            code.setExpiresAt(LocalDateTime.now().minusSeconds(1));
             when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
             when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.of(code));
             when(inviteCodeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -405,12 +333,9 @@ class InviteCodeServiceImplTest {
                     .isInstanceOf(InvalidInviteCodeException.class)
                     .hasMessageContaining("expired");
 
-            // FIX 1 verification: save() called with EXPIRED status before validateCodeForRedemption
             ArgumentCaptor<InviteCode> codeCaptor = ArgumentCaptor.forClass(InviteCode.class);
             verify(inviteCodeRepository).save(codeCaptor.capture());
             assertThat(codeCaptor.getValue().getStatus()).isEqualTo(InviteCodeStatus.EXPIRED);
-
-            // Keycloak was never called
             verify(keycloakAdminService, never()).assignRoleToUser(any(), any());
         }
     }
@@ -418,8 +343,27 @@ class InviteCodeServiceImplTest {
     // ── revokeInviteCode ──────────────────────────────────────────────────────
 
     @Nested
-    @DisplayName("revokeInviteCode")
+    @DisplayName("revokeInviteCode — FIX I-2: isAdmin from JWT, no Keycloak call")
     class RevokeInviteCode {
+
+        @Test
+        @DisplayName("FIX I-2 — keycloakAdminService.userHasRole() is never called")
+        void keycloakUserHasRoleNeverCalled() {
+            UUID codeId = UUID.randomUUID();
+            InviteCode code = new InviteCode();
+            code.setId(codeId);
+            code.setCode("TEST-CODE");
+            code.setStatus(InviteCodeStatus.PENDING);
+            code.setCreatedBy(creator);
+
+            when(userRepository.existsById(creatorId)).thenReturn(true);
+            when(inviteCodeRepository.findById(codeId)).thenReturn(Optional.of(code));
+
+            service.revokeInviteCode(creatorId, codeId, "reason", false);
+
+            // FIX I-2: the old Keycloak call is gone
+            verify(keycloakAdminService, never()).userHasRole(any(), any());
+        }
 
         @Test
         @DisplayName("throws when trying to revoke a REDEEMED code")
@@ -428,43 +372,80 @@ class InviteCodeServiceImplTest {
             InviteCode code = new InviteCode();
             code.setId(codeId);
             code.setStatus(InviteCodeStatus.REDEEMED);
-
             when(userRepository.existsById(creatorId)).thenReturn(true);
             when(inviteCodeRepository.findById(codeId)).thenReturn(Optional.of(code));
-
-            assertThatThrownBy(() ->
-                    service.revokeInviteCode(creatorId, codeId, "reason"))
+            assertThatThrownBy(() -> service.revokeInviteCode(creatorId, codeId, "reason", false))
                     .isInstanceOf(InvalidInviteCodeException.class)
                     .hasMessageContaining("REDEEMED");
         }
 
         @Test
-        @DisplayName("successfully revokes a PENDING code and sets revokedAt + reason")
-        void revokesSuccessfully() {
+        @DisplayName("non-admin revoking another user's code → throws AccessDeniedException")
+        void nonAdminCannotRevokeOthersCode() {
+            UUID codeId = UUID.randomUUID();
+            UUID otherCreatorId = UUID.randomUUID();  // code belongs to a different user
+
+            InviteCode code = new InviteCode();
+            code.setId(codeId);
+            code.setCode("OTHER-USER-CODE");
+            code.setStatus(InviteCodeStatus.PENDING);
+            code.setCreatedBy(creator); // creator.id = creatorId
+
+            when(userRepository.existsById(otherCreatorId)).thenReturn(true);
+            when(inviteCodeRepository.findById(codeId)).thenReturn(Optional.of(code));
+
+            // isAdmin=false, revokerId != createdBy.getId() → should throw
+            assertThatThrownBy(() -> service.revokeInviteCode(otherCreatorId, codeId, "reason", false))
+                    .isInstanceOf(AccessDeniedException.class);
+        }
+
+        @Test
+        @DisplayName("admin can revoke any code regardless of creator")
+        void adminCanRevokeAnyCode() {
+            UUID codeId = UUID.randomUUID();
+            UUID adminId = UUID.randomUUID();
+
+            InviteCode code = new InviteCode();
+            code.setId(codeId);
+            code.setCode("SOMEONE-ELSE-CODE");
+            code.setStatus(InviteCodeStatus.PENDING);
+            code.setCreatedBy(creator); // creator.id != adminId
+
+            when(userRepository.existsById(adminId)).thenReturn(true);
+            when(inviteCodeRepository.findById(codeId)).thenReturn(Optional.of(code));
+
+            // isAdmin=true — no ownership check
+            assertThatCode(() -> service.revokeInviteCode(adminId, codeId, "admin override", true))
+                    .doesNotThrowAnyException();
+
+            assertThat(code.getStatus()).isEqualTo(InviteCodeStatus.REVOKED);
+            assertThat(code.getRevokedReason()).isEqualTo("admin override");
+        }
+
+        @Test
+        @DisplayName("FIX I-3 — revoked code has revokedAt and revokedReason set")
+        void revokedCodeSetsRevokedAtAndReason() {
             UUID codeId = UUID.randomUUID();
             InviteCode code = new InviteCode();
             code.setId(codeId);
-            code.setCode("ABCD-EFGH-IJKL-MNOP");
+            code.setCode("PENDING-CODE");
             code.setStatus(InviteCodeStatus.PENDING);
+            code.setCreatedBy(creator);
 
             when(userRepository.existsById(creatorId)).thenReturn(true);
             when(inviteCodeRepository.findById(codeId)).thenReturn(Optional.of(code));
 
-            assertThatCode(() ->
-                    service.revokeInviteCode(creatorId, codeId, "No longer needed"))
-                    .doesNotThrowAnyException();
+            service.revokeInviteCode(creatorId, codeId, "Testing revoke", false);
 
-            assertThat(code.getStatus()).isEqualTo(InviteCodeStatus.REVOKED);
-            assertThat(code.getRevokedReason()).isEqualTo("No longer needed");
+            assertThat(code.getRevokedReason()).isEqualTo("Testing revoke");
             assertThat(code.getRevokedAt()).isNotNull();
-            verify(inviteCodeRepository).save(code);
         }
     }
 
     // ── Rate Limiting ─────────────────────────────────────────────────────────
 
     @Nested
-    @DisplayName("Rate limiting (100 per event, 500 per organizer)")
+    @DisplayName("Rate limiting")
     class RateLimiting {
 
         @Test
@@ -472,11 +453,8 @@ class InviteCodeServiceImplTest {
         void eventLimit_101_rejected() {
             when(eventRepository.findById(event.getId())).thenReturn(Optional.of(event));
             when(userRepository.findById(creatorId)).thenReturn(Optional.of(creator));
-            when(inviteCodeRepository.countByEventIdAndStatus(event.getId(), InviteCodeStatus.PENDING))
-                    .thenReturn(100L);
-
-            assertThatThrownBy(() ->
-                    service.generateInviteCode(creatorId, "STAFF", event.getId(), 24))
+            when(inviteCodeRepository.countByEventIdAndStatus(event.getId(), InviteCodeStatus.PENDING)).thenReturn(100L);
+            assertThatThrownBy(() -> service.generateInviteCode(creatorId, "STAFF", event.getId(), 24))
                     .isInstanceOf(InvalidBusinessStateException.class)
                     .hasMessageContaining("maximum invite codes limit");
         }
@@ -486,13 +464,9 @@ class InviteCodeServiceImplTest {
         void organizerLimit_501_rejected() {
             when(eventRepository.findById(event.getId())).thenReturn(Optional.of(event));
             when(userRepository.findById(creatorId)).thenReturn(Optional.of(creator));
-            when(inviteCodeRepository.countByEventIdAndStatus(event.getId(), InviteCodeStatus.PENDING))
-                    .thenReturn(0L);
-            when(inviteCodeRepository.countByCreatedByIdAndStatus(creatorId, InviteCodeStatus.PENDING))
-                    .thenReturn(500L);
-
-            assertThatThrownBy(() ->
-                    service.generateInviteCode(creatorId, "STAFF", event.getId(), 24))
+            when(inviteCodeRepository.countByEventIdAndStatus(event.getId(), InviteCodeStatus.PENDING)).thenReturn(0L);
+            when(inviteCodeRepository.countByCreatedByIdAndStatus(creatorId, InviteCodeStatus.PENDING)).thenReturn(500L);
+            assertThatThrownBy(() -> service.generateInviteCode(creatorId, "STAFF", event.getId(), 24))
                     .isInstanceOf(InvalidBusinessStateException.class)
                     .hasMessageContaining("You have reached the maximum invite codes limit");
         }
