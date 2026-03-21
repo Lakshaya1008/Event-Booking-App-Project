@@ -30,6 +30,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,25 +39,21 @@ import static com.event.tickets.util.RequestUtil.extractUserAgent;
 import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
 /**
- * FIXES APPLIED IN THIS VERSION:
+ * FIXES APPLIED:
  *
- * FIX 1 — checkAndMarkExpired() result is persisted before validateCodeForRedemption().
- *   BEFORE: checkAndMarkExpired() mutated inviteCode.status in memory to EXPIRED,
- *   but inviteCodeRepository.save() was only called after validateCodeForRedemption().
- *   In a concurrent scenario two threads could both read the same PENDING code,
- *   both call checkAndMarkExpired() (in-memory only), both proceed to validateCodeForRedemption(),
- *   and both pass the PENDING check — because neither thread had persisted the EXPIRED state.
- *   A user could redeem a code that expired milliseconds ago.
- *   AFTER: if checkAndMarkExpired() transitions the code to EXPIRED, we persist it
- *   immediately before calling validateCodeForRedemption(). The second concurrent
- *   thread will either read EXPIRED from the DB or lose the optimistic lock (@Version).
+ * FIX-IC1 — Role permission matrix enforced in generateInviteCode().
+ *   BEFORE: Any authenticated user could generate any role's invite code.
+ *   AFTER:
+ *     ADMIN codes     → only ADMIN can generate
+ *     ORGANIZER codes → only ADMIN can generate
+ *     STAFF codes     → ADMIN or ORGANIZER can generate, but ORGANIZER must own the event
  *
- * FIX 2 — @Transactional import standardised to org.springframework.
- *   jakarta.transaction.@Transactional removed. All annotations are now
- *   org.springframework.transaction.annotation.@Transactional for consistency.
+ * FIX-IC2 — ORGANIZER can only create STAFF codes for their own events.
+ *   Prevents an organizer from staffing events they don't own.
  *
- * FIX 3 — getCurrentRequest() now uses RequestUtil.getCurrentRequest().
- *   Removed private helper; delegates to the centralised utility.
+ * FIX-IC3 — redeemInviteCode() blocks PENDING users from upgrading their role.
+ *   A user who is PENDING approval cannot redeem a second invite code to silently
+ *   change their Keycloak role before admin has reviewed them.
  */
 @Service
 @RequiredArgsConstructor
@@ -90,6 +87,10 @@ public class InviteCodeServiceImpl implements InviteCodeService {
                 .orElseThrow(() -> new UserNotFoundException(
                         String.format("Creator with ID '%s' not found", creatorId)));
 
+        // FIX-IC1: Enforce who can create which role's invite code.
+        List<String> creatorRoles = keycloakAdminService.getUserRoles(creatorId);
+        enforceInviteGenerationPermissions(creatorId, creatorRoles, roleName);
+
         if ("STAFF".equals(roleName) && eventId == null) {
             throw new InvalidInputException("Event ID is required for STAFF role invites");
         }
@@ -99,6 +100,14 @@ public class InviteCodeServiceImpl implements InviteCodeService {
             event = eventRepository.findById(eventId)
                     .orElseThrow(() -> new EventNotFoundException(
                             String.format("Event with ID '%s' not found", eventId)));
+
+            // FIX-IC2: ORGANIZER may only create STAFF codes for events they own.
+            if (!creatorRoles.contains("ADMIN") && "STAFF".equals(roleName)) {
+                if (event.getOrganizer() == null || !event.getOrganizer().getId().equals(creatorId)) {
+                    throw new AccessDeniedException(
+                            "Organizers can only create STAFF invite codes for their own events.");
+                }
+            }
 
             long inviteCountForEvent = inviteCodeRepository.countByEventIdAndStatus(eventId, InviteCodeStatus.PENDING);
             if (inviteCountForEvent >= MAX_INVITES_PER_EVENT) {
@@ -140,8 +149,42 @@ public class InviteCodeServiceImpl implements InviteCodeService {
             }
         }
 
-        log.info("Generated invite code '{}' for role '{}', expires at {}", code, roleName, expiresAt);
+        log.info("Generated invite code for role '{}', expires at {}", roleName, expiresAt);
         return mapToResponseDto(inviteCode);
+    }
+
+    /**
+     * FIX-IC1: Enforce the role-based permission matrix for invite code generation.
+     *
+     * Rules:
+     *  - ADMIN code    → creator must be ADMIN
+     *  - ORGANIZER code → creator must be ADMIN
+     *  - STAFF code    → creator must be ADMIN or ORGANIZER
+     *  - ATTENDEE code → not allowed (attendees register without invite codes)
+     */
+    private void enforceInviteGenerationPermissions(UUID creatorId, List<String> creatorRoles, String roleName) {
+        boolean isAdmin     = creatorRoles.contains("ADMIN");
+        boolean isOrganizer = creatorRoles.contains("ORGANIZER");
+
+        switch (roleName) {
+            case "ADMIN" -> {
+                if (!isAdmin)
+                    throw new AccessDeniedException("Only ADMIN can generate ADMIN invite codes.");
+            }
+            case "ORGANIZER" -> {
+                if (!isAdmin)
+                    throw new AccessDeniedException("Only ADMIN can generate ORGANIZER invite codes.");
+            }
+            case "STAFF" -> {
+                if (!isAdmin && !isOrganizer)
+                    throw new AccessDeniedException("Only ADMIN or ORGANIZER can generate STAFF invite codes.");
+            }
+            case "ATTENDEE" -> throw new InvalidInputException(
+                    "ATTENDEE invite codes cannot be generated. Attendees register without an invite code.");
+            default -> throw new InvalidInputException("Unknown role: " + roleName);
+        }
+
+        log.debug("Invite generation permission granted: creatorId={}, role={}", creatorId, roleName);
     }
 
     // ── REDEEM ────────────────────────────────────────────────────────────────
@@ -155,14 +198,19 @@ public class InviteCodeServiceImpl implements InviteCodeService {
                 .orElseThrow(() -> new UserNotFoundException(
                         String.format("User with ID '%s' not found", userId)));
 
+        // FIX-IC3: Block PENDING users from upgrading their role via invite redemption.
+        // They must wait for admin approval on their current registration first.
+        if (user.getApprovalStatus() != null &&
+                user.getApprovalStatus() == com.event.tickets.domain.entities.ApprovalStatus.PENDING) {
+            throw new InvalidBusinessStateException(
+                    "Your account is pending admin approval. You cannot redeem invite codes until your account is approved.");
+        }
+
         try {
             InviteCode inviteCode = inviteCodeRepository.findByCode(code)
                     .orElseThrow(() -> new InviteCodeNotFoundException(
                             String.format("Invite code '%s' not found", code)));
 
-            // FIX 1: Persist the EXPIRED status immediately if the code just expired.
-            // Without this save, a concurrent redemption reads PENDING from the DB and
-            // bypasses the EXPIRED check in validateCodeForRedemption().
             InviteCodeStatus statusBeforeCheck = inviteCode.getStatus();
             inviteCode.checkAndMarkExpired();
             if (inviteCode.getStatus() == InviteCodeStatus.EXPIRED
@@ -173,7 +221,6 @@ public class InviteCodeServiceImpl implements InviteCodeService {
 
             validateCodeForRedemption(inviteCode);
 
-            // Assign role in Keycloak
             try {
                 keycloakAdminService.assignRoleToUser(userId, inviteCode.getRoleName());
                 log.info("Assigned role '{}' to user '{}'", inviteCode.getRoleName(), userId);
@@ -185,7 +232,6 @@ public class InviteCodeServiceImpl implements InviteCodeService {
                                 inviteCode.getRoleName(), e.getMessage()), e);
             }
 
-            // High-severity audit for ADMIN role grants
             if ("ADMIN".equals(inviteCode.getRoleName())) {
                 try {
                     List<String> currentRoles = keycloakAdminService.getUserRoles(userId);
@@ -201,7 +247,6 @@ public class InviteCodeServiceImpl implements InviteCodeService {
                 }
             }
 
-            // Assign to event staff list if STAFF code
             String eventName = null;
             if ("STAFF".equals(inviteCode.getRoleName()) && inviteCode.getEvent() != null) {
                 Event staffEvent = inviteCode.getEvent();
@@ -218,7 +263,6 @@ public class InviteCodeServiceImpl implements InviteCodeService {
                 log.info("Assigned user '{}' as staff to event '{}'", user.getName(), staffEvent.getName());
             }
 
-            // Mark code as redeemed
             inviteCode.setStatus(InviteCodeStatus.REDEEMED);
             inviteCode.setRedeemedBy(user);
             inviteCode.setRedeemedAt(LocalDateTime.now());
@@ -252,6 +296,12 @@ public class InviteCodeServiceImpl implements InviteCodeService {
         InviteCode inviteCode = inviteCodeRepository.findById(codeId)
                 .orElseThrow(() -> new InviteCodeNotFoundException(
                         String.format("Invite code with ID '%s' not found", codeId)));
+
+        boolean isAdmin = keycloakAdminService.userHasRole(revokerId, "ADMIN");
+        if (!isAdmin && (inviteCode.getCreatedBy() == null
+                || !revokerId.equals(inviteCode.getCreatedBy().getId()))) {
+            throw new AccessDeniedException("You are not allowed to revoke invite codes created by other users.");
+        }
 
         if (inviteCode.getStatus() != InviteCodeStatus.PENDING)
             throw new InvalidInviteCodeException(

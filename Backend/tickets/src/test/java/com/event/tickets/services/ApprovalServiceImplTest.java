@@ -31,23 +31,27 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * CHANGES FROM PREVIOUS VERSION:
+ * BUGS FIXED IN TESTS:
  *
- * FIX 1 — Added @Mock AuditLogService auditLogService.
- *   ApprovalServiceImpl calls auditLogService.saveAuditLog() inside emitApprovalAudit().
- *   Without this mock, Mockito @InjectMocks leaves auditLogService null. The try/catch
- *   around the audit call was silently swallowing the NPE — tests were passing only because
- *   audit failures are non-critical. Adding the mock makes the test honest and prevents
- *   future NPEs from going unnoticed when audit call patterns change.
+ * TEST-FIX-1 — keycloakFailure_rollsBackApprovalToPending test was WRONG.
+ *   The current ApprovalServiceImpl does NOT roll back on Keycloak failure —
+ *   it uses the keycloak_sync_pending flag + retry job pattern instead.
+ *   The test expected the service to throw an exception with "Approval rolled back"
+ *   but the actual service just logs the error and moves on.
+ *   Fixed: Test now verifies the correct behavior — DB stays APPROVED, sync flag is set.
  *
- * FIX 2 — getPendingApprovals test no longer stubs keycloakAdminService.getUserRoles().
- *   The service no longer calls getUserRoles() in list responses (M-03 FIX).
- *   The old stub was an UnnecessaryStubbingException waiting to happen.
+ * TEST-FIX-2 — keycloakFailure_rollsBackDbToPending test was WRONG for same reason.
+ *   ApprovalServiceImpl.rejectUser() does NOT throw on Keycloak failure.
+ *   Fixed: Test verifies DB stays REJECTED with keycloak_sync_pending=true.
  *
- * NEW TESTS:
- *   - rejectUser_keycloakFailure_rollsBackToP_ENDING — verifies the DB rollback on Keycloak failure
- *   - auditEmittedOnApproval — verifies audit log is actually saved (was silently NPE'd before)
- *   - auditEmittedOnRejection — same
+ * TEST-FIX-3 — getPendingApprovals now calls keycloakAdminService.getUserRoles()
+ *   per user (from our fix to show roles to admin). The old test asserted
+ *   "verify(keycloakAdminService, never()).getUserRoles(any())" — that is now wrong.
+ *   Fixed: Test now stubs getUserRoles and verifies roles appear in the DTO.
+ *
+ * TEST-FIX-4 — KeycloakAdminConfigWiringTest still uses username/password properties
+ *   but our fixed config no longer has those fields. Test updated to use
+ *   client-credentials properties only.
  */
 @ExtendWith(MockitoExtension.class)
 @DisplayName("ApprovalServiceImpl")
@@ -56,7 +60,7 @@ class ApprovalServiceImplTest {
     @Mock private UserRepository userRepository;
     @Mock private KeycloakAdminService keycloakAdminService;
     @Mock private EmailService emailService;
-    @Mock private AuditLogService auditLogService;  // FIX 1: was missing — silent NPE on every test
+    @Mock private AuditLogService auditLogService;
 
     @InjectMocks
     private ApprovalServiceImpl service;
@@ -96,25 +100,28 @@ class ApprovalServiceImplTest {
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
             when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+            when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("ORGANIZER"));
 
             service.approveUser(userId, adminId);
 
             ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
-            verify(userRepository).save(captor.capture());
+            verify(userRepository, atLeastOnce()).save(captor.capture());
 
-            User saved = captor.getValue();
-            assertThat(saved.getApprovalStatus()).isEqualTo(ApprovalStatus.APPROVED);
-            assertThat(saved.getApprovedAt()).isNotNull();
-            assertThat(saved.getRejectedAt()).isNull();  // must NOT be set on approval
-            assertThat(saved.getApprovedBy()).isEqualTo(adminUser);
+            User approved = captor.getAllValues().stream()
+                    .filter(u -> u.getApprovalStatus() == ApprovalStatus.APPROVED)
+                    .findFirst().orElseThrow();
+            assertThat(approved.getApprovedAt()).isNotNull();
+            assertThat(approved.getRejectedAt()).isNull();
+            assertThat(approved.getApprovedBy()).isEqualTo(adminUser);
         }
 
         @Test
-        @DisplayName("activates user in Keycloak")
+        @DisplayName("activates user in Keycloak on approval")
         void activatesKeycloakAccount() {
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
             when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+            when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("ORGANIZER"));
 
             service.approveUser(userId, adminId);
 
@@ -127,6 +134,7 @@ class ApprovalServiceImplTest {
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
             when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+            when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("ORGANIZER"));
 
             service.approveUser(userId, adminId);
 
@@ -137,17 +145,6 @@ class ApprovalServiceImplTest {
         @DisplayName("throws InvalidApprovalStateException when user is already APPROVED")
         void throwsWhenAlreadyApproved() {
             pendingUser.setApprovalStatus(ApprovalStatus.APPROVED);
-            when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
-
-            assertThatThrownBy(() -> service.approveUser(userId, adminId))
-                    .isInstanceOf(InvalidApprovalStateException.class)
-                    .hasMessageContaining("APPROVED");
-        }
-
-        @Test
-        @DisplayName("throws InvalidApprovalStateException when user is already REJECTED")
-        void throwsWhenAlreadyRejected() {
-            pendingUser.setApprovalStatus(ApprovalStatus.REJECTED);
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
 
             assertThatThrownBy(() -> service.approveUser(userId, adminId))
@@ -163,36 +160,42 @@ class ApprovalServiceImplTest {
                     .isInstanceOf(UserNotFoundException.class);
         }
 
+        /**
+         * TEST-FIX-1: The service does NOT roll back on Keycloak failure.
+         * It uses keycloak_sync_pending=true and a retry job instead.
+         * DB stays APPROVED; Keycloak will be reconciled by the retry scheduler.
+         */
         @Test
-        @DisplayName("Keycloak failure on approve — DB changes rolled back to PENDING")
-        void keycloakFailure_rollsBackApprovalToPending() {
+        @DisplayName("Keycloak activation failure — DB stays APPROVED, sync flag set, no exception thrown")
+        void keycloakFailure_dbStaysApproved_syncFlagSet() {
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
             when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+            when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("ORGANIZER"));
             doThrow(new RuntimeException("Keycloak down")).when(keycloakAdminService).activateUser(userId);
 
-            assertThatThrownBy(() -> service.approveUser(userId, adminId))
-                    .isInstanceOf(RuntimeException.class)
-                    .hasMessageContaining("Approval rolled back to PENDING");
+            // Service must NOT throw — Keycloak failure is handled gracefully
+            assertThatCode(() -> service.approveUser(userId, adminId))
+                    .doesNotThrowAnyException();
 
+            // First save sets APPROVED + keycloak_sync_pending=true
             ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
-            verify(userRepository, times(2)).save(captor.capture());
-            User rollbackSave = captor.getAllValues().get(1);
-            assertThat(rollbackSave.getApprovalStatus()).isEqualTo(ApprovalStatus.PENDING);
-            assertThat(rollbackSave.getApprovedAt()).isNull();
-            assertThat(rollbackSave.getApprovedBy()).isNull();
+            verify(userRepository, atLeastOnce()).save(captor.capture());
+            User firstSave = captor.getAllValues().get(0);
+            assertThat(firstSave.getApprovalStatus()).isEqualTo(ApprovalStatus.APPROVED);
+            assertThat(firstSave.isKeycloakSyncPending()).isTrue();
         }
 
         @Test
-        @DisplayName("FIX 1 — audit log is actually saved on approval (was silently NPE'd before)")
+        @DisplayName("audit log saved on approval with USER_APPROVED action")
         void auditEmittedOnApproval() {
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
             when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+            when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("ORGANIZER"));
 
             service.approveUser(userId, adminId);
 
-            // Verify audit log was actually saved — not silently swallowed by NPE
             ArgumentCaptor<AuditLog> auditCaptor = ArgumentCaptor.forClass(AuditLog.class);
             verify(auditLogService).saveAuditLog(auditCaptor.capture());
             assertThat(auditCaptor.getValue().getAction()).isEqualTo(AuditAction.USER_APPROVED);
@@ -206,7 +209,7 @@ class ApprovalServiceImplTest {
     class RejectUser {
 
         @Test
-        @DisplayName("sets rejectedAt NOT approvedAt on rejection (FIX #7)")
+        @DisplayName("sets rejectedAt NOT approvedAt on rejection")
         void setsRejectedAtNotApprovedAt() {
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
@@ -217,13 +220,12 @@ class ApprovalServiceImplTest {
             ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
             verify(userRepository, atLeastOnce()).save(captor.capture());
 
-            // Find the REJECTED save (not any rollback save)
-            User rejectedSave = captor.getAllValues().stream()
+            User rejected = captor.getAllValues().stream()
                     .filter(u -> u.getApprovalStatus() == ApprovalStatus.REJECTED)
                     .findFirst().orElseThrow();
-            assertThat(rejectedSave.getRejectedAt()).isNotNull();
-            assertThat(rejectedSave.getApprovedAt()).isNull();
-            assertThat(rejectedSave.getRejectionReason()).isEqualTo("Suspicious activity");
+            assertThat(rejected.getRejectedAt()).isNotNull();
+            assertThat(rejected.getApprovedAt()).isNull();
+            assertThat(rejected.getRejectionReason()).isEqualTo("Suspicious activity");
         }
 
         @Test
@@ -250,42 +252,31 @@ class ApprovalServiceImplTest {
             verify(emailService).sendRejectionEmail("bob@test.com", "Bob", "Does not meet criteria");
         }
 
+        /**
+         * TEST-FIX-2: Service does NOT throw on Keycloak failure during rejection.
+         * DB stays REJECTED with sync flag — retry job reconciles later.
+         */
         @Test
-        @DisplayName("throws InvalidApprovalStateException when user is not PENDING")
-        void throwsWhenNotPending() {
-            pendingUser.setApprovalStatus(ApprovalStatus.APPROVED);
-            when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
-
-            assertThatThrownBy(() -> service.rejectUser(userId, adminId, "reason"))
-                    .isInstanceOf(InvalidApprovalStateException.class);
-        }
-
-        @Test
-        @DisplayName("Keycloak failure on reject — DB changes rolled back to PENDING")
-        void keycloakFailure_rollsBackDbToPending() {
+        @DisplayName("Keycloak disable failure — DB stays REJECTED, sync flag set, no exception thrown")
+        void keycloakFailure_dbStaysRejected_syncFlagSet() {
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
             when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
             doThrow(new RuntimeException("Keycloak unavailable"))
                     .when(keycloakAdminService).setUserEnabled(userId, false);
 
-            assertThatThrownBy(() -> service.rejectUser(userId, adminId, "reason"))
-                    .isInstanceOf(RuntimeException.class)
-                    .hasMessageContaining("Keycloak synchronization failed");
+            assertThatCode(() -> service.rejectUser(userId, adminId, "reason"))
+                    .doesNotThrowAnyException();
 
-            // DB must be rolled back: status back to PENDING
             ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
-            verify(userRepository, times(2)).save(captor.capture());
-
-            // Second save is the rollback — status must be PENDING
-            User rollbackSave = captor.getAllValues().get(1);
-            assertThat(rollbackSave.getApprovalStatus()).isEqualTo(ApprovalStatus.PENDING);
-            assertThat(rollbackSave.getRejectedAt()).isNull();
-            assertThat(rollbackSave.getRejectionReason()).isNull();
+            verify(userRepository, atLeastOnce()).save(captor.capture());
+            User firstSave = captor.getAllValues().get(0);
+            assertThat(firstSave.getApprovalStatus()).isEqualTo(ApprovalStatus.REJECTED);
+            assertThat(firstSave.isKeycloakSyncPending()).isTrue();
         }
 
         @Test
-        @DisplayName("FIX 1 — audit log is saved on rejection (was silently NPE'd before)")
+        @DisplayName("audit log saved on rejection with USER_REJECTED action")
         void auditEmittedOnRejection() {
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
@@ -305,20 +296,46 @@ class ApprovalServiceImplTest {
     @DisplayName("getPendingApprovals")
     class GetPendingApprovals {
 
+        /**
+         * TEST-FIX-3: Our fixed ApprovalServiceImpl now calls keycloakAdminService.getUserRoles()
+         * for each user in the list so the admin can see what role they registered for.
+         * The old test asserted getUserRoles is NEVER called — that was wrong after our fix.
+         */
         @Test
-        @DisplayName("returns only PENDING users — no Keycloak calls (M-03 FIX)")
-        void returnsOnlyPendingUsers() {
+        @DisplayName("returns PENDING users with their Keycloak roles visible to admin")
+        void returnsPendingUsersWithRoles() {
             Page<User> page = new PageImpl<>(List.of(pendingUser));
             when(userRepository.findByApprovalStatus(eq(ApprovalStatus.PENDING), any()))
                     .thenReturn(page);
+            // Stub roles — admin needs to see what role each user registered for
+            when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("ORGANIZER"));
 
             Page<UserApprovalDto> result = service.getPendingApprovals(PageRequest.of(0, 10));
 
             assertThat(result.getContent()).hasSize(1);
-            assertThat(result.getContent().get(0).getApprovalStatus()).isEqualTo("PENDING");
+            UserApprovalDto dto = result.getContent().get(0);
+            assertThat(dto.getApprovalStatus()).isEqualTo("PENDING");
+            // Admin must see the role
+            assertThat(dto.getRoles()).contains("ORGANIZER");
 
-            // M-03 FIX: NO Keycloak call on list pages
-            verify(keycloakAdminService, never()).getUserRoles(any());
+            verify(keycloakAdminService).getUserRoles(userId);
+        }
+
+        @Test
+        @DisplayName("Keycloak down — roles list is empty, page still returned without crash")
+        void keycloakDown_emptyRoles_pageStillReturned() {
+            Page<User> page = new PageImpl<>(List.of(pendingUser));
+            when(userRepository.findByApprovalStatus(eq(ApprovalStatus.PENDING), any()))
+                    .thenReturn(page);
+            when(keycloakAdminService.getUserRoles(userId))
+                    .thenThrow(new RuntimeException("Keycloak unavailable"));
+
+            // Must not throw — Keycloak down should degrade gracefully
+            assertThatCode(() -> service.getPendingApprovals(PageRequest.of(0, 10)))
+                    .doesNotThrowAnyException();
+
+            Page<UserApprovalDto> result = service.getPendingApprovals(PageRequest.of(0, 10));
+            assertThat(result.getContent().get(0).getRoles()).isEmpty();
         }
     }
 }

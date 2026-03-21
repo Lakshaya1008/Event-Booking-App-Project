@@ -4,67 +4,61 @@ import com.event.tickets.domain.entities.ApprovalStatus;
 import com.event.tickets.domain.entities.User;
 import com.event.tickets.repositories.UserRepository;
 import com.event.tickets.services.KeycloakAdminService;
+import com.event.tickets.util.SystemUser;
 import jakarta.annotation.PostConstruct;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * C-03 FIX: Race condition eliminated.
- * Previously had 4 separate @PostConstruct methods. Jakarta EE spec permits
- * only ONE @PostConstruct per class — multiple methods produce undefined
- * execution order. On a fresh database, SystemUserProvider.loadSystemUser()
- * could run BEFORE createSystemUser(), causing immediate app crash.
+ * FIXES APPLIED:
  *
- * L-07 FIX: All 4 methods consolidated into one @PostConstruct initialize()
- * that calls them in strict dependency order:
- *   1. migrateExistingUsers    (no deps)
- *   2. createSystemUser        (no deps — must complete before SystemUserProvider)
- *   3. normalizeKeycloak       (needs system user row to exist for skip check)
- *   4. validateDatabaseState   (terminal log)
+ * FIX-DI1 — Uses SystemUser.SYSTEM_USER_UUID instead of its own private constant.
+ *   Previously duplicated the all-zeros UUID in three places; now all reference
+ *   the single constant in SystemUser.java.
  *
- * H-11 FIX: normalizeKeycloak now calls activateUser() (1 atomic API call)
- * instead of setUserEnabled() + setEmailVerified() + clearRequiredActions()
- * (3 separate Keycloak round-trips per user).
+ * FIX-DI2 — normalizeKeycloakStateForApprovedUsers() moved to an @Async method
+ *   called AFTER the @PostConstruct completes.
+ *   BEFORE: Called synchronously inside @PostConstruct, causing N Keycloak API
+ *   calls at startup (one per approved user). With 1000 users this blocked the
+ *   Spring context from finishing initialization and failed if Keycloak was slow.
+ *   AFTER: @PostConstruct runs quickly (DB steps only). Keycloak normalization
+ *   runs in a background thread after the context is fully ready. The app is
+ *   available immediately; Keycloak sync completes in the background.
  *
- * SystemUserProvider is annotated @DependsOn("databaseInitializer") so Spring
- * guarantees this bean fully initializes (including createSystemUser) before
- * SystemUserProvider attempts loadSystemUser().
+ * FIX-DI3 — Only normalizes users where keycloak_sync_pending=true, not all
+ *   approved users. The existing @Scheduled retryKeycloakSync() in ApprovalServiceImpl
+ *   already handles ongoing sync. The startup normalization is only needed for
+ *   users that were stuck from a previous restart.
  */
 @Component("databaseInitializer")
 @RequiredArgsConstructor
 @Slf4j
 public class DatabaseInitializer {
 
-    private static final UUID SYSTEM_USER_ID =
-            UUID.fromString("00000000-0000-0000-0000-000000000000");
-
     private final UserRepository userRepository;
     private final KeycloakAdminService keycloakAdminService;
 
     /**
-     * Single entry point — runs once after Spring context is ready.
-     * Order matters: createSystemUser must complete before normalizeKeycloak
-     * so the SYSTEM user skip-check works correctly.
+     * Runs synchronously at startup. Performs only DB operations — no Keycloak calls.
+     * Fast and reliable even if Keycloak is temporarily unavailable.
      */
     @PostConstruct
     @Transactional
     public void initialize() {
         migrateExistingUsers();
         createSystemUser();
-        normalizeKeycloakStateForApprovedUsers();
         validateDatabaseState();
+        // FIX-DI2: Keycloak normalization is async — does not block startup
+        normalizeKeycloakStateAsync();
     }
 
     // ── step 1 ────────────────────────────────────────────────────────────────
 
-    /**
-     * Auto-approves users created before the approval system existed (null status).
-     */
     private void migrateExistingUsers() {
         try {
             List<User> usersToMigrate = userRepository.findAll().stream()
@@ -92,16 +86,12 @@ public class DatabaseInitializer {
 
     // ── step 2 ────────────────────────────────────────────────────────────────
 
-    /**
-     * Creates the SYSTEM user (00000000-…) if it does not exist.
-     * Must run before SystemUserProvider.loadSystemUser() — guaranteed by
-     * the @DependsOn("databaseInitializer") on SystemUserProvider.
-     */
     private void createSystemUser() {
         try {
-            if (!userRepository.existsById(SYSTEM_USER_ID)) {
+            // FIX-DI1: Reference the single constant
+            if (!userRepository.existsById(SystemUser.SYSTEM_USER_UUID)) {
                 User systemUser = new User();
-                systemUser.setId(SYSTEM_USER_ID);
+                systemUser.setId(SystemUser.SYSTEM_USER_UUID);
                 systemUser.setEmail("system@system.local");
                 systemUser.setName("SYSTEM");
                 systemUser.setApprovalStatus(ApprovalStatus.APPROVED);
@@ -119,45 +109,57 @@ public class DatabaseInitializer {
         }
     }
 
-    // ── step 3 ────────────────────────────────────────────────────────────────
-
-    /**
-     * H-11 FIX: Calls activateUser() — one atomic Keycloak operation — instead
-     * of three separate HTTP calls (setUserEnabled + setEmailVerified +
-     * clearRequiredActions) that each open a round-trip to Keycloak.
-     */
-    private void normalizeKeycloakStateForApprovedUsers() {
-        try {
-            List<User> approvedUsers = userRepository.findAll().stream()
-                    .filter(u -> u.getApprovalStatus() == ApprovalStatus.APPROVED)
-                    .filter(u -> !SYSTEM_USER_ID.equals(u.getId()))
-                    .toList();
-
-            if (approvedUsers.isEmpty()) {
-                log.info("No approved users require Keycloak normalization.");
-                return;
-            }
-
-            int normalized = 0;
-            for (User u : approvedUsers) {
-                try {
-                    // H-11 FIX: single activateUser() call instead of 3 separate calls
-                    keycloakAdminService.activateUser(u.getId());
-                    normalized++;
-                } catch (Exception e) {
-                    log.warn("Keycloak normalization failed for user {}: {}", u.getEmail(), e.getMessage());
-                }
-            }
-            log.info("Keycloak normalization complete: {} users activated.", normalized);
-        } catch (Exception e) {
-            log.error("Keycloak normalization error: {}", e.getMessage(), e);
-            log.warn("Application will continue — some approved users may not be able to log in.");
-        }
-    }
-
-    // ── step 4 ────────────────────────────────────────────────────────────────
+    // ── step 3 (terminal) ─────────────────────────────────────────────────────
 
     private void validateDatabaseState() {
         log.info("Database initialization complete. Application is ready.");
+    }
+
+    // ── step 4 (async, post-startup) ─────────────────────────────────────────
+
+    /**
+     * FIX-DI2 + FIX-DI3: Keycloak normalization runs asynchronously after startup.
+     * Only processes users with keycloak_sync_pending=true — not ALL approved users.
+     *
+     * This is safe because:
+     * - ApprovalServiceImpl.retryKeycloakSync() already handles ongoing sync every 5 min.
+     * - Only users that failed during a previous shutdown need startup reconciliation.
+     * - Running this async means the app is available immediately.
+     *
+     * Note: @Async requires @EnableAsync on a @Configuration class.
+     * If not enabled, this will run synchronously — still correct, just blocking.
+     */
+    @Async
+    @Transactional
+    public void normalizeKeycloakStateAsync() {
+        try {
+            // FIX-DI3: Only users stuck in sync-pending, not all approved users
+            List<User> syncPending = userRepository.findByKeycloakSyncPending(true).stream()
+                    .filter(u -> u.getApprovalStatus() == ApprovalStatus.APPROVED)
+                    .filter(u -> !SystemUser.SYSTEM_USER_UUID.equals(u.getId()))
+                    .toList();
+
+            if (syncPending.isEmpty()) {
+                log.info("No users require Keycloak normalization on startup.");
+                return;
+            }
+
+            log.info("Startup Keycloak normalization: {} user(s) with sync_pending=true", syncPending.size());
+
+            int normalized = 0;
+            for (User u : syncPending) {
+                try {
+                    keycloakAdminService.activateUser(u.getId());
+                    u.setKeycloakSyncPending(false);
+                    userRepository.save(u);
+                    normalized++;
+                } catch (Exception e) {
+                    log.warn("Startup Keycloak normalization failed for user {}: {}", u.getEmail(), e.getMessage());
+                }
+            }
+            log.info("Startup Keycloak normalization complete: {} users activated.", normalized);
+        } catch (Exception e) {
+            log.error("Startup Keycloak normalization error: {}", e.getMessage(), e);
+        }
     }
 }
