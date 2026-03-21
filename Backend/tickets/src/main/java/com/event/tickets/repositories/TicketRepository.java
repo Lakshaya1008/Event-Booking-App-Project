@@ -107,11 +107,35 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
     );
 
     @Query("""
-        SELECT DISTINCT t.purchaser FROM Ticket t
+        SELECT DISTINCT t.purchaser.email, t.purchaser.name FROM Ticket t
         WHERE t.ticketType.event.id = :eventId
         AND t.status <> :excludedStatus
         """)
-    List<com.event.tickets.domain.entities.User> findDistinctPurchasersByEventId(
+    List<Object[]> findDistinctPurchasersByEventId(
+            @Param("eventId") UUID eventId,
+            @Param("excludedStatus") TicketStatusEnum excludedStatus
+    );
+
+    @Query("""
+        SELECT t.purchaser.name,
+               t.purchaser.email,
+               t.ticketType.name,
+               t.status,
+               t.createdAt,
+               COUNT(tv.id)
+        FROM Ticket t
+        LEFT JOIN TicketValidation tv ON tv.ticket = t
+        WHERE t.ticketType.event.id = :eventId
+        AND t.status <> :excludedStatus
+        GROUP BY t.id,
+                 t.purchaser.name,
+                 t.purchaser.email,
+                 t.ticketType.name,
+                 t.status,
+                 t.createdAt
+        ORDER BY t.createdAt DESC
+        """)
+    List<Object[]> findAttendeeReportByEventId(
             @Param("eventId") UUID eventId,
             @Param("excludedStatus") TicketStatusEnum excludedStatus
     );

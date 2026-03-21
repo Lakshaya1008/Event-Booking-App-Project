@@ -145,7 +145,7 @@ public class TicketTypeServiceImpl implements TicketTypeService {
      * Core purchase logic. All entities already loaded and validated by the caller.
      * Not exposed on the interface — prevents bypassing the cross-event check.
      */
-    private List<Ticket> dopurchase(User user, Event event, TicketType ticketType,
+    private List<Ticket> doPurchase(User user, Event event, TicketType ticketType,
                                     int quantity, String clientIp, String userAgent) {
         UUID userId = user.getId();
         UUID ticketTypeId = ticketType.getId();

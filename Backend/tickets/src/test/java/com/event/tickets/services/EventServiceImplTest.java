@@ -253,7 +253,8 @@ class EventServiceImplTest {
             verify(ticketRepository, atLeastOnce()).bulkUpdateStatusByEventId(
                     eq(eventId), eq(TicketStatusEnum.PURCHASED), eq(TicketStatusEnum.CANCELLED));
             // Email sending is async — verify the repository query was called instead
-            verify(ticketRepository).findDistinctPurchasersByEventId(eventId);
+            verify(ticketRepository).findDistinctPurchasersByEventId(
+                    eventId, TicketStatusEnum.CANCELLED);
         }
     }
 
@@ -278,7 +279,7 @@ class EventServiceImplTest {
                     new BigDecimal("270.00")  // [4] sumPricePaid
             };
             when(ticketRepository.findSalesStatsByEventId(eventId, TicketStatusEnum.CANCELLED))
-                    .thenReturn(List.of(statsRow));
+                    .thenReturn(List.<Object[]>of(statsRow));
 
             Map<String, Object> dashboard = service.getSalesDashboard(organizerId, eventId);
 

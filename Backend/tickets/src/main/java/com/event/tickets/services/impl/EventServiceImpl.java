@@ -498,7 +498,8 @@ public class EventServiceImpl implements EventService {
     @Async
     public void sendCancellationEmailsAsync(UUID eventId, String eventName) {
         try {
-            List<Object[]> purchasers = ticketRepository.findDistinctPurchasersByEventId(eventId);
+            List<Object[]> purchasers = ticketRepository.findDistinctPurchasersByEventId(
+                    eventId, TicketStatusEnum.CANCELLED);
             int count = 0;
             for (Object[] row : purchasers) {
                 String email = (String) row[0];

@@ -186,9 +186,9 @@ class RegistrationServiceImplTest {
             when(inviteCodeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
             doNothing().when(emailService).sendRegistrationEmail(any(), any());
 
-            service.register(request);
+            var response = service.register(request);
 
-            assertThat(result -> result).isNotNull(); // just check no exception
+            assertThat(response).isNotNull();
             verify(keycloakAdminService, never()).activateUser(any());
             verify(eventRepository).save(argThat(e ->
                     e.getStaff().stream().anyMatch(u -> u.getId().equals(keycloakUserId))));
