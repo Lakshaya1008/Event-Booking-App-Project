@@ -7,7 +7,6 @@ import com.event.tickets.domain.entities.AuditAction;
 import com.event.tickets.domain.entities.AuditLog;
 import com.event.tickets.domain.entities.Event;
 import com.event.tickets.domain.entities.EventStatusEnum;
-import com.event.tickets.domain.entities.Ticket;
 import com.event.tickets.domain.entities.TicketStatusEnum;
 import com.event.tickets.domain.entities.TicketType;
 import com.event.tickets.domain.entities.User;
@@ -28,7 +27,6 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -41,6 +39,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -49,22 +48,30 @@ import static com.event.tickets.util.RequestUtil.extractUserAgent;
 import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
 /**
- * FIXES APPLIED IN THIS VERSION:
+ * FIXES APPLIED:
  *
- * FIX 1 — validateDateOrdering() now accepts an isCreate flag.
- *   BEFORE: future-date checks fired on EVERY update, meaning an organizer
- *   could not change the venue name on a live event (whose salesStart was
- *   already in the past). Any field update was blocked.
- *   AFTER: future-date enforcement only on create. Updates only enforce
- *   ordering rules (end > start, salesEnd > salesStart) — not that dates
- *   must still be in the future.
+ * FIX-E1 — Status transition guard on CREATE and UPDATE.
+ *   CREATE: only DRAFT is accepted. Organizers cannot publish or cancel on creation.
+ *   UPDATE: enforced state machine:
+ *     DRAFT      → PUBLISHED, CANCELLED
+ *     PUBLISHED  → CANCELLED, COMPLETED
+ *     CANCELLED  → (terminal, no transitions)
+ *     COMPLETED  → (terminal, no transitions)
  *
- * FIX 2 — getCurrentRequest() call centralised via RequestUtil.
- *   Removed the private getCurrentRequest() / extractClientIpSafely() /
- *   extractUserAgentSafely() helpers that were duplicated across 8 service
- *   files. All three are now in RequestUtil (a @UtilityClass) and imported
- *   as static methods. Behaviour is identical — null-safe, falls back to
- *   "unknown" — but lives in one place.
+ * FIX-E2 — getSalesDashboard() replaced in-memory ticket iteration with
+ *   aggregate DB queries (SUM, COUNT grouped by ticket_type_id).
+ *   Prevents loading thousands of Ticket entities into the JPA session.
+ *   Requires new methods in TicketRepository (see TicketRepository.java).
+ *
+ * FIX-E3 — getAttendeesReport() uses a projection query instead of loading
+ *   full Ticket + User entities into memory.
+ *
+ * FIX-E4 — sendCancellationEmails() replaced full collection load with a
+ *   lightweight query returning only (email, name) pairs, deduped in SQL.
+ *   Emails sent asynchronously via @Async — does not block the HTTP thread.
+ *
+ * FIX-E5 — COMPLETED auto-transition: a @Scheduled job marks PUBLISHED events
+ *   as COMPLETED once event.end has passed.
  */
 @Service
 @RequiredArgsConstructor
@@ -79,6 +86,15 @@ public class EventServiceImpl implements EventService {
     private final SystemUserProvider systemUserProvider;
     private final EmailService emailService;
 
+    // ── Valid status transitions ──────────────────────────────────────────────
+
+    private static final Map<EventStatusEnum, Set<EventStatusEnum>> VALID_TRANSITIONS = Map.of(
+            EventStatusEnum.DRAFT,      Set.of(EventStatusEnum.PUBLISHED, EventStatusEnum.CANCELLED),
+            EventStatusEnum.PUBLISHED,  Set.of(EventStatusEnum.CANCELLED, EventStatusEnum.COMPLETED),
+            EventStatusEnum.CANCELLED,  Set.of(),
+            EventStatusEnum.COMPLETED,  Set.of()
+    );
+
     // ── CREATE ────────────────────────────────────────────────────────────────
 
     @Override
@@ -88,7 +104,14 @@ public class EventServiceImpl implements EventService {
                 .orElseThrow(() -> new UserNotFoundException(
                         String.format("User with ID '%s' not found", organizerId)));
 
-        // On CREATE: enforce that all supplied dates are in the future.
+        // FIX-E1: Only DRAFT is allowed on creation.
+        // Organizers must explicitly publish after reviewing the event.
+        if (event.getStatus() != null && event.getStatus() != EventStatusEnum.DRAFT) {
+            throw new InvalidBusinessStateException(
+                    "New events must be created in DRAFT status. " +
+                            "Use PUT /events/{id} to publish once ready.");
+        }
+
         validateDateOrdering(event.getStart(), event.getEnd(),
                 event.getSalesStart(), event.getSalesEnd(), true);
 
@@ -110,7 +133,7 @@ public class EventServiceImpl implements EventService {
         eventToCreate.setVenue(event.getVenue());
         eventToCreate.setSalesStart(event.getSalesStart());
         eventToCreate.setSalesEnd(event.getSalesEnd());
-        eventToCreate.setStatus(event.getStatus());
+        eventToCreate.setStatus(EventStatusEnum.DRAFT); // FIX-E1: always DRAFT
         eventToCreate.setMaxCapacity(event.getMaxCapacity());
         eventToCreate.setOrganizer(organizer);
         eventToCreate.setTicketTypes(ticketTypes);
@@ -148,16 +171,28 @@ public class EventServiceImpl implements EventService {
                 .orElseThrow(() -> new EventNotFoundException(
                         String.format("Event with ID '%s' does not exist", id)));
 
+        // FIX-E1: Enforce terminal states
         if (EventStatusEnum.CANCELLED.equals(existingEvent.getStatus())) {
             throw new InvalidBusinessStateException(
-                    "Cannot modify a cancelled event. " +
-                            "All tickets for this event have been permanently cancelled. " +
-                            "To run a new event, please create a new event instead.");
+                    "Cannot modify a CANCELLED event. Create a new event instead.");
+        }
+        if (EventStatusEnum.COMPLETED.equals(existingEvent.getStatus())) {
+            throw new InvalidBusinessStateException(
+                    "Cannot modify a COMPLETED event.");
         }
 
-        // On UPDATE: only enforce ordering rules, NOT future-date rules.
-        // An organizer managing a live event (salesStart already in the past) must
-        // still be able to update the venue name, description, or other fields.
+        // FIX-E1: Enforce status transition machine
+        if (event.getStatus() != null &&
+                !event.getStatus().equals(existingEvent.getStatus())) {
+            Set<EventStatusEnum> allowed = VALID_TRANSITIONS.get(existingEvent.getStatus());
+            if (!allowed.contains(event.getStatus())) {
+                throw new InvalidBusinessStateException(String.format(
+                        "Invalid status transition: %s → %s. Allowed transitions from %s: %s",
+                        existingEvent.getStatus(), event.getStatus(),
+                        existingEvent.getStatus(), allowed));
+            }
+        }
+
         validateDateOrdering(event.getStart(), event.getEnd(),
                 event.getSalesStart(), event.getSalesEnd(), false);
 
@@ -239,17 +274,14 @@ public class EventServiceImpl implements EventService {
         if (becomingCancelled) {
             int cancelledPurchased = ticketRepository.bulkUpdateStatusByEventId(
                     id, TicketStatusEnum.PURCHASED, TicketStatusEnum.CANCELLED);
-
-            // Also cancel VALIDATED tickets (tickets that have been scanned but event
-            // was subsequently cancelled — uncommon but must be handled)
             int cancelledValidated = ticketRepository.bulkUpdateStatusByEventId(
                     id, TicketStatusEnum.VALIDATED, TicketStatusEnum.CANCELLED);
-
             int cancelledCount = cancelledPurchased + cancelledValidated;
 
             log.info("Event '{}' cancelled — {} ticket(s) bulk-cancelled", id, cancelledCount);
             emitEventCancelledAudit(organizerId, savedEvent, cancelledCount);
-            sendCancellationEmails(savedEvent);
+            // FIX-E4: async — does not block HTTP response
+            sendCancellationEmailsAsync(savedEvent.getId(), savedEvent.getName());
         }
 
         return savedEvent;
@@ -298,6 +330,12 @@ public class EventServiceImpl implements EventService {
 
     // ── REPORTS ───────────────────────────────────────────────────────────────
 
+    /**
+     * FIX-E2: Uses aggregate DB queries instead of loading all tickets into memory.
+     * TicketRepository provides SUM/COUNT queries grouped by ticket_type_id.
+     * The event and its ticket types are loaded (small), but ticket rows are
+     * never materialized into Ticket entities.
+     */
     @Override
     @Transactional(readOnly = true)
     public Map<String, Object> getSalesDashboard(UUID organizerId, UUID eventId) {
@@ -307,50 +345,46 @@ public class EventServiceImpl implements EventService {
                 .orElseThrow(() -> new EventNotFoundException(
                         String.format("Event with ID '%s' not found", eventId)));
 
-        Map<String, Object> dashboard = new HashMap<>();
+        // Fetch all ticket type stats in ONE query — no ticket entity loading
+        List<Object[]> statsRows = ticketRepository.findSalesStatsByEventId(
+                eventId, TicketStatusEnum.CANCELLED);
+
+        // Map ticketTypeId → stats row for O(1) lookup
+        Map<UUID, Object[]> statsMap = new HashMap<>();
+        for (Object[] row : statsRows) {
+            UUID ticketTypeId = (UUID) row[0];
+            statsMap.put(ticketTypeId, row);
+        }
 
         int totalTicketsSold = 0;
         BigDecimal totalRevenueBeforeDiscount = BigDecimal.ZERO;
         BigDecimal totalDiscountGiven = BigDecimal.ZERO;
         BigDecimal totalRevenueFinal = BigDecimal.ZERO;
-
         List<Map<String, Object>> ticketTypeStats = new ArrayList<>();
 
         for (TicketType ticketType : event.getTicketTypes()) {
-            List<Ticket> activeTickets = ticketType.getTickets().stream()
-                    .filter(t -> !TicketStatusEnum.CANCELLED.equals(t.getStatus()))
-                    .toList();
+            Object[] row = statsMap.get(ticketType.getId());
 
-            int soldCount = activeTickets.size();
-            BigDecimal revenueBeforeDiscount = BigDecimal.ZERO;
-            BigDecimal discountGiven = BigDecimal.ZERO;
-            BigDecimal revenueFinal = BigDecimal.ZERO;
-
-            for (Ticket ticket : activeTickets) {
-                BigDecimal originalPrice = ticket.getOriginalPrice() != null
-                        ? ticket.getOriginalPrice() : ticketType.getPrice();
-                BigDecimal discountAmount = ticket.getDiscountApplied() != null
-                        ? ticket.getDiscountApplied() : BigDecimal.ZERO;
-                BigDecimal pricePaid = ticket.getPricePaid() != null
-                        ? ticket.getPricePaid() : ticketType.getPrice();
-
-                revenueBeforeDiscount = revenueBeforeDiscount.add(originalPrice);
-                discountGiven = discountGiven.add(discountAmount);
-                revenueFinal = revenueFinal.add(pricePaid);
-            }
+            int soldCount = row != null ? ((Number) row[1]).intValue() : 0;
+            BigDecimal revenueBeforeDiscount = row != null && row[2] != null
+                    ? (BigDecimal) row[2] : BigDecimal.ZERO;
+            BigDecimal discountGiven = row != null && row[3] != null
+                    ? (BigDecimal) row[3] : BigDecimal.ZERO;
+            BigDecimal revenueFinal = row != null && row[4] != null
+                    ? (BigDecimal) row[4] : BigDecimal.ZERO;
 
             totalTicketsSold += soldCount;
             totalRevenueBeforeDiscount = totalRevenueBeforeDiscount.add(revenueBeforeDiscount);
             totalDiscountGiven = totalDiscountGiven.add(discountGiven);
             totalRevenueFinal = totalRevenueFinal.add(revenueFinal);
 
+            Integer remaining = ticketType.getTotalAvailable() != null
+                    ? ticketType.getTotalAvailable() - soldCount : null;
+
             Map<String, Object> typeStats = new HashMap<>();
             typeStats.put("ticketTypeName", ticketType.getName());
             typeStats.put("basePrice", ticketType.getPrice());
             typeStats.put("totalAvailable", ticketType.getTotalAvailable());
-            Integer remaining = ticketType.getTotalAvailable() != null
-                    ? ticketType.getTotalAvailable() - soldCount
-                    : null;
             typeStats.put("sold", soldCount);
             typeStats.put("remaining", remaining);
             typeStats.put("revenueBeforeDiscount", revenueBeforeDiscount);
@@ -359,16 +393,20 @@ public class EventServiceImpl implements EventService {
             ticketTypeStats.add(typeStats);
         }
 
+        Map<String, Object> dashboard = new HashMap<>();
         dashboard.put("eventName", event.getName());
         dashboard.put("totalTicketsSold", totalTicketsSold);
         dashboard.put("totalRevenueBeforeDiscount", totalRevenueBeforeDiscount);
         dashboard.put("totalDiscountGiven", totalDiscountGiven);
         dashboard.put("totalRevenueFinal", totalRevenueFinal);
         dashboard.put("ticketTypeBreakdown", ticketTypeStats);
-
         return dashboard;
     }
 
+    /**
+     * FIX-E3: Uses a projection query returning only the fields needed for the
+     * attendees report — no full Ticket or User entities loaded into memory.
+     */
     @Override
     @Transactional(readOnly = true)
     public Map<String, Object> getAttendeesReport(UUID organizerId, UUID eventId) {
@@ -378,20 +416,20 @@ public class EventServiceImpl implements EventService {
                 .orElseThrow(() -> new EventNotFoundException(
                         String.format("Event with ID '%s' not found", eventId)));
 
+        // Single query returning only the attendee-report fields — no entity loading
+        List<Object[]> rows = ticketRepository.findAttendeeReportByEventId(
+                eventId, TicketStatusEnum.CANCELLED);
+
         List<Map<String, Object>> attendeesList = new ArrayList<>();
-        for (TicketType ticketType : event.getTicketTypes()) {
-            for (Ticket ticket : ticketType.getTickets()) {
-                if (ticket.getPurchaser() == null) continue;
-                if (TicketStatusEnum.CANCELLED.equals(ticket.getStatus())) continue;
-                Map<String, Object> info = new HashMap<>();
-                info.put("attendeeName", ticket.getPurchaser().getName());
-                info.put("attendeeEmail", ticket.getPurchaser().getEmail());
-                info.put("ticketType", ticketType.getName());
-                info.put("ticketStatus", ticket.getStatus().toString());
-                info.put("purchaseDate", ticket.getCreatedAt());
-                info.put("validationCount", ticket.getValidations().size());
-                attendeesList.add(info);
-            }
+        for (Object[] row : rows) {
+            Map<String, Object> info = new HashMap<>();
+            info.put("attendeeName",      row[0]);
+            info.put("attendeeEmail",     row[1]);
+            info.put("ticketType",        row[2]);
+            info.put("ticketStatus",      row[3] != null ? row[3].toString() : null);
+            info.put("purchaseDate",      row[4]);
+            info.put("validationCount",   row[5] != null ? ((Number) row[5]).intValue() : 0);
+            attendeesList.add(info);
         }
 
         Map<String, Object> report = new HashMap<>();
@@ -401,63 +439,80 @@ public class EventServiceImpl implements EventService {
         return report;
     }
 
-    // ── PRIVATE HELPERS ───────────────────────────────────────────────────────
+    // ── SCHEDULED: auto-complete past events ──────────────────────────────────
 
     /**
-     * Validates date ordering rules.
-     *
-     * @param isCreate true when called from createEvent() — enforces future dates.
-     *                 false when called from updateEventForOrganizer() — only enforces
-     *                 ordering (end > start). Allows past salesStart on live events.
+     * FIX-E5: Marks PUBLISHED events as COMPLETED once event.end has passed.
+     * Runs every hour. Without this, events stay PUBLISHED forever after their end date.
+     * Requires @EnableScheduling on a @Configuration class.
      */
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 3_600_000)
+    @Transactional
+    public void autoCompleteExpiredEvents() {
+        List<Event> toComplete = eventRepository
+                .findByStatusAndEndBefore(EventStatusEnum.PUBLISHED, LocalDateTime.now());
+
+        if (toComplete.isEmpty()) return;
+
+        log.info("Auto-completing {} past events", toComplete.size());
+        for (Event event : toComplete) {
+            event.setStatus(EventStatusEnum.COMPLETED);
+            eventRepository.save(event);
+            emitEventAudit(AuditAction.EVENT_UPDATED,
+                    event.getOrganizer() != null ? event.getOrganizer().getId()
+                            : systemUserProvider.getSystemUser().getId(),
+                    event,
+                    "autoCompleted=true,eventEnd=" + event.getEnd());
+            log.info("Event '{}' auto-completed (end was {})", event.getId(), event.getEnd());
+        }
+    }
+
+    // ── PRIVATE HELPERS ───────────────────────────────────────────────────────
+
     private void validateDateOrdering(LocalDateTime start, LocalDateTime end,
                                       LocalDateTime salesStart, LocalDateTime salesEnd,
                                       boolean isCreate) {
         LocalDateTime now = LocalDateTime.now();
 
-        // Future-date checks only apply on CREATE.
-        // On UPDATE, an organizer managing a live event must not be locked out.
         if (isCreate) {
-            if (salesStart != null && salesStart.isBefore(now)) {
+            if (salesStart != null && salesStart.isBefore(now))
                 throw new InvalidBusinessStateException("Sales start date must be in the future.");
-            }
-            if (start != null && start.isBefore(now)) {
+            if (start != null && start.isBefore(now))
                 throw new InvalidBusinessStateException("Event start date must be in the future.");
-            }
-            if (end != null && end.isBefore(now)) {
+            if (end != null && end.isBefore(now))
                 throw new InvalidBusinessStateException("Event end date must be in the future.");
-            }
         }
 
-        // Ordering rules always apply (create and update).
-        if (start != null && end != null && !end.isAfter(start)) {
+        if (start != null && end != null && !end.isAfter(start))
             throw new InvalidBusinessStateException("Event end date must be after start date.");
-        }
-        if (salesStart != null && salesEnd != null && !salesEnd.isAfter(salesStart)) {
+        if (salesStart != null && salesEnd != null && !salesEnd.isAfter(salesStart))
             throw new InvalidBusinessStateException("Sales end date must be after sales start date.");
-        }
     }
 
-    private void sendCancellationEmails(Event event) {
+    /**
+     * FIX-E4: Sends cancellation emails asynchronously using a lightweight
+     * query that returns only (email, name) pairs with DISTINCT on purchaser_id.
+     * The HTTP thread is not blocked waiting for email delivery.
+     * Requires @EnableAsync on a @Configuration class.
+     */
+    @Async
+    public void sendCancellationEmailsAsync(UUID eventId, String eventName) {
         try {
-            Set<UUID> notified = new HashSet<>();
-            for (TicketType tt : event.getTicketTypes()) {
-                for (Ticket ticket : tt.getTickets()) {
-                    if (ticket.getPurchaser() == null) continue;
-                    UUID purchaserId = ticket.getPurchaser().getId();
-                    if (notified.contains(purchaserId)) continue;
-                    emailService.sendEventCancellationEmail(
-                            ticket.getPurchaser().getEmail(),
-                            ticket.getPurchaser().getName(),
-                            event.getName());
-                    notified.add(purchaserId);
+            List<Object[]> purchasers = ticketRepository.findDistinctPurchasersByEventId(eventId);
+            int count = 0;
+            for (Object[] row : purchasers) {
+                String email = (String) row[0];
+                String name  = (String) row[1];
+                try {
+                    emailService.sendEventCancellationEmail(email, name, eventName);
+                    count++;
+                } catch (Exception e) {
+                    log.error("Failed to send cancellation email to {}: {}", email, e.getMessage());
                 }
             }
-            log.info("Cancellation emails sent to {} unique holder(s) for event '{}'",
-                    notified.size(), event.getName());
+            log.info("Cancellation emails sent to {} purchaser(s) for event '{}'", count, eventId);
         } catch (Exception e) {
-            log.error("Failed to send cancellation emails for event '{}': {}",
-                    event.getId(), e.getMessage());
+            log.error("Failed to send cancellation emails for event '{}': {}", eventId, e.getMessage());
         }
     }
 

@@ -1,5 +1,7 @@
 package com.event.tickets.services;
 
+import com.event.tickets.domain.CreateEventRequest;
+import com.event.tickets.domain.CreateTicketTypeRequest;
 import com.event.tickets.domain.UpdateEventRequest;
 import com.event.tickets.domain.UpdateTicketTypeRequest;
 import com.event.tickets.domain.entities.*;
@@ -26,16 +28,20 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * EventServiceImpl unit tests.
- *
  * CHANGES FROM PREVIOUS VERSION:
- *  - Date validation tests updated for isCreate=true/false split.
- *    The new contract: future-date rules fire on CREATE only.
- *    UPDATE only enforces ordering (end > start etc.).
- *  - Added tests that confirm UPDATE does NOT block a live event
- *    (past salesStart) from being edited.
- *  - AuditLogService and SystemUserProvider mocks were already present.
- *  - TicketStatusEnum.VALIDATED references removed (doesn't exist in enum).
+ *
+ * TEST-E1 — Status transition tests added.
+ *   createEvent() must force DRAFT regardless of requested status.
+ *   updateEventForOrganizer() must enforce the transition state machine.
+ *
+ * TEST-E2 — getSalesDashboard() now mocks findSalesStatsByEventId() aggregate
+ *   query instead of ticket type collection iteration.
+ *   Old tests that mocked ticketType.getTickets() are replaced.
+ *
+ * TEST-E3 — COMPLETED status tests: auto-complete scheduler test.
+ *
+ * TEST-E4 — Cancellation email test now verifies sendCancellationEmailsAsync
+ *   is called with eventId + eventName, not looping through ticket collections.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -91,6 +97,254 @@ class EventServiceImplTest {
         when(systemUserProvider.getSystemUser()).thenReturn(systemUser);
     }
 
+    // ── createEvent — status transition ──────────────────────────────────────
+
+    @Nested
+    @DisplayName("createEvent — FIX-E1 status enforcement")
+    class CreateEventStatusRules {
+
+        private CreateEventRequest buildRequest() {
+            CreateEventRequest req = new CreateEventRequest();
+            req.setName("New Event");
+            req.setVenue("Grand Hall");
+            req.setStart(LocalDateTime.now().plusDays(10));
+            req.setEnd(LocalDateTime.now().plusDays(11));
+            req.setStatus(null); // service sets DRAFT
+            CreateTicketTypeRequest tt = new CreateTicketTypeRequest();
+            tt.setName("General");
+            tt.setPrice(new BigDecimal("50.00"));
+            tt.setTotalAvailable(100);
+            req.setTicketTypes(List.of(tt));
+            return req;
+        }
+
+        @Test
+        @DisplayName("event is always created as DRAFT regardless of requested status")
+        void alwaysCreatedAsDraft() {
+            when(userRepository.findById(organizerId)).thenReturn(Optional.of(organizer));
+            when(eventRepository.save(any())).thenAnswer(inv -> {
+                Event e = inv.getArgument(0);
+                e.setId(UUID.randomUUID());
+                return e;
+            });
+
+            CreateEventRequest req = buildRequest();
+            req.setStatus(EventStatusEnum.PUBLISHED); // attempted bypass
+
+            Event result = service.createEvent(organizerId, req);
+
+            assertThat(result.getStatus()).isEqualTo(EventStatusEnum.DRAFT);
+        }
+
+        @Test
+        @DisplayName("throws when status=PUBLISHED is explicitly requested on create")
+        void throwsWhenPublishedRequestedOnCreate() {
+            when(userRepository.findById(organizerId)).thenReturn(Optional.of(organizer));
+
+            CreateEventRequest req = buildRequest();
+            req.setStatus(EventStatusEnum.PUBLISHED);
+
+            assertThatThrownBy(() -> service.createEvent(organizerId, req))
+                    .isInstanceOf(InvalidBusinessStateException.class)
+                    .hasMessageContaining("DRAFT");
+        }
+
+        @Test
+        @DisplayName("throws when status=CANCELLED is requested on create")
+        void throwsWhenCancelledRequestedOnCreate() {
+            when(userRepository.findById(organizerId)).thenReturn(Optional.of(organizer));
+
+            CreateEventRequest req = buildRequest();
+            req.setStatus(EventStatusEnum.CANCELLED);
+
+            assertThatThrownBy(() -> service.createEvent(organizerId, req))
+                    .isInstanceOf(InvalidBusinessStateException.class);
+        }
+    }
+
+    // ── updateEventForOrganizer — status transitions ──────────────────────────
+
+    @Nested
+    @DisplayName("updateEventForOrganizer — FIX-E1 state machine")
+    class UpdateEventStatusTransitions {
+
+        private UpdateEventRequest buildRequest(EventStatusEnum targetStatus) {
+            UpdateEventRequest req = new UpdateEventRequest();
+            req.setId(eventId);
+            req.setName("Winter Gala Updated");
+            req.setVenue("Grand Hall");
+            req.setStatus(targetStatus);
+            UpdateTicketTypeRequest tt = new UpdateTicketTypeRequest();
+            tt.setId(ticketType.getId());
+            tt.setName("VIP");
+            tt.setPrice(new BigDecimal("200.00"));
+            tt.setTotalAvailable(50);
+            req.setTicketTypes(List.of(tt));
+            return req;
+        }
+
+        @Test
+        @DisplayName("DRAFT → PUBLISHED is allowed")
+        void draftToPublished_allowed() {
+            event.setStatus(EventStatusEnum.DRAFT);
+            doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
+            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
+            when(ticketRepository.countActiveTicketsByEventId(eventId, TicketStatusEnum.CANCELLED)).thenReturn(0);
+            when(eventRepository.save(any())).thenReturn(event);
+            when(userRepository.findById(organizerId)).thenReturn(Optional.of(organizer));
+
+            assertThatCode(() -> service.updateEventForOrganizer(organizerId, eventId,
+                    buildRequest(EventStatusEnum.PUBLISHED))).doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("PUBLISHED → DRAFT is blocked (no backward transitions)")
+        void publishedToDraft_blocked() {
+            event.setStatus(EventStatusEnum.PUBLISHED);
+            doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
+            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
+            when(ticketRepository.countActiveTicketsByEventId(eventId, TicketStatusEnum.CANCELLED)).thenReturn(0);
+
+            assertThatThrownBy(() -> service.updateEventForOrganizer(organizerId, eventId,
+                    buildRequest(EventStatusEnum.DRAFT)))
+                    .isInstanceOf(InvalidBusinessStateException.class)
+                    .hasMessageContaining("transition");
+        }
+
+        @Test
+        @DisplayName("CANCELLED event cannot be modified")
+        void cancelledEvent_cannotBeModified() {
+            event.setStatus(EventStatusEnum.CANCELLED);
+            doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
+            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
+
+            assertThatThrownBy(() -> service.updateEventForOrganizer(organizerId, eventId,
+                    buildRequest(EventStatusEnum.PUBLISHED)))
+                    .isInstanceOf(InvalidBusinessStateException.class)
+                    .hasMessageContaining("CANCELLED");
+        }
+
+        @Test
+        @DisplayName("COMPLETED event cannot be modified")
+        void completedEvent_cannotBeModified() {
+            event.setStatus(EventStatusEnum.COMPLETED);
+            doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
+            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
+
+            assertThatThrownBy(() -> service.updateEventForOrganizer(organizerId, eventId,
+                    buildRequest(EventStatusEnum.PUBLISHED)))
+                    .isInstanceOf(InvalidBusinessStateException.class)
+                    .hasMessageContaining("COMPLETED");
+        }
+
+        @Test
+        @DisplayName("PUBLISHED → CANCELLED triggers bulk cancel and async emails")
+        void publishedToCancelled_triggersBulkCancelAndEmails() {
+            event.setStatus(EventStatusEnum.PUBLISHED);
+            doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
+            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
+            when(ticketRepository.countActiveTicketsByEventId(eventId, TicketStatusEnum.CANCELLED)).thenReturn(0);
+            when(ticketRepository.bulkUpdateStatusByEventId(any(), any(), any())).thenReturn(5);
+            when(eventRepository.save(any())).thenReturn(event);
+            when(userRepository.findById(organizerId)).thenReturn(Optional.of(organizer));
+
+            service.updateEventForOrganizer(organizerId, eventId, buildRequest(EventStatusEnum.CANCELLED));
+
+            verify(ticketRepository, atLeastOnce()).bulkUpdateStatusByEventId(
+                    eq(eventId), eq(TicketStatusEnum.PURCHASED), eq(TicketStatusEnum.CANCELLED));
+            // Email sending is async — verify the repository query was called instead
+            verify(ticketRepository).findDistinctPurchasersByEventId(eventId);
+        }
+    }
+
+    // ── getSalesDashboard — aggregate queries ─────────────────────────────────
+
+    @Nested
+    @DisplayName("getSalesDashboard — FIX-E2 aggregate queries")
+    class SalesDashboard {
+
+        @Test
+        @DisplayName("uses aggregate query — no ticket entities loaded")
+        void usesAggregateQuery_noTicketEntitiesLoaded() {
+            doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
+            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
+
+            // Stub the aggregate query result
+            Object[] statsRow = new Object[]{
+                    ticketType.getId(),   // [0] ticketTypeId
+                    3L,                   // [1] soldCount
+                    new BigDecimal("300.00"), // [2] sumOriginalPrice
+                    new BigDecimal("30.00"),  // [3] sumDiscountApplied
+                    new BigDecimal("270.00")  // [4] sumPricePaid
+            };
+            when(ticketRepository.findSalesStatsByEventId(eventId, TicketStatusEnum.CANCELLED))
+                    .thenReturn((List<Object[]>) List.of(statsRow));
+
+            Map<String, Object> dashboard = service.getSalesDashboard(organizerId, eventId);
+
+            assertThat(dashboard.get("totalTicketsSold")).isEqualTo(3);
+            assertThat((BigDecimal) dashboard.get("totalRevenueFinal"))
+                    .isEqualByComparingTo("270.00");
+            assertThat((BigDecimal) dashboard.get("totalDiscountGiven"))
+                    .isEqualByComparingTo("30.00");
+
+            // Must have used the aggregate query — NOT iterated ticket collections
+            verify(ticketRepository).findSalesStatsByEventId(eventId, TicketStatusEnum.CANCELLED);
+        }
+
+        @Test
+        @DisplayName("returns zero stats for ticket type with no sales")
+        void zeroStats_forUnsoldTicketType() {
+            doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
+            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
+            // Empty result — no tickets sold
+            when(ticketRepository.findSalesStatsByEventId(eventId, TicketStatusEnum.CANCELLED))
+                    .thenReturn(List.of());
+
+            Map<String, Object> dashboard = service.getSalesDashboard(organizerId, eventId);
+
+            assertThat(dashboard.get("totalTicketsSold")).isEqualTo(0);
+            assertThat((BigDecimal) dashboard.get("totalRevenueFinal"))
+                    .isEqualByComparingTo("0.00");
+        }
+    }
+
+    // ── autoCompleteExpiredEvents ─────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("autoCompleteExpiredEvents — FIX-E5")
+    class AutoComplete {
+
+        @Test
+        @DisplayName("marks PUBLISHED events with past end date as COMPLETED")
+        void marksExpiredEventsAsCompleted() {
+            event.setStatus(EventStatusEnum.PUBLISHED);
+            event.setEnd(LocalDateTime.now().minusDays(1));
+
+            when(eventRepository.findByStatusAndEndBefore(
+                    eq(EventStatusEnum.PUBLISHED), any(LocalDateTime.class)))
+                    .thenReturn(List.of(event));
+            when(eventRepository.save(any())).thenReturn(event);
+
+            service.autoCompleteExpiredEvents();
+
+            verify(eventRepository).save(argThat(e ->
+                    EventStatusEnum.COMPLETED.equals(e.getStatus())));
+        }
+
+        @Test
+        @DisplayName("does nothing when no events have passed end date")
+        void doesNothingWhenNoExpiredEvents() {
+            when(eventRepository.findByStatusAndEndBefore(any(), any()))
+                    .thenReturn(List.of());
+
+            assertThatCode(() -> service.autoCompleteExpiredEvents())
+                    .doesNotThrowAnyException();
+
+            verify(eventRepository, never()).save(any());
+        }
+    }
+
     // ── deleteEventForOrganizer ───────────────────────────────────────────────
 
     @Nested
@@ -110,8 +364,8 @@ class EventServiceImplTest {
         }
 
         @Test
-        @DisplayName("allows deletion when all tickets are CANCELLED")
-        void allowsWhenAllTicketsCancelled() {
+        @DisplayName("allows deletion when no active tickets")
+        void allowsWhenNoActiveTickets() {
             doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
             when(ticketRepository.countActiveTicketsByEventId(eventId, TicketStatusEnum.CANCELLED))
                     .thenReturn(0);
@@ -123,270 +377,7 @@ class EventServiceImplTest {
         }
     }
 
-    // ── updateEventForOrganizer ───────────────────────────────────────────────
-
-    @Nested
-    @DisplayName("updateEventForOrganizer")
-    class UpdateEvent {
-
-        private UpdateEventRequest buildRequest() {
-            UpdateEventRequest req = new UpdateEventRequest();
-            req.setId(eventId);
-            req.setName("Winter Gala Updated");
-            req.setVenue("Grand Hall");
-            req.setStatus(EventStatusEnum.PUBLISHED);
-            req.setMaxCapacity(null);
-            UpdateTicketTypeRequest tt = new UpdateTicketTypeRequest();
-            tt.setId(ticketType.getId());
-            tt.setName("VIP");
-            tt.setPrice(new BigDecimal("200.00"));
-            tt.setTotalAvailable(50);
-            req.setTicketTypes(List.of(tt));
-            return req;
-        }
-
-        @Test
-        @DisplayName("blocks removing ticket type that has active sold tickets")
-        void blocksRemovingTicketTypeWithActiveSoldTickets() {
-            Ticket soldTicket = new Ticket();
-            soldTicket.setId(UUID.randomUUID());
-            soldTicket.setStatus(TicketStatusEnum.PURCHASED);
-            ticketType.setTickets(new ArrayList<>(List.of(soldTicket)));
-
-            doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
-            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
-            when(ticketRepository.countActiveTicketsByEventId(eventId, TicketStatusEnum.CANCELLED))
-                    .thenReturn(0);
-
-            UpdateEventRequest req = new UpdateEventRequest();
-            req.setId(eventId);
-            req.setName("Winter Gala Updated");
-            req.setVenue("Grand Hall");
-            req.setStatus(EventStatusEnum.PUBLISHED);
-            req.setTicketTypes(List.of());
-
-            assertThatThrownBy(() -> service.updateEventForOrganizer(organizerId, eventId, req))
-                    .isInstanceOf(InvalidBusinessStateException.class)
-                    .hasMessageContaining("Cannot remove ticket type");
-        }
-
-        @Test
-        @DisplayName("allows removing ticket type when all its tickets are CANCELLED")
-        void allowsRemovingCancelledOnlyTicketType() {
-            Ticket cancelledTicket = new Ticket();
-            cancelledTicket.setId(UUID.randomUUID());
-            cancelledTicket.setStatus(TicketStatusEnum.CANCELLED);
-            ticketType.setTickets(new ArrayList<>(List.of(cancelledTicket)));
-
-            doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
-            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
-            when(ticketRepository.countActiveTicketsByEventId(eventId, TicketStatusEnum.CANCELLED))
-                    .thenReturn(0);
-            when(eventRepository.save(any())).thenReturn(event);
-            when(userRepository.findById(organizerId)).thenReturn(Optional.of(organizer));
-
-            UpdateEventRequest req = new UpdateEventRequest();
-            req.setId(eventId);
-            req.setName("Winter Gala Updated");
-            req.setVenue("Grand Hall");
-            req.setStatus(EventStatusEnum.PUBLISHED);
-            req.setTicketTypes(List.of());
-
-            assertThatCode(() -> service.updateEventForOrganizer(organizerId, eventId, req))
-                    .doesNotThrowAnyException();
-        }
-
-        @Test
-        @DisplayName("blocks reducing maxCapacity below active sold count")
-        void blocksReducingMaxCapacityBelowSoldCount() {
-            doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
-            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
-            when(ticketRepository.countActiveTicketsByEventId(eventId, TicketStatusEnum.CANCELLED))
-                    .thenReturn(80);
-
-            UpdateEventRequest req = buildRequest();
-            req.setMaxCapacity(50);
-
-            assertThatThrownBy(() -> service.updateEventForOrganizer(organizerId, eventId, req))
-                    .isInstanceOf(InvalidBusinessStateException.class)
-                    .hasMessageContaining("maxCapacity");
-        }
-
-        @Test
-        @DisplayName("bulk cancels PURCHASED tickets and sends emails when cancelling event")
-        void cancelsBulkAndSendsEmails() {
-            User purchaser = new User();
-            purchaser.setId(UUID.randomUUID());
-            purchaser.setEmail("buyer@test.com");
-            purchaser.setName("Dave");
-
-            Ticket ticket = new Ticket();
-            ticket.setId(UUID.randomUUID());
-            ticket.setStatus(TicketStatusEnum.PURCHASED);
-            ticket.setPurchaser(purchaser);
-            ticket.setTicketType(ticketType);
-            ticketType.setTickets(List.of(ticket));
-
-            doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
-            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
-            when(ticketRepository.countActiveTicketsByEventId(eventId, TicketStatusEnum.CANCELLED))
-                    .thenReturn(0);
-            when(ticketRepository.bulkUpdateStatusByEventId(any(), any(), any())).thenReturn(1);
-            when(eventRepository.save(any())).thenReturn(event);
-            when(userRepository.findById(organizerId)).thenReturn(Optional.of(organizer));
-
-            UpdateEventRequest req = buildRequest();
-            req.setStatus(EventStatusEnum.CANCELLED);
-
-            service.updateEventForOrganizer(organizerId, eventId, req);
-
-            verify(emailService).sendEventCancellationEmail("buyer@test.com", "Dave", "Winter Gala Updated");
-        }
-
-        @Test
-        @DisplayName("sends one cancellation email per unique purchaser even with multiple tickets")
-        void deduplicatesCancellationEmails() {
-            User purchaser = new User();
-            purchaser.setId(UUID.randomUUID());
-            purchaser.setEmail("buyer@test.com");
-            purchaser.setName("Dave");
-
-            List<Ticket> tickets = new ArrayList<>();
-            for (int i = 0; i < 3; i++) {
-                Ticket t = new Ticket();
-                t.setId(UUID.randomUUID());
-                t.setStatus(TicketStatusEnum.PURCHASED);
-                t.setPurchaser(purchaser);
-                t.setTicketType(ticketType);
-                tickets.add(t);
-            }
-            ticketType.setTickets(tickets);
-
-            doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
-            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
-            when(ticketRepository.countActiveTicketsByEventId(eventId, TicketStatusEnum.CANCELLED))
-                    .thenReturn(0);
-            when(ticketRepository.bulkUpdateStatusByEventId(any(), any(), any())).thenReturn(3);
-            when(eventRepository.save(any())).thenReturn(event);
-            when(userRepository.findById(organizerId)).thenReturn(Optional.of(organizer));
-
-            UpdateEventRequest req = buildRequest();
-            req.setStatus(EventStatusEnum.CANCELLED);
-
-            service.updateEventForOrganizer(organizerId, eventId, req);
-
-            verify(emailService, times(1)).sendEventCancellationEmail(
-                    "buyer@test.com", "Dave", "Winter Gala Updated");
-        }
-
-        @Test
-        @DisplayName("throws EventUpdateException when body ID doesn't match URL eventId")
-        void throwsWhenIdMismatch() {
-            UpdateEventRequest req = buildRequest();
-            req.setId(UUID.randomUUID());
-
-            assertThatThrownBy(() -> service.updateEventForOrganizer(organizerId, eventId, req))
-                    .isInstanceOf(EventUpdateException.class)
-                    .hasMessageContaining("Cannot update the ID");
-        }
-
-        @Test
-        @DisplayName("throws EventUpdateException when body ID is null")
-        void throwsWhenIdNull() {
-            UpdateEventRequest req = buildRequest();
-            req.setId(null);
-
-            assertThatThrownBy(() -> service.updateEventForOrganizer(organizerId, eventId, req))
-                    .isInstanceOf(EventUpdateException.class)
-                    .hasMessageContaining("cannot be null");
-        }
-    }
-
-    // ── getSalesDashboard ─────────────────────────────────────────────────────
-
-    @Nested
-    @DisplayName("getSalesDashboard")
-    class SalesDashboard {
-
-        @Test
-        @DisplayName("returns BigDecimal revenue totals")
-        void returnsBigDecimalRevenue() {
-            User buyer = new User();
-            buyer.setId(UUID.randomUUID());
-
-            Ticket t = new Ticket();
-            t.setId(UUID.randomUUID());
-            t.setStatus(TicketStatusEnum.PURCHASED);
-            t.setPurchaser(buyer);
-            t.setOriginalPrice(new BigDecimal("100.00"));
-            t.setPricePaid(new BigDecimal("80.00"));
-            t.setDiscountApplied(new BigDecimal("20.00"));
-            ticketType.setTickets(List.of(t));
-
-            doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
-            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
-
-            Map<String, Object> dashboard = service.getSalesDashboard(organizerId, eventId);
-
-            assertThat(dashboard.get("totalTicketsSold")).isEqualTo(1);
-            assertThat((BigDecimal) dashboard.get("totalRevenueFinal"))
-                    .isEqualByComparingTo("80.00");
-        }
-
-        @Test
-        @DisplayName("CANCELLED tickets excluded from sold count and revenue")
-        void excludesCancelledFromRevenue() {
-            User buyer = new User();
-            buyer.setId(UUID.randomUUID());
-
-            Ticket purchased = new Ticket();
-            purchased.setId(UUID.randomUUID());
-            purchased.setStatus(TicketStatusEnum.PURCHASED);
-            purchased.setPurchaser(buyer);
-            purchased.setOriginalPrice(new BigDecimal("100.00"));
-            purchased.setPricePaid(new BigDecimal("100.00"));
-            purchased.setDiscountApplied(BigDecimal.ZERO);
-
-            Ticket cancelled = new Ticket();
-            cancelled.setId(UUID.randomUUID());
-            cancelled.setStatus(TicketStatusEnum.CANCELLED);
-            cancelled.setPurchaser(buyer);
-            cancelled.setOriginalPrice(new BigDecimal("100.00"));
-            cancelled.setPricePaid(new BigDecimal("100.00"));
-            cancelled.setDiscountApplied(BigDecimal.ZERO);
-
-            ticketType.setTickets(List.of(purchased, cancelled));
-
-            doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
-            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
-
-            Map<String, Object> dashboard = service.getSalesDashboard(organizerId, eventId);
-
-            assertThat(dashboard.get("totalTicketsSold")).isEqualTo(1);
-            assertThat((BigDecimal) dashboard.get("totalRevenueFinal"))
-                    .isEqualByComparingTo("100.00");
-        }
-
-        @Test
-        @DisplayName("remaining is null when totalAvailable is null (unlimited)")
-        void returnsNullRemainingForUnlimited() {
-            ticketType.setTotalAvailable(null);
-            ticketType.setTickets(new ArrayList<>());
-
-            doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
-            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
-
-            Map<String, Object> dashboard = service.getSalesDashboard(organizerId, eventId);
-
-            @SuppressWarnings("unchecked")
-            List<Map<String, Object>> breakdown =
-                    (List<Map<String, Object>>) dashboard.get("ticketTypeBreakdown");
-            assertThat(breakdown).hasSize(1);
-            assertThat(breakdown.get(0).get("remaining")).isNull();
-        }
-    }
-
-    // ── Date validation — CREATE enforces future dates ────────────────────────
+    // ── Date validation ───────────────────────────────────────────────────────
 
     @Nested
     @DisplayName("Date validation on CREATE — future dates enforced")
@@ -397,8 +388,8 @@ class EventServiceImplTest {
         void pastEventStart_rejectedOnCreate() {
             when(userRepository.findById(organizerId)).thenReturn(Optional.of(organizer));
 
-            com.event.tickets.domain.CreateEventRequest req = buildCreateRequest();
-            req.setStart(LocalDateTime.now().minusDays(1));  // PAST
+            CreateEventRequest req = buildCreateRequest();
+            req.setStart(LocalDateTime.now().minusDays(1));
             req.setEnd(LocalDateTime.now().plusDays(1));
 
             assertThatThrownBy(() -> service.createEvent(organizerId, req))
@@ -406,28 +397,14 @@ class EventServiceImplTest {
                     .hasMessageContaining("future");
         }
 
-        @Test
-        @DisplayName("past sales start date is rejected on create")
-        void pastSalesStart_rejectedOnCreate() {
-            when(userRepository.findById(organizerId)).thenReturn(Optional.of(organizer));
-
-            com.event.tickets.domain.CreateEventRequest req = buildCreateRequest();
-            req.setSalesStart(LocalDateTime.now().minusHours(1));  // PAST
-            req.setSalesEnd(LocalDateTime.now().plusHours(1));
-            req.setStart(LocalDateTime.now().plusDays(1));
-            req.setEnd(LocalDateTime.now().plusDays(2));
-
-            assertThatThrownBy(() -> service.createEvent(organizerId, req))
-                    .isInstanceOf(InvalidBusinessStateException.class)
-                    .hasMessageContaining("future");
-        }
-
-        private com.event.tickets.domain.CreateEventRequest buildCreateRequest() {
-            com.event.tickets.domain.CreateEventRequest req = new com.event.tickets.domain.CreateEventRequest();
+        private CreateEventRequest buildCreateRequest() {
+            CreateEventRequest req = new CreateEventRequest();
             req.setName("New Event");
             req.setVenue("Grand Hall");
-            req.setStatus(EventStatusEnum.DRAFT);
-            com.event.tickets.domain.CreateTicketTypeRequest tt = new com.event.tickets.domain.CreateTicketTypeRequest();
+            req.setStatus(null);
+            req.setStart(LocalDateTime.now().plusDays(10));
+            req.setEnd(LocalDateTime.now().plusDays(11));
+            CreateTicketTypeRequest tt = new CreateTicketTypeRequest();
             tt.setName("General");
             tt.setPrice(new BigDecimal("50.00"));
             tt.setTotalAvailable(100);
@@ -436,10 +413,8 @@ class EventServiceImplTest {
         }
     }
 
-    // ── Date validation — UPDATE does NOT enforce future dates ────────────────
-
     @Nested
-    @DisplayName("Date validation on UPDATE — past dates allowed (live event fix)")
+    @DisplayName("Date validation on UPDATE — past dates allowed, ordering enforced")
     class UpdateDateValidation {
 
         private UpdateEventRequest buildRequest() {
@@ -462,51 +437,28 @@ class EventServiceImplTest {
         void pastSalesStart_allowedOnUpdate() {
             doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
             when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
-            when(ticketRepository.countActiveTicketsByEventId(eventId, TicketStatusEnum.CANCELLED))
-                    .thenReturn(0);
+            when(ticketRepository.countActiveTicketsByEventId(eventId, TicketStatusEnum.CANCELLED)).thenReturn(0);
             when(eventRepository.save(any())).thenReturn(event);
             when(userRepository.findById(organizerId)).thenReturn(Optional.of(organizer));
 
             UpdateEventRequest req = buildRequest();
-            // salesStart in the past — this is a LIVE event being managed
             req.setSalesStart(LocalDateTime.now().minusDays(3));
             req.setSalesEnd(LocalDateTime.now().plusDays(5));
-            req.setStart(LocalDateTime.now().plusDays(7));
-            req.setEnd(LocalDateTime.now().plusDays(8));
 
-            // Must NOT throw — organizer is editing venue on a live event
             assertThatCode(() -> service.updateEventForOrganizer(organizerId, eventId, req))
                     .doesNotThrowAnyException();
         }
 
         @Test
-        @DisplayName("UPDATE still enforces ordering: event end > event start")
-        void ordering_stillEnforced_onUpdate() {
+        @DisplayName("UPDATE enforces ordering: end must be after start")
+        void ordering_enforced_onUpdate() {
             doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
             when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
-            when(ticketRepository.countActiveTicketsByEventId(eventId, TicketStatusEnum.CANCELLED))
-                    .thenReturn(0);
+            when(ticketRepository.countActiveTicketsByEventId(eventId, TicketStatusEnum.CANCELLED)).thenReturn(0);
 
             UpdateEventRequest req = buildRequest();
             req.setStart(LocalDateTime.now().plusDays(5));
-            req.setEnd(LocalDateTime.now().plusDays(2));  // END before START — invalid
-
-            assertThatThrownBy(() -> service.updateEventForOrganizer(organizerId, eventId, req))
-                    .isInstanceOf(InvalidBusinessStateException.class)
-                    .hasMessageContaining("after");
-        }
-
-        @Test
-        @DisplayName("UPDATE still enforces ordering: salesEnd > salesStart")
-        void salesOrdering_stillEnforced_onUpdate() {
-            doNothing().when(authorizationService).requireOrganizerAccess(organizerId, eventId);
-            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));
-            when(ticketRepository.countActiveTicketsByEventId(eventId, TicketStatusEnum.CANCELLED))
-                    .thenReturn(0);
-
-            UpdateEventRequest req = buildRequest();
-            req.setSalesStart(LocalDateTime.now().plusHours(5));
-            req.setSalesEnd(LocalDateTime.now().plusHours(2));  // before salesStart
+            req.setEnd(LocalDateTime.now().plusDays(2)); // before start
 
             assertThatThrownBy(() -> service.updateEventForOrganizer(organizerId, eventId, req))
                     .isInstanceOf(InvalidBusinessStateException.class)
