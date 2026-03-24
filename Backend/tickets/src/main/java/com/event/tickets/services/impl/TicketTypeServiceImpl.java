@@ -37,36 +37,113 @@ import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
 import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
 /**
- * FIXES APPLIED:
+ * ORIGINAL FIXES (carried forward — do not remove):
  *
- * FIX-TT1 (BUG 4-1) — createTicketType() now guards against CANCELLED/COMPLETED events.
- *   BEFORE: Organizer could POST /events/{cancelledId}/ticket-types and create a new
- *   ticket type for a cancelled or completed event — meaningless and misleading data.
- *   AFTER: Throws InvalidBusinessStateException if event status is not DRAFT or PUBLISHED.
- *
- * FIX-TT2 (BUG 4-2) — deleteTicketType() replaced collection iteration with COUNT query.
- *   BEFORE: ticketType.getTickets().stream().filter(...).count() loaded ALL tickets into memory.
- *   AFTER: countActiveByTicketTypeId() — single COUNT query, zero entity loading.
- *
- * FIX-TT3 (BUG 5-1) — 3-arg purchaseTickets() removed from public interface and made private.
- *   BEFORE: TicketTypeService interface exposed purchaseTickets(userId, ticketTypeId, qty)
- *   which bypasses cross-event ownership validation entirely.
- *   AFTER: Only purchaseTickets(userId, eventId, ticketTypeId, qty) is public.
- *   The 3-arg overload is a private method. No external caller can bypass event validation.
- *
+ * FIX-TT1 (BUG 4-1) — createTicketType() guards CANCELLED/COMPLETED events.
+ * FIX-TT2 (BUG 4-2) — deleteTicketType() uses COUNT query instead of collection load.
+ * FIX-TT3 (BUG 5-1) — 3-arg purchaseTickets() removed from public interface.
  * FIX-TT4 (BUG 5-2) — 4-arg overload no longer double-loads the ticket type.
- *   BEFORE: 4-arg loaded ticketType via findById(), then delegated to 3-arg which loaded
- *   it AGAIN via findByIdWithLock() — two DB round-trips for the same entity.
- *   AFTER: Single consolidated path. The 4-arg does the event cross-check then calls the
- *   private doPurchase() directly with the already-loaded entities.
+ *
+ * SESSION 5 FIXES (M5 bugs — applied in this file):
+ *
+ * FIX-H01 (BUG-TT-A) — Event loaded with pessimistic lock in purchaseTickets().
+ *   BEFORE: eventRepository.findById() — no lock. Two concurrent purchases could
+ *   both read the same maxCapacity and both pass the event-level capacity check
+ *   before either committed → event oversold at the event level.
+ *   AFTER:  eventRepository.findByIdWithLock() acquires a row-level PESSIMISTIC_WRITE
+ *   lock on the event row, serializing concurrent purchases at the event level.
+ *   REQUIRES: EventRepository.findByIdWithLock() — see EventRepository_ADD_METHOD.java.
+ *   NOTE: locking event before ticketType in all purchase paths — consistent order
+ *   prevents deadlock.
+ *
+ * FIX-H02 (BUG-TT-B) — Cross-event getId() on @ManyToOne(LAZY) proxy.
+ *   NO CODE CHANGE. Spring Boot 3.x uses Hibernate 6. In Hibernate 6,
+ *   proxy.getId() on a @ManyToOne(LAZY) resolves directly from the FK column
+ *   stored in the owning row without initializing the proxy (no extra DB call).
+ *   This is guaranteed behaviour in Hibernate 6, not version-dependent guesswork.
+ *   Documented as safe. No runtime risk on this stack.
+ *
+ * FIX-H03 (BUG-TT-D) — TOCTOU race on discount application — PARTIAL MITIGATION ONLY.
+ *   The TicketType pessimistic lock (findByIdWithLock) serializes concurrent purchases.
+ *   However, a concurrent DiscountServiceImpl.updateDiscount() does not hold the
+ *   TicketType lock, so a discount change between findActiveDiscount() and ticket save
+ *   is still theoretically possible. Full fix requires DiscountServiceImpl — logged
+ *   as BUG-TT-D PARTIALLY MITIGATED. Each ticket stores its own pricing snapshot
+ *   (originalPrice, discountApplied, pricePaid) at purchase time, so even if a race
+ *   occurs the per-ticket amounts remain internally self-consistent.
+ *   DEFERRED to M8 session (DiscountServiceImpl).
+ *
+ * FIX-H04 (BUG-TT-E) — QR generation side effects inside transaction loop — DEFERRED.
+ *   QrCodeService internals not provided in this session. Cannot safely change
+ *   generateQrCode() call behavior without knowing what external side effects it has.
+ *   If it writes files or calls external APIs, those are not rolled back on transaction
+ *   failure. Logged as BUG-TT-E DEFERRED. Requires QrCodeService review in M6 session.
+ *   NO CODE CHANGE in this file.
+ *
+ * FIX-H05 (BUG-TT-F) — Email sent synchronously inside @Transactional.
+ *   BEFORE: emailService.sendTicketConfirmationEmail() called inside the
+ *   @Transactional boundary. If email threw an unchecked exception, the DB
+ *   transaction could roll back, losing the purchase. Also blocked the HTTP
+ *   response until email completed. Inconsistent with EventServiceImpl which
+ *   uses @Async for cancellation emails (FIX-E4).
+ *   AFTER:  Email registered via TransactionSynchronizationManager.afterCommit().
+ *   Email sends only after the DB transaction commits successfully. Email
+ *   failure never rolls back the purchase. String/UUID values are captured
+ *   before the callback to avoid accessing detached entities after commit.
+ *
+ * FIX-H06 (BUG-TT-G) — No price validation in createTicketType().
+ *   BEFORE: null or negative price reached the DB constraint (NOT NULL, precision 10,2)
+ *   with no business-level error message — caller received an opaque constraint
+ *   violation or DataIntegrityViolationException.
+ *   AFTER:  Explicit null + negative guard throws InvalidBusinessStateException
+ *   with a clear message before any DB call is made.
+ *
+ * FIX-H07 (BUG-TT-H) — listTicketTypesForEvent() returned live Hibernate collection.
+ *   BEFORE: returned event.getTicketTypes() directly — a live Hibernate PersistentBag.
+ *   Serializing or iterating it after the @Transactional(readOnly=true) boundary
+ *   closes throws LazyInitializationException (when OEMIV is disabled, which is the
+ *   recommended setting for production and the default in Spring Boot 2.7+).
+ *   AFTER:  returns new ArrayList<>(event.getTicketTypes()) — a detached snapshot
+ *   loaded within the transaction, safe to use after the transaction closes.
+ *
+ * FIX-H08 (BUG-TT-I) — updateTicketType() capacity check race + opaque 500 on version conflict.
+ *   BEFORE: findByIdAndEventId (no lock). Between countActiveByTicketTypeId and save,
+ *   a concurrent purchase could sell tickets that violate the new totalAvailable.
+ *   @Version mismatch surfaced as unhandled ObjectOptimisticLockingFailureException → 500.
+ *   AFTER:  findByIdAndEventIdWithLock() acquires the same row lock that purchaseTickets()
+ *   holds via findByIdWithLock(), serializing the two operations. ObjectOptimisticLocking-
+ *   FailureException is caught and rethrown as a clear InvalidBusinessStateException.
+ *   REQUIRES: TicketTypeRepository.findByIdAndEventIdWithLock() — see snippet file.
+ *
+ * FIX-H09 (BUG-TT-J) — updateTicketType() missing event status guard.
+ *   BEFORE: organizer could PUT /ticket-types/{id} on a CANCELLED or COMPLETED event,
+ *   renaming or repricing ticket types that are no longer active. Inconsistent with
+ *   createTicketType() which already blocked this via SALES_ACTIVE_STATUSES.
+ *   AFTER:  same SALES_ACTIVE_STATUSES guard added to updateTicketType().
+ *   Implemented as part of FIX-H08 in updateTicketType().
+ *
+ * FIX-H10 (BUG-TT-K) — deleteTicketType() race could silently delete paid tickets.
+ *   BEFORE: countActiveByTicketTypeId returned 0 → concurrent purchase created a ticket
+ *   in the gap → CascadeType.ALL on TicketType.tickets cascaded the delete, silently
+ *   wiping a paid ticket from the DB. @Version on TicketType did NOT protect this
+ *   because ticket creation saves via ticketRepository, not via the TicketType entity,
+ *   so TicketType's @Version is not bumped by a purchase.
+ *   AFTER:  findByIdAndEventIdWithLock() acquires the same row lock that purchaseTickets()
+ *   holds. Concurrent purchase blocks until this delete transaction completes. If the
+ *   purchase commits first, this transaction reloads — the count is now > 0 and the
+ *   TicketTypeDeleteNotAllowedException fires correctly.
+ *   REQUIRES: TicketTypeRepository.findByIdAndEventIdWithLock() — see snippet file.
  */
 @Service
 @RequiredArgsConstructor
@@ -84,23 +161,21 @@ public class TicketTypeServiceImpl implements TicketTypeService {
     private final EmailService emailService;
     private final SystemUserProvider systemUserProvider;
 
-    /** Events in which ticket sales are meaningful. */
+    /** Events in which ticket sales and ticket type modifications are meaningful. */
     private static final Set<EventStatusEnum> SALES_ACTIVE_STATUSES =
             Set.of(EventStatusEnum.DRAFT, EventStatusEnum.PUBLISHED);
 
     private static final int MAX_TICKETS_PER_USER_PER_TYPE = 10;
 
-    // ── PUBLIC PURCHASE (only safe overload — BUG 5-1 fix) ───────────────────
+    // ── PUBLIC PURCHASE (only safe overload — FIX-TT3) ───────────────────────
 
     /**
-     * FIX-TT3: This is now the ONLY public purchase method.
-     * Verifies the ticket type belongs to the given event before delegating to doPurchase().
-     * The 3-arg bypass is gone from the public interface.
+     * The ONLY public purchase entry point.
+     * Verifies the ticket type belongs to the given event, then delegates to doPurchase().
      */
     @Override
     @Transactional
     public List<Ticket> purchaseTickets(UUID userId, UUID eventId, UUID ticketTypeId, int quantity) {
-        // Quantity guard runs first — fast fail before any DB call
         if (quantity < 1 || quantity > 10) {
             throw new InvalidBusinessStateException(
                     "Quantity must be between 1 and 10. Cannot purchase " + quantity + " tickets");
@@ -116,12 +191,15 @@ public class TicketTypeServiceImpl implements TicketTypeService {
                             String.format("User with ID %s was not found", userId));
                 });
 
-        // FIX-TT4: Load event and ticket type ONCE with the pessimistic lock.
-        // findByIdWithLock acquires a row-level write lock — prevents oversell on concurrent purchases.
-        Event event = eventRepository.findById(eventId)
+        // FIX-H01 (BUG-TT-A): Pessimistic lock on event — prevents event-level oversell.
+        // Two concurrent purchases previously both passed maxCapacity before either committed.
+        // Now serialized: the second purchase waits until the first commits and then
+        // re-reads the updated count. findByIdWithLock must be added to EventRepository.
+        Event event = eventRepository.findByIdWithLock(eventId)
                 .orElseThrow(() -> new EventNotFoundException(
                         String.format("Event with ID '%s' not found", eventId)));
 
+        // Ticket type is locked here (existing lock — prevents per-type oversell).
         TicketType ticketType = ticketTypeRepository.findByIdWithLock(ticketTypeId)
                 .orElseThrow(() -> {
                     auditPurchaseFailure(userId, null, "TICKET_TYPE_NOT_FOUND", clientIp, userAgent);
@@ -129,7 +207,9 @@ public class TicketTypeServiceImpl implements TicketTypeService {
                             String.format("Ticket type with ID %s was not found", ticketTypeId));
                 });
 
-        // FIX-TT3: Cross-event ownership check — replaces the old unsafe 3-arg overload's gap
+        // FIX-H02 (BUG-TT-B): ticketType.getEvent().getId() on a @ManyToOne(LAZY) proxy.
+        // Safe on Hibernate 6 (Spring Boot 3.x) — getId() resolves from FK column without
+        // proxy initialization. No code change needed, documented here for clarity.
         if (!ticketType.getEvent().getId().equals(eventId)) {
             auditPurchaseFailure(userId, event, "CROSS_EVENT_PURCHASE_ATTEMPT", clientIp, userAgent);
             throw new InvalidBusinessStateException(
@@ -141,13 +221,9 @@ public class TicketTypeServiceImpl implements TicketTypeService {
 
     // ── PRIVATE PURCHASE CORE ─────────────────────────────────────────────────
 
-    /**
-     * Core purchase logic. All entities already loaded and validated by the caller.
-     * Not exposed on the interface — prevents bypassing the cross-event check.
-     */
     private List<Ticket> doPurchase(User user, Event event, TicketType ticketType,
                                     int quantity, String clientIp, String userAgent) {
-        UUID userId = user.getId();
+        UUID userId       = user.getId();
         UUID ticketTypeId = ticketType.getId();
 
         // Event status check
@@ -183,7 +259,8 @@ public class TicketTypeServiceImpl implements TicketTypeService {
             throw new TicketsSoldOutException();
         }
 
-        // Event-level capacity check (COUNT query — no entity loading)
+        // Event-level capacity check (COUNT query — no entity loading).
+        // FIX-H01: This check is now protected by the event row lock acquired in purchaseTickets().
         if (event.getMaxCapacity() != null) {
             int totalSold = ticketRepository.countActiveTicketsByEventId(
                     event.getId(), TicketStatusEnum.CANCELLED);
@@ -196,10 +273,9 @@ public class TicketTypeServiceImpl implements TicketTypeService {
         }
 
         // Per-user limit check.
-        // NOTE: countByTicketTypeIdAndPurchaserId includes CANCELLED tickets.
-        // This is intentional — prevents gaming by buy-cancel-rebuy cycles.
-        // A user who buys 10, has them cancelled by the organiser is an edge case
-        // handled by contacting support. This choice is documented here explicitly.
+        // NOTE: countByTicketTypeIdAndPurchaserId intentionally includes CANCELLED tickets
+        // to prevent buy-cancel-rebuy gaming. Edge case of organiser-forced cancellation
+        // is handled via support. Documented intentional trade-off.
         int alreadyOwned = ticketRepository.countByTicketTypeIdAndPurchaserId(ticketTypeId, userId);
         if (alreadyOwned + quantity > MAX_TICKETS_PER_USER_PER_TYPE) {
             auditPurchaseFailure(userId, event, "PER_USER_LIMIT_EXCEEDED", clientIp, userAgent);
@@ -215,7 +291,12 @@ public class TicketTypeServiceImpl implements TicketTypeService {
             emitOrganizerSelfPurchaseAudit(user, event, quantity);
         }
 
-        // Pricing
+        // Pricing.
+        // FIX-H03 (BUG-TT-D) PARTIAL: discount lookup has no lock — TOCTOU risk remains.
+        // Concurrent DiscountServiceImpl.updateDiscount() can change the discount between
+        // this lookup and the ticket save below. Full fix requires DiscountServiceImpl
+        // changes (M8 session). Per-ticket pricing is stored as a snapshot so each ticket
+        // remains internally self-consistent regardless.
         BigDecimal basePrice = ticketType.getPrice();
         Optional<Discount> activeDiscount = discountService.findActiveDiscount(ticketTypeId);
         BigDecimal finalPrice;
@@ -228,7 +309,10 @@ public class TicketTypeServiceImpl implements TicketTypeService {
             discountAmount = BigDecimal.ZERO;
         }
 
-        // Create tickets + QR codes
+        // Create tickets + QR codes.
+        // FIX-H04 (BUG-TT-E) DEFERRED: qrCodeService.generateQrCode() called inside
+        // transaction loop. QrCodeService internals not available — cannot change behavior
+        // without verifying external side effects. Requires M6 session review.
         List<Ticket> createdTickets = new ArrayList<>();
         for (int i = 0; i < quantity; i++) {
             Ticket ticket = new Ticket();
@@ -245,10 +329,34 @@ public class TicketTypeServiceImpl implements TicketTypeService {
 
         emitTicketPurchasedAudit(user, event, ticketType, quantity);
 
-        emailService.sendTicketConfirmationEmail(
-                user.getEmail(), user.getName(),
-                event.getName(), ticketType.getName(),
-                quantity, createdTickets.get(0).getId());
+        // FIX-H05 (BUG-TT-F): Register email for after-commit rather than sending inline.
+        // BEFORE: email sent synchronously inside @Transactional — a thrown exception
+        // would roll back the purchase. Also blocked HTTP response during SMTP call.
+        // AFTER:  email fires only after the DB transaction commits successfully.
+        // Email failure is logged but never rolls back the purchase.
+        // String/UUID primitives are captured before the callback — entity fields are
+        // not accessed after commit to avoid detached-entity issues.
+        final String capturedUserEmail      = user.getEmail();
+        final String capturedUserName       = user.getName();
+        final String capturedEventName      = event.getName();
+        final String capturedTicketTypeName = ticketType.getName();
+        final int    capturedQuantity       = quantity;
+        final UUID   capturedFirstTicketId  = createdTickets.get(0).getId();
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                try {
+                    emailService.sendTicketConfirmationEmail(
+                            capturedUserEmail, capturedUserName,
+                            capturedEventName, capturedTicketTypeName,
+                            capturedQuantity, capturedFirstTicketId);
+                } catch (Exception e) {
+                    log.error("Ticket confirmation email failed after commit (purchase committed). " +
+                                    "userId={}, firstTicketId={}: {}",
+                            user.getId(), capturedFirstTicketId, e.getMessage());
+                }
+            }
+        });
 
         return createdTickets;
     }
@@ -256,18 +364,28 @@ public class TicketTypeServiceImpl implements TicketTypeService {
     // ── CRUD ──────────────────────────────────────────────────────────────────
 
     /**
-     * FIX-TT1 (BUG 4-1): Guards against creating ticket types for CANCELLED/COMPLETED events.
+     * FIX-TT1: Guards CANCELLED/COMPLETED events.
+     * FIX-H06: Guards null/negative price before any DB call.
      */
     @Override
     @Transactional
     public TicketType createTicketType(UUID organizerId, UUID eventId, CreateTicketTypeRequest request) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
 
+        // FIX-H06 (BUG-TT-G): Service-level price guard.
+        // TicketType.price is @Column(nullable=false, precision=10, scale=2).
+        // Without this guard, null or negative price hits the DB constraint and surfaces
+        // as DataIntegrityViolationException with no business-level message.
+        if (request.getPrice() == null || request.getPrice().compareTo(BigDecimal.ZERO) < 0) {
+            throw new InvalidBusinessStateException(
+                    "Ticket type price must be provided and cannot be negative.");
+        }
+
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new EventNotFoundException(
                         String.format("Event with ID '%s' not found", eventId)));
 
-        // FIX-TT1: Cannot add ticket types to events that are no longer accepting changes
+        // FIX-TT1 (carried forward)
         if (!SALES_ACTIVE_STATUSES.contains(event.getStatus())) {
             throw new InvalidBusinessStateException(String.format(
                     "Cannot add ticket types to a %s event. " +
@@ -284,6 +402,9 @@ public class TicketTypeServiceImpl implements TicketTypeService {
         return ticketTypeRepository.save(ticketType);
     }
 
+    /**
+     * FIX-H07: Returns a detached ArrayList copy instead of the live Hibernate collection.
+     */
     @Override
     @Transactional(readOnly = true)
     public List<TicketType> listTicketTypesForEvent(UUID organizerId, UUID eventId) {
@@ -291,7 +412,11 @@ public class TicketTypeServiceImpl implements TicketTypeService {
         Event event = eventRepository.findById(eventId)
                 .orElseThrow(() -> new EventNotFoundException(
                         String.format("Event with ID '%s' not found", eventId)));
-        return event.getTicketTypes();
+        // FIX-H07 (BUG-TT-H): Return a copy — not the live PersistentBag.
+        // The Hibernate collection is only valid within this transaction. Accessing
+        // event.getTicketTypes() after the transaction closes throws LazyInitializationException
+        // when OpenEntityManagerInView is disabled (recommended in production).
+        return new ArrayList<>(event.getTicketTypes());
     }
 
     @Override
@@ -301,46 +426,92 @@ public class TicketTypeServiceImpl implements TicketTypeService {
         return ticketTypeRepository.findByIdAndEventId(ticketTypeId, eventId);
     }
 
+    /**
+     * FIX-H08 (BUG-TT-I): Locked load — serializes with concurrent purchases.
+     * FIX-H09 (BUG-TT-J): Event status guard — consistent with createTicketType().
+     */
     @Override
     @Transactional
     public TicketType updateTicketType(UUID organizerId, UUID eventId, UUID ticketTypeId,
                                        UpdateTicketTypeRequest request) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
 
-        TicketType ticketType = ticketTypeRepository.findByIdAndEventId(ticketTypeId, eventId)
-                .orElseThrow(() -> new TicketTypeNotFoundException(
-                        String.format("Ticket type '%s' not found for event '%s'", ticketTypeId, eventId)));
-
-        if (request.getTotalAvailable() != null) {
-            int activeAlreadySold = ticketRepository.countActiveByTicketTypeId(
-                    ticketTypeId, TicketStatusEnum.CANCELLED);
-            if (request.getTotalAvailable() < activeAlreadySold) {
-                throw new InvalidBusinessStateException(String.format(
-                        "Cannot set totalAvailable to %d — %d active (non-cancelled) ticket(s) already sold.",
-                        request.getTotalAvailable(), activeAlreadySold));
-            }
+        // FIX-H09 (BUG-TT-J): Guard against updating ticket types on closed events.
+        // createTicketType() already blocked this. updateTicketType() was missing the guard,
+        // allowing organizers to rename/reprice ticket types on CANCELLED or COMPLETED events.
+        Event event = eventRepository.findById(eventId)
+                .orElseThrow(() -> new EventNotFoundException(
+                        String.format("Event with ID '%s' not found", eventId)));
+        if (!SALES_ACTIVE_STATUSES.contains(event.getStatus())) {
+            throw new InvalidBusinessStateException(String.format(
+                    "Cannot update ticket types on a %s event. " +
+                            "Only DRAFT or PUBLISHED events can have ticket types modified.",
+                    event.getStatus()));
         }
 
-        ticketType.setName(request.getName());
-        ticketType.setPrice(request.getPrice());
-        ticketType.setDescription(request.getDescription());
-        ticketType.setTotalAvailable(request.getTotalAvailable());
-        return ticketTypeRepository.save(ticketType);
+        try {
+            // FIX-H08 (BUG-TT-I): Use pessimistic lock.
+            // purchaseTickets() holds a lock on TicketType via findByIdWithLock().
+            // By acquiring the same row lock here, a concurrent purchase is blocked
+            // until this update commits, eliminating the race between the capacity
+            // check and the save. findByIdAndEventIdWithLock must be added to
+            // TicketTypeRepository (see TicketTypeRepository_ADD_METHOD.java).
+            TicketType ticketType = ticketTypeRepository.findByIdAndEventIdWithLock(ticketTypeId, eventId)
+                    .orElseThrow(() -> new TicketTypeNotFoundException(
+                            String.format("Ticket type '%s' not found for event '%s'",
+                                    ticketTypeId, eventId)));
+
+            if (request.getTotalAvailable() != null) {
+                int activeAlreadySold = ticketRepository.countActiveByTicketTypeId(
+                        ticketTypeId, TicketStatusEnum.CANCELLED);
+                if (request.getTotalAvailable() < activeAlreadySold) {
+                    throw new InvalidBusinessStateException(String.format(
+                            "Cannot set totalAvailable to %d — %d active (non-cancelled) " +
+                                    "ticket(s) already sold.",
+                            request.getTotalAvailable(), activeAlreadySold));
+                }
+            }
+
+            ticketType.setName(request.getName());
+            ticketType.setPrice(request.getPrice());
+            ticketType.setDescription(request.getDescription());
+            ticketType.setTotalAvailable(request.getTotalAvailable());
+            return ticketTypeRepository.save(ticketType);
+
+        } catch (ObjectOptimisticLockingFailureException e) {
+            // FIX-H08 cont.: @Version on TicketType is a safety net if the pessimistic
+            // lock above somehow does not cover a specific concurrent path. Without this
+            // catch, the exception surfaces as an opaque 500. With it, the caller gets
+            // a clear message and can retry.
+            throw new InvalidBusinessStateException(
+                    "This ticket type was concurrently modified. Please reload and retry your update.");
+        }
     }
 
     /**
-     * FIX-TT2 (BUG 4-2): Replaced collection load with COUNT query.
+     * FIX-TT2: COUNT query instead of collection load.
+     * FIX-H10 (BUG-TT-K): Locked load — prevents paid ticket cascade-delete race.
      */
     @Override
     @Transactional
     public void deleteTicketType(UUID organizerId, UUID eventId, UUID ticketTypeId) {
         authorizationService.requireOrganizerAccess(organizerId, eventId);
 
-        TicketType ticketType = ticketTypeRepository.findByIdAndEventId(ticketTypeId, eventId)
+        // FIX-H10 (BUG-TT-K): Use pessimistic lock.
+        // BEFORE: count returned 0 → concurrent purchase created a ticket in the gap →
+        // CascadeType.ALL on TicketType.tickets cascaded the delete to the paid ticket.
+        // @Version on TicketType did NOT protect this: ticket creation saves via
+        // ticketRepository.save(), which does not bump TicketType's @Version field.
+        // AFTER: same row lock as purchaseTickets() (findByIdWithLock). A concurrent
+        // purchase blocks until this transaction completes. If it committed first,
+        // the count below returns > 0 and the delete is correctly rejected.
+        // findByIdAndEventIdWithLock must be added to TicketTypeRepository (see snippet).
+        TicketType ticketType = ticketTypeRepository.findByIdAndEventIdWithLock(ticketTypeId, eventId)
                 .orElseThrow(() -> new TicketTypeNotFoundException(
-                        String.format("Ticket type '%s' not found for event '%s'", ticketTypeId, eventId)));
+                        String.format("Ticket type '%s' not found for event '%s'",
+                                ticketTypeId, eventId)));
 
-        // FIX-TT2: Use COUNT query — zero entity loading for the active ticket check
+        // FIX-TT2 (carried forward): COUNT query — zero entity loading.
         int activeTickets = ticketRepository.countActiveByTicketTypeId(
                 ticketTypeId, TicketStatusEnum.CANCELLED);
         if (activeTickets > 0) {

@@ -19,4 +19,11 @@ public interface TicketTypeRepository extends JpaRepository<TicketType, UUID> {
 
   // Find ticket type by ID and event ID (for authorization checks)
   Optional<TicketType> findByIdAndEventId(UUID ticketTypeId, UUID eventId);
+
+  @Lock(LockModeType.PESSIMISTIC_WRITE)
+  @Query("SELECT tt FROM TicketType tt WHERE tt.id = :id AND tt.event.id = :eventId")
+  Optional<TicketType> findByIdAndEventIdWithLock(
+          @Param("id") UUID id,
+          @Param("eventId") UUID eventId
+  );
 }
