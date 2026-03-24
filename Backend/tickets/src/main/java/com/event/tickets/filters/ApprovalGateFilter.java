@@ -1,12 +1,9 @@
 package com.event.tickets.filters;
 
-import com.event.tickets.domain.entities.AuditAction;
-import com.event.tickets.domain.entities.AuditLog;
 import com.event.tickets.domain.entities.ApprovalStatus;
 import com.event.tickets.domain.entities.User;
 import com.event.tickets.repositories.UserRepository;
-import com.event.tickets.services.AuditLogService;
-import com.event.tickets.services.SystemUserProvider;
+import com.event.tickets.services.impl.KeycloakAdminServiceImpl;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -24,9 +21,6 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-import static com.event.tickets.util.RequestUtil.extractClientIp;
-import static com.event.tickets.util.RequestUtil.extractUserAgent;
-
 @Component
 @Order(2)
 @RequiredArgsConstructor
@@ -34,8 +28,7 @@ import static com.event.tickets.util.RequestUtil.extractUserAgent;
 public class ApprovalGateFilter extends OncePerRequestFilter {
 
     private final UserRepository userRepository;
-    private final AuditLogService auditLogService;
-    private final SystemUserProvider systemUserProvider;
+    private final KeycloakAdminServiceImpl keycloakAdminService;
     private final ObjectMapper objectMapper;
 
     /**
@@ -89,33 +82,36 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
 
             if (user == null) {
                 log.warn("User not found in database during approval check: userId={}", userId);
-                filterChain.doFilter(request, response);
+                response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "User not provisioned in system");
                 return;
             }
 
             ApprovalStatus status = user.getApprovalStatus();
 
             if (status == null) {
-                log.warn("Legacy user with null approval status: userId={}, email={}", userId, user.getEmail());
-            }
-
-            if (status == ApprovalStatus.PENDING) {
-                log.warn("APPROVAL GATE BLOCK: PENDING — userId={}, email={}, path={}", userId, user.getEmail(), path);
-                emitApprovalGateViolation(user, path, method, "PENDING", request);
-                sendForbiddenResponse(response, "APPROVAL_PENDING",
-                        "Your account is awaiting approval from an administrator. " +
-                                "You will be notified once your account has been reviewed.",
-                        userId.toString());
+                log.error("Invalid user state: null approval status for userId={}", userId);
+                response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "User state invalid");
                 return;
             }
 
-            if (status == ApprovalStatus.REJECTED) {
-                log.warn("APPROVAL GATE BLOCK: REJECTED — userId={}, email={}, path={}", userId, user.getEmail(), path);
-                String reason = user.getRejectionReason() != null ? user.getRejectionReason() : "No reason provided";
-                emitApprovalGateViolation(user, path, method, "REJECTED: " + reason, request);
-                sendForbiddenResponse(response, "APPROVAL_REJECTED",
-                        "Your account has been rejected. Reason: " + reason,
-                        userId.toString());
+            boolean existsInKeycloak;
+            try {
+                existsInKeycloak = keycloakAdminService.userExists(userId);
+            } catch (Exception e) {
+                log.error("Failed to verify user existence in identity provider: userId={}", userId, e);
+                response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "Failed to verify identity state");
+                return;
+            }
+
+            if (!existsInKeycloak) {
+                response.sendError(HttpServletResponse.SC_UNAUTHORIZED,
+                        "User does not exist in identity provider");
+                return;
+            }
+
+            if (status == ApprovalStatus.PENDING || status == ApprovalStatus.REJECTED) {
+                log.warn("APPROVAL GATE BLOCK: {} - userId={}, email={}, path={}", status, userId, user.getEmail(), path);
+                response.sendError(HttpServletResponse.SC_FORBIDDEN, "User not approved");
                 return;
             }
 
@@ -128,16 +124,12 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
-        if ("/api/v1/auth/register".equals(path)
-                || "/api/v1/invites/redeem".equals(path)
-                || "/actuator".equals(path)
-                || path.startsWith("/actuator/")
-                || "/swagger-ui".equals(path)
-                || path.startsWith("/swagger-ui/")
-                || "/v3/api-docs".equals(path)
-                || path.startsWith("/v3/api-docs/")
-                || "/api-docs".equals(path)
-                || path.startsWith("/api-docs/")) {
+        if (path.startsWith("/api/v1/auth")
+                || path.startsWith("/api/v1/published-events")
+                || path.startsWith("/api/v1/invites/redeem")
+                || path.startsWith("/actuator")
+                || path.startsWith("/swagger-ui")
+                || path.startsWith("/v3/api-docs")) {
             log.debug("Approval gate bypassed: {}", path);
             return true;
         }
@@ -158,24 +150,4 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
         response.getWriter().write(objectMapper.writeValueAsString(errorBody));
     }
 
-    private void emitApprovalGateViolation(User user, String path, String method,
-                                           String reason, HttpServletRequest request) {
-        try {
-            if (user == null) user = systemUserProvider.getSystemUser();
-            AuditLog auditLog = AuditLog.builder()
-                    .action(AuditAction.APPROVAL_GATE_VIOLATION)
-                    .actor(user)
-                    .targetUser(user)
-                    .resourceType("API_ENDPOINT")
-                    .resourceId(null)
-                    .details("path=" + path + ",method=" + method + ",reason=" + reason)
-                    .ipAddress(extractClientIp(request))
-                    .userAgent(extractUserAgent(request))
-                    .build();
-            auditLogService.saveAuditLog(auditLog);
-        } catch (Exception e) {
-            log.error("Failed to emit approval gate violation audit: userId={}, error={}",
-                    user != null ? user.getId() : "null", e.getMessage());
-        }
-    }
 }

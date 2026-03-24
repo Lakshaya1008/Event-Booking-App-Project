@@ -1,6 +1,9 @@
 package com.event.tickets.filters;
 
+import com.event.tickets.domain.entities.User;
 import com.event.tickets.repositories.UserRepository;
+import com.event.tickets.services.KeycloakAdminService;
+import org.springframework.beans.factory.annotation.Autowired;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -38,6 +41,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class UserProvisioningFilter extends OncePerRequestFilter {
 
     private final UserRepository userRepository;
+    @Autowired(required = false)
+    private KeycloakAdminService keycloakAdminService;
 
     @Override
     protected void doFilterInternal(
@@ -47,23 +52,56 @@ public class UserProvisioningFilter extends OncePerRequestFilter {
 
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
 
-        if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
+        if (authentication == null || !authentication.isAuthenticated()) {
+            filterChain.doFilter(request, response);
+            return;
+        }
 
-            UUID keycloakId;
+        if (!(authentication.getPrincipal() instanceof Jwt)) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+        Jwt jwt = (Jwt) authentication.getPrincipal();
+        String userIdStr = jwt.getSubject();
+
+        if (userIdStr == null) {
+            response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid token: missing subject");
+            return;
+        }
+
+        UUID userId;
+        try {
+            userId = UUID.fromString(userIdStr);
+        } catch (IllegalArgumentException e) {
+            response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid token: malformed user ID");
+            return;
+        }
+
+        User user = userRepository.findById(userId).orElse(null);
+        if (user == null) {
+            response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "User not provisioned in system");
+            return;
+        }
+
+        if (user.getApprovalStatus() == null) {
+            response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "User state invalid");
+            return;
+        }
+
+        if (keycloakAdminService != null) {
+            boolean exists;
             try {
-                keycloakId = UUID.fromString(jwt.getSubject());
-            } catch (IllegalArgumentException e) {
-                log.warn("Skipping provisioning check due to invalid JWT subject format: sub={}", jwt.getSubject());
-                filterChain.doFilter(request, response);
+                exists = keycloakAdminService.userExists(userId);
+            } catch (Exception e) {
+                response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "Failed to verify identity");
                 return;
             }
 
-            // Read-only check: log desync between Keycloak and DB for observability.
-            // No auto-provisioning — see class Javadoc for rationale.
-            if (!userRepository.existsById(keycloakId)) {
-                log.warn("DESYNC DETECTED: Keycloak user has no DB record. " +
-                                "userId={}, email={} — user must register via /api/v1/auth/register",
-                        keycloakId, jwt.getClaimAsString("email"));
+            if (!exists) {
+                response.sendError(HttpServletResponse.SC_UNAUTHORIZED,
+                        "User not found in identity provider");
+                return;
             }
         }
 

@@ -2,6 +2,7 @@ package com.event.tickets.repositories;
 
 import com.event.tickets.domain.entities.InviteCode;
 import com.event.tickets.domain.entities.InviteCodeStatus;
+import jakarta.persistence.LockModeType;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -9,8 +10,10 @@ import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -28,6 +31,10 @@ public interface InviteCodeRepository extends JpaRepository<InviteCode, UUID> {
    * @return Optional containing the invite code if found
    */
   Optional<InviteCode> findByCode(String code);
+
+  @Lock(LockModeType.PESSIMISTIC_WRITE)
+  @Query("SELECT ic FROM InviteCode ic WHERE ic.code = :code")
+  Optional<InviteCode> findByCodeForUpdate(@Param("code") String code);
 
   /**
    * Finds all invite codes created by a specific user.

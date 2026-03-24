@@ -5,6 +5,7 @@ import com.event.tickets.domain.entities.ApprovalStatus;
 import com.event.tickets.domain.entities.AuditAction;
 import com.event.tickets.domain.entities.AuditLog;
 import com.event.tickets.domain.entities.User;
+import com.event.tickets.exceptions.InvalidBusinessStateException;
 import com.event.tickets.exceptions.InvalidApprovalStateException;
 import com.event.tickets.exceptions.UserNotFoundException;
 import com.event.tickets.repositories.UserRepository;
@@ -21,6 +22,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -64,6 +66,7 @@ public class ApprovalServiceImpl implements ApprovalService {
     @Transactional
     public void approveUser(UUID userId, UUID adminId) {
         log.info("Approving user: userId={}, adminId={}", userId, adminId);
+        requireAdminRole(adminId);
 
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new UserNotFoundException(
@@ -82,25 +85,22 @@ public class ApprovalServiceImpl implements ApprovalService {
         // FIX-A2: Verify the Keycloak role is still assigned before activating.
         // Between registration and approval, a sync failure could have left the user
         // with no Keycloak role. Re-assign if missing.
-        ensureKeycloakRoleIsAssigned(user);
-
-        // Persist intended state first; retry job reconciles Keycloak later if needed.
-        user.setApprovalStatus(ApprovalStatus.APPROVED);
-        user.setApprovedAt(LocalDateTime.now());
-        user.setApprovedBy(admin);
-        user.setKeycloakSyncPending(true);
-        userRepository.save(user);
+        validateUserHasValidRole(user.getId());
 
         try {
             keycloakAdminService.activateUser(userId);
-            user.setKeycloakSyncPending(false);
-            userRepository.save(user);
             log.info("Keycloak activation succeeded for user {}", userId);
         } catch (Exception e) {
-            log.error("WARN: Keycloak activation failed for user {}. " +
-                            "DB is APPROVED, sync pending, retry job will resolve. Error: {}",
-                    userId, e.getMessage());
+            log.error("Keycloak activation FAILED for user {} - approval aborted", userId, e);
+            throw new InvalidBusinessStateException(
+                    "Cannot approve user because Keycloak activation failed", e);
         }
+
+        user.setApprovalStatus(ApprovalStatus.APPROVED);
+        user.setApprovedAt(LocalDateTime.now());
+        user.setApprovedBy(admin);
+        user.setKeycloakSyncPending(false);
+        userRepository.save(user);
 
         try {
             emailService.sendApprovalEmail(user.getEmail(), user.getName());
@@ -116,6 +116,7 @@ public class ApprovalServiceImpl implements ApprovalService {
     @Transactional
     public void rejectUser(UUID userId, UUID adminId, String reason) {
         log.info("Rejecting user: userId={}, adminId={}, reason={}", userId, adminId, reason);
+        requireAdminRole(adminId);
 
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new UserNotFoundException(
@@ -231,30 +232,40 @@ public class ApprovalServiceImpl implements ApprovalService {
         return dto;
     }
 
-    /**
-     * FIX-A2: Before activating a user, verify their application role still exists in Keycloak.
-     * If a sync failure occurred at registration time, the role may be missing.
-     * Re-assigns the role if it is absent, so the user is never activated as a blank account.
-     *
-     * Which role to re-assign is inferred from what Keycloak has. If Keycloak has nothing,
-     * we log a warning and proceed — activating without a role is better than failing silently.
-     */
-    private void ensureKeycloakRoleIsAssigned(User user) {
+    private void validateUserHasValidRole(UUID userId) {
         try {
-            List<String> roles = keycloakAdminService.getUserRoles(user.getId());
+            List<String> roles = keycloakAdminService.getUserRoles(userId);
             List<String> appRoles = List.of("ADMIN", "ORGANIZER", "STAFF", "ATTENDEE");
-            boolean hasAppRole = roles != null && roles.stream().anyMatch(appRoles::contains);
 
-            if (!hasAppRole) {
-                log.warn("User {} has no application role in Keycloak before approval. " +
-                        "This indicates a registration sync failure. Role must be re-assigned manually " +
-                        "or via the Admin Governance endpoint before activating.", user.getId());
-                // We proceed with activation anyway — an admin should review and assign the correct role.
-                // Blocking approval here would leave the user permanently stuck in PENDING.
+            if (roles == null || roles.isEmpty()) {
+                throw new InvalidBusinessStateException(
+                        "User has no roles assigned in Keycloak. Cannot approve.");
             }
+
+            boolean hasValidRole = roles.stream().anyMatch(appRoles::contains);
+            if (!hasValidRole) {
+                throw new InvalidBusinessStateException(
+                        "User does not have a valid application role. Cannot approve.");
+            }
+        } catch (InvalidBusinessStateException e) {
+            throw e;
         } catch (Exception e) {
-            log.warn("Could not verify Keycloak roles for user {} before approval (Keycloak may be slow): {}",
-                    user.getId(), e.getMessage());
+            throw new InvalidBusinessStateException(
+                    "Failed to validate user role before approval");
+        }
+    }
+
+    private void requireAdminRole(UUID userId) {
+        try {
+            List<String> roles = keycloakAdminService.getUserRoles(userId);
+
+            if (roles == null || roles.stream().noneMatch("ADMIN"::equals)) {
+                throw new AccessDeniedException("User is not authorized to perform approval actions");
+            }
+        } catch (AccessDeniedException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new AccessDeniedException("Failed to verify admin role");
         }
     }
 

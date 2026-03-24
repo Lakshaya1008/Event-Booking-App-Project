@@ -196,6 +196,11 @@ public class RegistrationServiceImpl implements RegistrationService {
                 final User savedUser = user;
                 final UUID inviteEventId = eventId;
                 try {
+                    if (inviteCode.getEvent() == null
+                            || !inviteCode.getEvent().getId().equals(inviteEventId)) {
+                        throw new RegistrationException("Invite code event mismatch");
+                    }
+
                     Event event = eventRepository.findById(inviteEventId)
                             .orElseThrow(() -> new RegistrationException("Event not found: " + inviteEventId));
                     boolean alreadyAssigned = event.getStaff().stream()
@@ -281,8 +286,13 @@ public class RegistrationServiceImpl implements RegistrationService {
     // ── PRIVATE HELPERS ───────────────────────────────────────────────────────
 
     private InviteCode validateAndGetInviteCode(String code) {
-        InviteCode inviteCode = inviteCodeRepository.findByCode(code)
+        InviteCode inviteCode = inviteCodeRepository.findByCodeForUpdate(code)
                 .orElseThrow(() -> new InviteCodeNotFoundException("Invite code not found: " + code));
+
+        if ("STAFF".equals(inviteCode.getRoleName()) && inviteCode.getEvent() == null) {
+            throw new InvalidInviteCodeException("STAFF invite code must be tied to an event");
+        }
+
         if (!inviteCode.isValid()) {
             if (inviteCode.getStatus() == InviteCodeStatus.REDEEMED)
                 throw new InvalidInviteCodeException("Invite code has already been redeemed");

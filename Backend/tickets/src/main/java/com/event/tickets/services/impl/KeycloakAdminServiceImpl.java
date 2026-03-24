@@ -276,6 +276,22 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
         }
     }
 
+    public boolean isUserEnabled(UUID userId) {
+        try {
+            org.keycloak.representations.idm.UserRepresentation user = keycloakAdminClient
+                    .realm(realm)
+                    .users()
+                    .get(userId.toString())
+                    .toRepresentation();
+            return user.isEnabled();
+        } catch (Exception e) {
+            throw new KeycloakOperationException(
+                    String.format("Failed to verify enabled state for user '%s': %s", userId, e.getMessage()),
+                    e
+            );
+        }
+    }
+
     @Override
     public UUID createUser(String email, String password, String name) {
         log.info("Creating new user in Keycloak: email={}, name={}", email, name);

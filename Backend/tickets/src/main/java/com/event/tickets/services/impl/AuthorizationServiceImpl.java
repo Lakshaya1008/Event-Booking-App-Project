@@ -1,11 +1,14 @@
 package com.event.tickets.services.impl;
 
 import com.event.tickets.domain.entities.Event;
+import com.event.tickets.domain.entities.User;
 import com.event.tickets.exceptions.EventNotFoundException;
 import com.event.tickets.exceptions.UserNotFoundException;
 import com.event.tickets.repositories.EventRepository;
 import com.event.tickets.repositories.UserRepository;
 import com.event.tickets.services.AuthorizationService;
+import com.event.tickets.services.KeycloakAdminService;
+import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -43,6 +46,7 @@ public class AuthorizationServiceImpl implements AuthorizationService {
 
     private final EventRepository eventRepository;
     private final UserRepository userRepository;
+    private final KeycloakAdminService keycloakAdminService;
 
     @Override
     public void requireOrganizerAccess(UUID userId, UUID eventId) {
@@ -104,16 +108,33 @@ public class AuthorizationServiceImpl implements AuthorizationService {
     @Override
     public void requireOrganizerOrStaffAccess(UUID userId, Event event) {
         log.debug("Checking organizer or staff access: userId={}, eventId={}", userId, event.getId());
-        verifyUserExists(userId);
-        if (!hasEventAccess(userId, event)) {
-            log.warn("Access denied: User '{}' is neither organizer nor staff for event '{}'",
-                    userId, event.getId());
-            throw new AccessDeniedException(String.format(
-                    "Access denied. User '%s' is not authorized to access event '%s' (%s). " +
-                            "You must be either the event organizer or assigned as staff.",
-                    userId, event.getId(), event.getName()));
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new UserNotFoundException("User not found"));
+
+        List<String> roles = keycloakAdminService.getUserRoles(userId);
+
+        if (roles != null && roles.contains("ADMIN")) {
+            return;
         }
-        log.debug("Event access granted: userId={}, eventId={}", userId, event.getId());
+
+        if (roles != null && roles.contains("ORGANIZER")) {
+            if (event.getOrganizer() == null || !event.getOrganizer().getId().equals(userId)) {
+                throw new AccessDeniedException("Organizer cannot access this event");
+            }
+            return;
+        }
+
+        if (roles != null && roles.contains("STAFF")) {
+            boolean isStaff = event.getStaff() != null
+                    && event.getStaff().stream().anyMatch(s -> s.getId().equals(userId));
+            if (!isStaff) {
+                throw new AccessDeniedException("Staff not assigned to this event");
+            }
+            return;
+        }
+
+        log.warn("Access denied: user '{}' has no event permission for event '{}'", user.getId(), event.getId());
+        throw new AccessDeniedException("User does not have permission for this event");
     }
 
     @Override

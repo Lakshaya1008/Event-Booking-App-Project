@@ -189,9 +189,13 @@ public class InviteCodeServiceImpl implements InviteCodeService {
                         String.format("User with ID '%s' not found", userId)));
 
         try {
-            InviteCode inviteCode = inviteCodeRepository.findByCode(code)
+            InviteCode inviteCode = inviteCodeRepository.findByCodeForUpdate(code)
                     .orElseThrow(() -> new InviteCodeNotFoundException(
                             String.format("Invite code '%s' not found", code)));
+
+            if ("STAFF".equals(inviteCode.getRoleName()) && inviteCode.getEvent() == null) {
+                throw new InvalidInviteCodeException("STAFF invite code must be tied to an event");
+            }
 
             // FIX 1 (preserved): Persist EXPIRED status immediately before validation
             // to prevent a concurrent redemption from bypassing the expiry check.
