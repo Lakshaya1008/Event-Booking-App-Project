@@ -125,9 +125,10 @@ public class AuthorizationServiceImpl implements AuthorizationService {
         }
 
         if (roles != null && roles.contains("STAFF")) {
-            boolean isStaff = event.getStaff() != null
-                    && event.getStaff().stream().anyMatch(s -> s.getId().equals(userId));
-            if (!isStaff) {
+            // FIX-AZ1 (consistent): Use COUNT query — no staff collection loaded into memory.
+            // isStaff() already uses eventRepository.isStaffMember() — reuse it here
+            // instead of reloading the full @ManyToMany staff collection.
+            if (!isStaff(userId, event)) {
                 throw new AccessDeniedException("Staff not assigned to this event");
             }
             return;
