@@ -140,15 +140,37 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
             @Param("excludedStatus") TicketStatusEnum excludedStatus
     );
 
+    /**
+     * FIX-E2 / FIX-10 (BUG-1): Returns per-ticket-type sales aggregates for the sales dashboard.
+     *
+     * PREVIOUS (BROKEN) version returned 4 columns:
+     *   [0] ticketTypeId  (UUID)
+     *   [1] ticketTypeName (String)   ← service cast this as Number → ClassCastException
+     *   [2] COUNT(t)      (Long)      ← service cast this as BigDecimal → ClassCastException
+     *   [3] SUM(pricePaid)(BigDecimal)← service read this as discountGiven → wrong semantic
+     *   [4] (missing)                 ← service accessed row[4] → ArrayIndexOutOfBoundsException
+     *
+     * FIXED column layout (5 columns, matches getSalesDashboard() index mapping exactly):
+     *   index 0 — t.ticketType.id        (UUID)
+     *   index 1 — COUNT(t)               (Long → intValue())        soldCount
+     *   index 2 — SUM(t.originalPrice)   (BigDecimal)               revenueBeforeDiscount
+     *   index 3 — SUM(t.discountApplied) (BigDecimal)               discountGiven
+     *   index 4 — SUM(t.pricePaid)       (BigDecimal)               revenueFinal
+     *
+     * ticketTypeName removed from SELECT — getSalesDashboard() already has it from
+     * ticketType.getName() on the entity loop. No data duplication needed.
+     * GROUP BY reduced to t.ticketType.id only accordingly.
+     */
     @Query("""
-        SELECT t.ticketType.id AS ticketTypeId,
-               t.ticketType.name AS ticketTypeName,
-               COUNT(t) AS totalSold,
-               SUM(t.pricePaid) AS totalRevenue
+        SELECT t.ticketType.id,
+               COUNT(t),
+               SUM(t.originalPrice),
+               SUM(t.discountApplied),
+               SUM(t.pricePaid)
         FROM Ticket t
         WHERE t.ticketType.event.id = :eventId
         AND t.status <> :excludedStatus
-        GROUP BY t.ticketType.id, t.ticketType.name
+        GROUP BY t.ticketType.id
         """)
     List<Object[]> findSalesStatsByEventId(
             @Param("eventId") UUID eventId,
