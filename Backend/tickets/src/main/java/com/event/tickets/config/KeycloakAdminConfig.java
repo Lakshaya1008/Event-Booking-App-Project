@@ -10,31 +10,6 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-/**
- * Keycloak Admin API Configuration
- *
- * FIXES APPLIED:
- *
- * FIX-KC1 — Switched from PASSWORD grant to CLIENT_CREDENTIALS.
- *   BEFORE: grantType(OAuth2Constants.PASSWORD) with username + password.
- *   The Resource Owner Password Credentials grant is:
- *     - Deprecated in OAuth 2.1 and being removed from Keycloak in newer versions
- *     - Incompatible with admin accounts that have MFA enabled
- *     - A security risk: raw admin credentials sent on every token renewal
- *   AFTER: grantType(OAuth2Constants.CLIENT_CREDENTIALS) using a dedicated
- *   service account client in Keycloak with only the permissions this app needs.
- *   The username and password fields are removed from the config class entirely.
- *
- *   Migration steps for existing deployments:
- *   1. In Keycloak Admin UI → Clients → Create a new client (e.g. "event-ticket-backend")
- *   2. Set Access Type = confidential, Service Accounts Enabled = ON
- *   3. Under Service Account Roles, assign only the realm-management roles needed
- *      (manage-users, view-users, manage-realm)
- *   4. Copy the client secret from the Credentials tab
- *   5. Set keycloak.admin.client-id=event-ticket-backend
- *      and keycloak.admin.client-secret=<copied secret> in your env
- *   6. Remove KEYCLOAK_ADMIN_USERNAME / KEYCLOAK_ADMIN_PASSWORD from your env
- */
 @Configuration
 @ConfigurationProperties(prefix = "keycloak.admin")
 @Getter
@@ -63,7 +38,6 @@ public class KeycloakAdminConfig {
         return KeycloakBuilder.builder()
                 .serverUrl(serverUrl)
                 .realm(realm)
-                // FIX-KC1: CLIENT_CREDENTIALS — correct grant for backend service accounts
                 .grantType(OAuth2Constants.CLIENT_CREDENTIALS)
                 .clientId(clientId)
                 .clientSecret(clientSecret)

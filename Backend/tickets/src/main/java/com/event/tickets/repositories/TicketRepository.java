@@ -19,42 +19,12 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
 
     int countByTicketTypeId(UUID ticketTypeId);
 
-    /**
-     * H-06 / H-07 FIX: Counts only non-CANCELLED tickets for a ticket type.
-     * Used by purchaseTickets() and updateTicketType() to check capacity.
-     */
     @Query("SELECT COUNT(t) FROM Ticket t WHERE t.ticketType.id = :ticketTypeId AND t.status <> :excludedStatus")
     int countActiveByTicketTypeId(
             @Param("ticketTypeId") UUID ticketTypeId,
             @Param("excludedStatus") TicketStatusEnum excludedStatus
     );
 
-    /**
-     * FIX D-3 (BUG D-3): Counts non-cancelled tickets for a ticket type where a
-     * discount was actually applied (discountApplied > 0).
-     *
-     * WHY THIS IS NEEDED:
-     * The post-sales guard in DiscountServiceImpl.updateDiscount() previously used
-     * countActiveByTicketTypeId() which counts ALL active tickets — even full-price
-     * ones where discountApplied = 0. This was over-restrictive:
-     *
-     *   Scenario: Organizer sells 50 full-price tickets (discountApplied=0).
-     *   Then adds a 20% discount. Tries to change the discount value from 20% to 25%.
-     *   OLD: countActiveByTicketTypeId() returns 50 → BLOCKED.
-     *   NEW: countByTicketTypeIdAndDiscountApplied() returns 0 → ALLOWED.
-     *
-     * The real risk the guard protects against: tickets that were purchased UNDER
-     * this discount have their pricePaid/discountApplied amounts stored per-ticket.
-     * If the discount definition (type or value) changes, those stored amounts
-     * would be inconsistent with the current discount record. That is the actual
-     * data integrity concern — not full-price tickets.
-     *
-     * QUERY: Counts tickets for a given ticket type where:
-     *   - status is not CANCELLED (only active tickets matter)
-     *   - discountApplied > 0 (ticket was purchased with a discount)
-     *
-     * Called by: DiscountServiceImpl.updateDiscount() post-sales guard.
-     */
     @Query("""
         SELECT COUNT(t) FROM Ticket t
         WHERE t.ticketType.id = :ticketTypeId
@@ -140,27 +110,6 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
             @Param("excludedStatus") TicketStatusEnum excludedStatus
     );
 
-    /**
-     * FIX-E2 / FIX-10 (BUG-1): Returns per-ticket-type sales aggregates for the sales dashboard.
-     *
-     * PREVIOUS (BROKEN) version returned 4 columns:
-     *   [0] ticketTypeId  (UUID)
-     *   [1] ticketTypeName (String)   ← service cast this as Number → ClassCastException
-     *   [2] COUNT(t)      (Long)      ← service cast this as BigDecimal → ClassCastException
-     *   [3] SUM(pricePaid)(BigDecimal)← service read this as discountGiven → wrong semantic
-     *   [4] (missing)                 ← service accessed row[4] → ArrayIndexOutOfBoundsException
-     *
-     * FIXED column layout (5 columns, matches getSalesDashboard() index mapping exactly):
-     *   index 0 — t.ticketType.id        (UUID)
-     *   index 1 — COUNT(t)               (Long → intValue())        soldCount
-     *   index 2 — SUM(t.originalPrice)   (BigDecimal)               revenueBeforeDiscount
-     *   index 3 — SUM(t.discountApplied) (BigDecimal)               discountGiven
-     *   index 4 — SUM(t.pricePaid)       (BigDecimal)               revenueFinal
-     *
-     * ticketTypeName removed from SELECT — getSalesDashboard() already has it from
-     * ticketType.getName() on the entity loop. No data duplication needed.
-     * GROUP BY reduced to t.ticketType.id only accordingly.
-     */
     @Query("""
         SELECT t.ticketType.id,
                COUNT(t),

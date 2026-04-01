@@ -30,10 +30,7 @@ public class AuditLogDto {
     private UUID resourceId;
     private String details;
     private String ipAddress;
-    /**
-     * L-18 FIX: userAgent field added. AuditLog entity stores userAgent
-     * but it was dropped here — invisible to every admin API response.
-     */
+
     private String userAgent;
     private LocalDateTime createdAt;
 }

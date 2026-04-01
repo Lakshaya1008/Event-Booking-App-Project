@@ -89,16 +89,6 @@ public class TicketController {
         return ResponseEntity.ok().headers(headers).body(qrCodeImage);
     }
 
-    /**
-     * VIEW QR CODE (Inline Display)
-     *
-     * FIX ISSUE 3: Changed cachePublic() → cachePrivate().
-     * QR codes are user-specific security tokens. Marking them public allows
-     * CDNs, proxies, and shared browser caches to serve one user's QR code
-     * to another user, or to serve a cancelled ticket's QR as valid after
-     * it has been deactivated. Private cache is mandatory for any
-     * user-specific or security-sensitive content.
-     */
     @GetMapping(path = "/{ticketId}/qr-codes/view")
     @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
     public ResponseEntity<byte[]> viewQrCode(
@@ -118,7 +108,6 @@ public class TicketController {
                         .filename("qr-code.png")
                         .build()
         );
-        // FIX ISSUE 3: cachePrivate() — QR codes must never be stored by shared caches
         headers.setCacheControl(CacheControl.maxAge(Duration.ofMinutes(5)).cachePrivate());
 
         return ResponseEntity.ok().headers(headers).body(qrCodePng);
@@ -135,7 +124,6 @@ public class TicketController {
 
         byte[] qrCodePng = qrCodeService.generateQrCodePngForDownload(userId, ticketId);
 
-        // FIX ISSUE 15: getTicketForUser only checks purchaser ownership, not organizer.
         // Use the ticket returned from QrCodeService (authorization already validated there)
         // to build filename. Fall back gracefully for organizers viewing attendee tickets.
         String filename = "qr-code.png";

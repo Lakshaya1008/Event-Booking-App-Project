@@ -15,30 +15,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
-/**
- * FIXES APPLIED:
- *
- * FIX-AZ1 (BUG 6-1) — isStaff() now uses EventRepository.isStaffMember() COUNT query.
- *
- *   BEFORE: isStaff(userId, event) called event.getStaff().stream().anyMatch(...)
- *   This triggered Hibernate lazy-loading of the full @ManyToMany staff collection.
- *   For a large event with 50 staff members, this loaded 50 User entities into the JPA
- *   session just to check if one specific user was in the list.
- *
- *   EventRepository.isStaffMember() was added in a previous fix (from Feature 3 audit)
- *   and executes: SELECT COUNT(s) > 0 FROM Event e JOIN e.staff s WHERE e.id=? AND s.id=?
- *   — a single EXISTS-style query that returns boolean without loading any entities.
- *
- *   AFTER: isStaff(userId, event) calls eventRepository.isStaffMember(event.getId(), userId).
- *   Zero staff entities loaded. One COUNT query instead of a full collection fetch.
- *
- *   NOTE: The isStaff(userId, event) overload is called by:
- *   - requireOrganizerOrStaffAccess() in both overloads
- *   - hasEventAccess()
- *   - TicketValidationServiceImpl (every scan call)
- *   This fix improves every ticket scan at the door — the highest-frequency operation
- *   at a live event.
- */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -125,9 +101,6 @@ public class AuthorizationServiceImpl implements AuthorizationService {
         }
 
         if (roles != null && roles.contains("STAFF")) {
-            // FIX-AZ1 (consistent): Use COUNT query — no staff collection loaded into memory.
-            // isStaff() already uses eventRepository.isStaffMember() — reuse it here
-            // instead of reloading the full @ManyToMany staff collection.
             if (!isStaff(userId, event)) {
                 throw new AccessDeniedException("Staff not assigned to this event");
             }
@@ -148,18 +121,10 @@ public class AuthorizationServiceImpl implements AuthorizationService {
     }
 
     /**
-     * FIX-AZ1: Uses EventRepository.isStaffMember() COUNT query instead of loading
-     * the full staff @ManyToMany collection.
-     *
-     * isStaffMember executes:
-     *   SELECT COUNT(s) > 0 FROM Event e JOIN e.staff s WHERE e.id=:eventId AND s.id=:userId
-     *
-     * This is called on every ticket scan — keeping it to one lightweight query is critical
-     * for performance at the venue door where scans happen in rapid succession.
+     * Checks staff membership using a repository query.
      */
     @Override
     public boolean isStaff(UUID userId, Event event) {
-        // FIX-AZ1: COUNT query — no staff collection loaded into memory
         return eventRepository.isStaffMember(event.getId(), userId);
     }
 

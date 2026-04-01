@@ -48,12 +48,6 @@ public class TicketType {
     @Column(name = "name", nullable = false)
     private String name;
 
-    /**
-     * FIX #15: Changed from Double to BigDecimal.
-     * Double causes floating-point precision errors in financial calculations
-     * (e.g. 0.1 + 0.2 != 0.3 in IEEE 754). BigDecimal is the correct type
-     * for all monetary values. Column precision 10,2 supports up to 99999999.99.
-     */
     @Column(name = "price", nullable = false, precision = 10, scale = 2)
     private BigDecimal price;
 

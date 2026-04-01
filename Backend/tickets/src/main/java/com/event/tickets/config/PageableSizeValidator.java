@@ -15,22 +15,6 @@ import org.springframework.web.method.support.ModelAndViewContainer;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * FIX #11: Global Pagination Security Validator
- *
- * Validates that all Pageable requests respect the configured max page size.
- *
- * BEFORE: spring.data.web.pageable.max-page-size=50 only applied to endpoints
- * with @PageableDefault. Client could bypass by requesting ?size=999999
- * on endpoints without the annotation.
- *
- * AFTER: This resolver intercepts ALL Pageable requests and enforces the limit.
- * If client requests size > max, it's silently capped to max value.
- *
- * Configuration:
- * - spring.data.web.pageable.max-page-size: Hard limit (default: 50)
- * - Requests exceeding this are capped and logged as warnings
- */
 @Component
 @Slf4j
 public class PageableSizeValidator implements HandlerMethodArgumentResolver {
@@ -85,7 +69,6 @@ public class PageableSizeValidator implements HandlerMethodArgumentResolver {
             pageNumber = 0;
         }
 
-        // FIX #11: Enforce maximum page size
         if (requestedSize > maxPageSize) {
             log.warn(
                     "FIX #11 AUDIT: Page size exceeded limit. "

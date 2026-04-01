@@ -20,16 +20,6 @@ import lombok.NoArgsConstructor;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 
-/**
- * Audit Log Entity
- *
- * IMMUTABLE audit trail for all sensitive operations.
- *
- * Security:
- * - Append-only (no updates or deletes)
- * - Read-only after creation
- * - Complete audit trail for compliance
- */
 @Entity
 @Table(name = "audit_logs")
 @EntityListeners(AuditingEntityListener.class)

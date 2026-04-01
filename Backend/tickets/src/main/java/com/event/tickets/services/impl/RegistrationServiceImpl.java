@@ -35,27 +35,6 @@ import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
 import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
-/**
- * FIXES APPLIED:
- *
- * FIX-R1 — Role-conditional approval status.
- *   ATTENDEE (no invite code) → ApprovalStatus.APPROVED + Keycloak enabled immediately.
- *   ORGANIZER / STAFF / ADMIN (invite code) → ApprovalStatus.PENDING + Keycloak disabled.
- *   This implements the actual business rule: attendees need no admin review.
- *
- * FIX-R2 — getCurrentRequest() resolved ONCE at the top and reused.
- *   Previously called twice (extractClientIp + extractUserAgent each called it separately).
- *
- * FIX-R3 — All audit events use normalizedEmail, not raw request.getEmail().
- *   Previously audit logs recorded the original casing; DB stores lowercase.
- *
- * FIX-R4 — Invite code redemption failure is now re-thrown.
- *   A failed save here means the code stays PENDING and can be reused.
- *   Non-critical comment removed — this IS critical to the single-use guarantee.
- *
- * FIX-R5 — RegisterResponseDto no longer leaks assignedRole before approval.
- *   PENDING users should discover their role from the approval email, not the 201 response.
- */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -72,13 +51,11 @@ public class RegistrationServiceImpl implements RegistrationService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public RegisterResponseDto register(RegisterRequestDto request) {
-        // FIX-R2: resolve request once, pass the reference everywhere
         HttpServletRequest httpRequest = getCurrentRequest();
         String clientIp   = extractClientIp(httpRequest);
         String userAgent  = extractUserAgent(httpRequest);
 
         String normalizedInviteCode = normalizeInviteCode(request.getInviteCode());
-        // FIX-R3: normalize email immediately so every audit uses the stored value
         String normalizedEmail = request.getEmail().toLowerCase().trim();
 
         log.info("Starting registration: email={}, inviteCode={}",
@@ -109,9 +86,6 @@ public class RegistrationServiceImpl implements RegistrationService {
                 log.info("Invite code validated: role={}, eventId={}", assignedRole, eventId);
             }
 
-            // FIX-R1: Determine approval status based on role.
-            // ATTENDEE needs no admin review — approve and enable immediately.
-            // All other roles (ORGANIZER, STAFF, ADMIN) require admin approval.
             boolean requiresApproval = !"ATTENDEE".equals(assignedRole);
             ApprovalStatus initialStatus = requiresApproval ? ApprovalStatus.PENDING : ApprovalStatus.APPROVED;
 
@@ -148,7 +122,6 @@ public class RegistrationServiceImpl implements RegistrationService {
                 throw new RegistrationException("Failed to assign role: " + e.getMessage(), e);
             }
 
-            // FIX-R1: ATTENDEE is enabled immediately; others wait for admin approval.
             if (!requiresApproval) {
                 try {
                     keycloakAdminService.activateUser(keycloakUserId);
@@ -165,9 +138,8 @@ public class RegistrationServiceImpl implements RegistrationService {
             user.setId(keycloakUserId);
             user.setEmail(normalizedEmail);
             user.setName(request.getName());
-            user.setApprovalStatus(initialStatus);   // FIX-R1
+            user.setApprovalStatus(initialStatus);
 
-            // FIX-R1: Auto-approve ATTENDEEs — stamp the approval timestamp now
             if (!requiresApproval) {
                 user.setApprovedAt(LocalDateTime.now());
             }
@@ -221,8 +193,6 @@ public class RegistrationServiceImpl implements RegistrationService {
             }
 
             // Step 7: Mark invite as redeemed.
-            // FIX-R4: Failure here is re-thrown — a failed save leaves the code PENDING
-            // and a second user could redeem it. The @Transactional will roll back everything.
             if (inviteCode != null) {
                 inviteCode.setStatus(InviteCodeStatus.REDEEMED);
                 inviteCode.setRedeemedBy(user);
@@ -231,7 +201,7 @@ public class RegistrationServiceImpl implements RegistrationService {
                 log.info("Invite code redeemed: code={}", inviteCode.getCode());
             }
 
-            // Step 8: Audit success (FIX-R3: uses normalizedEmail everywhere)
+            // Step 8: Audit success
             Event eventForAudit = null;
             if (eventId != null) {
                 eventForAudit = new Event();
@@ -245,8 +215,6 @@ public class RegistrationServiceImpl implements RegistrationService {
             emailService.sendRegistrationEmail(user.getEmail(), user.getName());
 
             // Step 10: Build response
-            // FIX-R5: Do NOT expose assignedRole in the response for PENDING users.
-            // They will learn their role from the approval email once admin acts.
             RegisterResponseDto response = new RegisterResponseDto();
             response.setEmail(user.getEmail());
             response.setRequiresApproval(requiresApproval);

@@ -10,7 +10,6 @@ import java.util.UUID;
  */
 public interface EmailService {
 
-    /** Sent to user after successful registration (account pending approval). */
     void sendRegistrationEmail(String toEmail, String userName);
 
     /** Sent to user when admin approves their account. */
@@ -19,7 +18,6 @@ public interface EmailService {
     /** Sent to user when admin rejects their account. */
     void sendRejectionEmail(String toEmail, String userName, String rejectionReason);
 
-    /** Sent to purchaser after successful ticket purchase. */
     void sendTicketConfirmationEmail(String toEmail, String userName,
                                      String eventName, String ticketType,
                                      int quantity, UUID ticketId);

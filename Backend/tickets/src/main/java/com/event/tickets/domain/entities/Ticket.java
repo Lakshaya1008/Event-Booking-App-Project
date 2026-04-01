@@ -56,20 +56,9 @@ public class Ticket {
     @JoinColumn(name = "purchaser_id")
     private User purchaser;
 
-    /**
-     * Original base price of the ticket type at time of purchase (before discount).
-     * Stored for historical accuracy and audit trail.
-     * Nullable for backward compatibility with existing tickets (will be backfilled).
-     */
     @Column(name = "original_price", precision = 10, scale = 2)
     private BigDecimal originalPrice;
 
-    /**
-     * Final price paid by customer after discount applied.
-     * This is the actual amount charged.
-     * For legacy tickets without pricing info, defaults to ticket type price.
-     * TEMPORARILY NULLABLE to allow schema migration on existing data.
-     */
     @Column(name = "price_paid", precision = 10, scale = 2)
     private BigDecimal pricePaid;
 

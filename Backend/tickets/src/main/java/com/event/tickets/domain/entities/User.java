@@ -45,21 +45,6 @@ public class User {
     @Column(name = "email", nullable = false, unique = true)
     private String email;
 
-    /**
-     * L-09 FIX: Java default is now null, not ApprovalStatus.PENDING.
-     *
-     * Previously the Java field initializer set PENDING while the DB column
-     * defaulted to APPROVED. This created an inconsistency:
-     * - New objects created in Java started as PENDING (correct for new registrations)
-     * - But existing rows with null approval_status were read back as null, not PENDING
-     * - DatabaseInitializer then tried to migrate nulls → APPROVED, but when the
-     *   field had a Java default of PENDING, JPA would sometimes write PENDING on
-     *   flush before the migration ran.
-     *
-     * Fix: Java default is null. RegistrationServiceImpl explicitly sets PENDING
-     * on new registrations. DatabaseInitializer migrates nulls to APPROVED.
-     * The DB column default of APPROVED handles any edge cases at the SQL level.
-     */
     @Enumerated(EnumType.STRING)
     @Column(name = "approval_status", nullable = true, columnDefinition = "VARCHAR(255) DEFAULT 'APPROVED'")
     private ApprovalStatus approvalStatus;
@@ -71,12 +56,6 @@ public class User {
     @Column(name = "approved_at")
     private LocalDateTime approvedAt;
 
-    /**
-     * FIX #7: Added rejectedAt field.
-     * Previously rejectUser() incorrectly stamped approvedAt on rejection,
-     * making approved and rejected records look identical in the database.
-     * Now: approvedAt only set on APPROVED, rejectedAt only set on REJECTED.
-     */
     @Column(name = "rejected_at")
     private LocalDateTime rejectedAt;
 
@@ -127,14 +106,6 @@ public class User {
     @Column(name = "updated_at", nullable = true)
     private LocalDateTime updatedAt;
 
-    /**
-     * FIX #14: equals/hashCode based on ID only (standard JPA practice).
-     * Previous implementation compared id, name, email, createdAt, updatedAt.
-     * If updatedAt changed between when a User was loaded and when it was compared
-     * (e.g. a flush elsewhere in the transaction), two references to the same user
-     * would compare as unequal — causing event.getStaff().contains(user) to return
-     * false and the same user to be added to staff more than once.
-     */
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;

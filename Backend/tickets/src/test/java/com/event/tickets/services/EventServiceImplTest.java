@@ -31,7 +31,7 @@ import static org.mockito.Mockito.*;
  * CHANGES FROM PREVIOUS VERSION:
  *
  * TEST-E1 — Status transition tests added.
- *   createEvent() must force DRAFT regardless of requested status.
+ *   createEvent() must only accept DRAFT on create.
  *   updateEventForOrganizer() must enforce the transition state machine.
  *
  * TEST-E2 — getSalesDashboard() now mocks findSalesStatsByEventId() aggregate
@@ -119,7 +119,7 @@ class EventServiceImplTest {
         }
 
         @Test
-        @DisplayName("event is always created as DRAFT regardless of requested status")
+        @DisplayName("event is created as DRAFT when status is omitted")
         void alwaysCreatedAsDraft() {
             when(userRepository.findById(organizerId)).thenReturn(Optional.of(organizer));
             when(eventRepository.save(any())).thenAnswer(inv -> {
@@ -129,7 +129,6 @@ class EventServiceImplTest {
             });
 
             CreateEventRequest req = buildRequest();
-            req.setStatus(EventStatusEnum.PUBLISHED); // attempted bypass
 
             Event result = service.createEvent(organizerId, req);
 

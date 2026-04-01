@@ -21,8 +21,5 @@ public enum InviteCodeStatus {
    */
   EXPIRED,
 
-  /**
-   * Code was manually revoked before use.
-   */
   REVOKED
 }

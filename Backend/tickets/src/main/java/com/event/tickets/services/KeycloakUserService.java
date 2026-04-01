@@ -2,28 +2,6 @@ package com.event.tickets.services;
 
 import java.util.UUID;
 
-/**
- * Keycloak User Service
- *
- * Handles user creation and management in Keycloak via Admin REST API.
- * Used for invite-based registration where backend creates users in Keycloak.
- *
- * Security:
- * - Backend acts as Keycloak admin client
- * - Uses service account credentials (NOT user credentials)
- * - Backend is the SOLE authority for user creation
- * - Frontend NEVER accesses Keycloak Admin API
- *
- * Flow:
- * 1. User submits registration with invite code
- * 2. Backend validates invite code
- * 3. Backend creates user in Keycloak via this service
- * 4. Backend assigns role from invite code
- * 5. User logs in via standard Keycloak OAuth2 flow
- *
- * Note: This service does NOT issue JWTs or handle authentication.
- * Users must authenticate with Keycloak after creation.
- */
 public interface KeycloakUserService {
 
   /**
@@ -46,13 +24,6 @@ public interface KeycloakUserService {
    */
   void assignRole(UUID userId, String roleName);
 
-  /**
-   * Deletes a user from Keycloak.
-   * Used for rollback when registration fails after user creation.
-   *
-   * @param userId The Keycloak user ID
-   * @throws com.event.tickets.exceptions.KeycloakUserDeletionException if deletion fails
-   */
   void deleteUser(UUID userId);
 
   /**

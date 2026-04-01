@@ -42,23 +42,6 @@ import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
 import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
-/**
- * QR Code Service Implementation
- *
- * FIX #4: Critical UUID mismatch that caused every downloaded QR to fail scanning.
- *
- * ROOT CAUSE:
- * generateQrCode(ticket) stored a random UUID as qrCode.id and encoded it in
- * the image. But generateQrCodePngForViewing/Download/Pdf() generated a FRESH
- * image encoding ticket.getId() — a completely different UUID.
- * When a user scanned the downloaded QR, the validator received ticket.getId()
- * and searched for a QrCode with that ID — finding nothing, because no
- * QrCode.id == ticket.id. Every scan failed with QrCodeNotFoundException.
- *
- * FIX: All download/view endpoints now call getActiveQrCodeForTicket() to load
- * the stored QrCode, then encode qrCode.getId() into the image. This is the
- * exact UUID the validator will receive when the code is scanned.
- */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -107,15 +90,10 @@ public class QrCodeServiceImpl implements QrCodeService {
         }
     }
 
-    /**
-     * FIX #4: Fetches the stored QrCode and encodes qrCode.getId() into the image.
-     * Previously encoded ticket.getId() which never matched any QrCode in the DB.
-     */
     @Override
     public byte[] generateQrCodePngForViewing(UUID userId, UUID ticketId) {
         authorizeQrCodeAccess(userId, ticketId);
 
-        // FIX #4: load the stored QrCode, encode its ID — not ticket.getId()
         QrCode qrCode = getActiveQrCodeForTicket(ticketId);
         byte[] qrCodeBytes = generateQrCodeImageBytes(qrCode.getId());
 
@@ -127,7 +105,7 @@ public class QrCodeServiceImpl implements QrCodeService {
     public byte[] generateQrCodePngForDownload(UUID userId, UUID ticketId) {
         authorizeQrCodeAccess(userId, ticketId);
 
-        QrCode qrCode = getActiveQrCodeForTicket(ticketId); // FIX #4
+        QrCode qrCode = getActiveQrCodeForTicket(ticketId);
         byte[] qrCodeBytes = generateQrCodeImageBytes(qrCode.getId());
 
         auditQrCodeAccess(userId, ticketId, AuditAction.QR_CODE_DOWNLOADED_PNG);
@@ -138,7 +116,7 @@ public class QrCodeServiceImpl implements QrCodeService {
     public byte[] generateQrCodePdf(UUID userId, UUID ticketId) {
         Ticket ticket = authorizeQrCodeAccess(userId, ticketId);
 
-        QrCode qrCode = getActiveQrCodeForTicket(ticketId); // FIX #4
+        QrCode qrCode = getActiveQrCodeForTicket(ticketId);
         byte[] qrCodePngBytes = generateQrCodeImageBytes(qrCode.getId());
         byte[] pdfBytes = generatePdfWithQrCode(ticket, qrCodePngBytes);
 
@@ -157,10 +135,6 @@ public class QrCodeServiceImpl implements QrCodeService {
 
     // ── private helpers ───────────────────────────────────────────────────────
 
-    /**
-     * FIX #4: Loads the active QrCode record for a ticket.
-     * All download/view endpoints use this to get the correct UUID to encode.
-     */
     private QrCode getActiveQrCodeForTicket(UUID ticketId) {
         return qrCodeRepository.findByTicketIdAndStatus(ticketId, QrCodeStatusEnum.ACTIVE)
                 .orElseThrow(() -> {
@@ -233,8 +207,7 @@ public class QrCodeServiceImpl implements QrCodeService {
 
     private String sanitizeForFilename(String input) {
         if (input == null) return "unknown";
-        // C-05 FIX: capture sanitized result first, THEN apply length cap.
-        // The regex calls can shorten the string — using input.length() caused SIOOBE.
+        // Apply length cap after regex normalization, because normalization can shorten the string.
         String sanitized = input.toLowerCase()
                 .replaceAll("[^a-z0-9\\s-]", "")
                 .replaceAll("\\s+", "_")
@@ -258,6 +231,5 @@ public class QrCodeServiceImpl implements QrCodeService {
             log.error("Failed to audit QR code access: userId={}, ticketId={}", userId, ticketId, ex);
         }
     }
-
 
 }

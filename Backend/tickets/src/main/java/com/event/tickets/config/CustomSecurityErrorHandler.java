@@ -22,14 +22,6 @@ import java.util.Arrays;
 @lombok.RequiredArgsConstructor
 public class CustomSecurityErrorHandler implements AuthenticationEntryPoint, AccessDeniedHandler {
 
-    /**
-     * L-15 FIX: ObjectMapper injected by Spring, not created with new.
-     * new ObjectMapper() ignores Jackson auto-configuration — custom serializers,
-     * date formats, and module registrations (Java time, Kotlin, etc.) set up
-     * by Spring Boot's JacksonAutoConfiguration are bypassed. This caused
-     * timestamp fields in error responses to serialize differently from the
-     * main application JSON responses.
-     */
     private final ObjectMapper objectMapper;
 
     @Override

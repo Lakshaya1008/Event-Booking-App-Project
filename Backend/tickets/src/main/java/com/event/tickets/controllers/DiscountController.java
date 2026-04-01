@@ -26,28 +26,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * REST Controller for managing discounts.
- *
- * Access control: All endpoints require ORGANIZER role.
- * Ownership enforcement: service layer (requireOrganizerAccess).
- *
- * FIX D-4: getDiscount() now delegates the 404 exception to the service layer
- * rather than throwing inline in the controller.
- *
- *   BEFORE: The controller called orElseThrow() with an inline new DiscountNotFoundException.
- *   This is inconsistent with every other endpoint in the codebase, where exception
- *   decisions are made in the service. Controllers should be thin — they parse path
- *   variables, call the service, and map the result.
- *
- *   AFTER: The service returns Optional<Discount>. If empty, the controller throws
- *   DiscountNotFoundException. This is correct because the service already verifies
- *   ownership — returning an empty Optional means the discount genuinely does not
- *   exist for this organizer/ticketType combination. The exception is still thrown
- *   here (not in the service) to keep the service return type as Optional, which
- *   allows programmatic callers to handle the not-found case without catching exceptions.
- *   GlobalExceptionHandler maps DiscountNotFoundException to HTTP 404.
- */
 @RestController
 @RequestMapping("/api/v1/events/{eventId}/ticket-types/{ticketTypeId}/discounts")
 @RequiredArgsConstructor
@@ -103,13 +81,6 @@ public class DiscountController {
         return ResponseEntity.noContent().build();
     }
 
-    /**
-     * FIX D-4: Exception is thrown after the service returns empty Optional.
-     * The inline DiscountNotFoundException construction was moved here from inside an
-     * orElseThrow() lambda. Functionally identical — both throw DiscountNotFoundException
-     * which GlobalExceptionHandler maps to HTTP 404 — but this form is consistent with
-     * the controller style used across the rest of the codebase.
-     */
     @GetMapping("/{discountId}")
     @PreAuthorize("hasRole('ORGANIZER')")
     public ResponseEntity<DiscountResponseDto> getDiscount(

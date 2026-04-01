@@ -31,29 +31,6 @@ public class ApprovalGateFilter extends OncePerRequestFilter {
     private final KeycloakAdminServiceImpl keycloakAdminService;
     private final ObjectMapper objectMapper;
 
-    /**
-     * FIX ISSUE 9: Added Swagger UI and actuator paths to the bypass list.
-     *
-     * BEFORE: A PENDING user hitting /swagger-ui.html would get 403 APPROVAL_PENDING
-     * instead of the documentation page. Same for Kubernetes/Render health probes
-     * that authenticate with a JWT but hit /actuator/health.
-     *
-     * AFTER: Swagger and all actuator endpoints bypass the approval gate.
-     * This is safe because:
-     * - Actuator endpoints are individually secured in SecurityConfig
-     * - Swagger UI is read-only documentation
-     * - Business endpoints (/api/v1/**) still require APPROVED status
-     *
-     * FIX ISSUE #5: Security Policy Documentation
-     * These bypass paths are safe to access regardless of approval status:
-     * - /actuator/*: Infrastructure health checks (minimal info, secured individually)
-     * - /swagger-ui, /api-docs: Read-only API documentation (no data access)
-     * - /api/v1/auth/register: Users must register before approval (explicit enrollment)
-     * - /api/v1/invites/redeem: Part of invitation workflow (precedes approval)
-     *
-     * All sensitive business logic endpoints (/api/v1/events, /api/v1/tickets, etc.)
-     * still require APPROVED status and are NOT bypassed.
-     */
     @Override
     protected void doFilterInternal(
             HttpServletRequest request,

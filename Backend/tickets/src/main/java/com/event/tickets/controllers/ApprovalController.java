@@ -19,34 +19,6 @@ import java.util.UUID;
 
 import static com.event.tickets.util.JwtUtil.parseUserId;
 
-/**
- * Approval Controller
- *
- * ADMIN-only endpoints for managing user account approvals.
- *
- * FIXES APPLIED:
- *
- * FIX-AC1 — Updated Javadoc to reflect the correct business rules.
- *   BEFORE: "Users register via invite code → status=PENDING"
- *   This was wrong and was actively misleading future developers into
- *   implementing the same universal-PENDING logic incorrectly.
- *   AFTER: Accurate description of the role-conditional approval workflow.
- *
- * Correct workflow:
- * 1. User registers WITHOUT invite code → ATTENDEE role → APPROVED immediately (no admin action needed)
- * 2. User registers WITH invite code  → ORGANIZER / STAFF / ADMIN role → PENDING approval
- * 3. Admin views pending approvals: GET /api/v1/admin/approvals/pending
- *    Response includes each user's Keycloak roles so admin knows what role they registered for.
- * 4. Admin approves: POST /api/v1/admin/approvals/{userId}/approve
- *    OR
- *    Admin rejects: POST /api/v1/admin/approvals/{userId}/reject
- * 5. On approval: Keycloak account enabled, user can log in with their assigned role.
- *    On rejection: Keycloak account stays disabled, user receives rejection email.
- *
- * Security:
- * - All endpoints require ADMIN role
- * - ApprovalGateFilter enforces access based on DB approval_status per request
- */
 @RestController
 @RequestMapping("/api/v1/admin/approvals")
 @RequiredArgsConstructor
@@ -55,11 +27,6 @@ public class ApprovalController {
 
     private final ApprovalService approvalService;
 
-    /**
-     * Gets all users with PENDING approval status.
-     * Response includes each user's Keycloak roles (e.g. ORGANIZER, STAFF)
-     * so the admin knows what they registered for before approving.
-     */
     @GetMapping("/pending")
     @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<Page<UserApprovalDto>> getPendingApprovals(Pageable pageable) {

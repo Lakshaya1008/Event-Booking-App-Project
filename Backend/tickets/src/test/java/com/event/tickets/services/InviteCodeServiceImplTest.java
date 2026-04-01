@@ -208,7 +208,7 @@ class InviteCodeServiceImplTest {
         void getUserRolesCalledExactlyOnce() {
             InviteCode code = buildPendingCode("ATTENDEE", null);
             when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
-            when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.of(code));
+            when(inviteCodeRepository.findByCodeForUpdate(anyString())).thenReturn(Optional.of(code)); // BUG-T2 FIX
             doNothing().when(keycloakAdminService).assignRoleToUser(userId, "ATTENDEE");
             when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("ATTENDEE"));
             when(inviteCodeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -224,7 +224,7 @@ class InviteCodeServiceImplTest {
         void getUserRolesCalledExactlyOnceForAdminCode() {
             InviteCode code = buildPendingCode("ADMIN", null);
             when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
-            when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.of(code));
+            when(inviteCodeRepository.findByCodeForUpdate(anyString())).thenReturn(Optional.of(code)); // BUG-T2 FIX
             doNothing().when(keycloakAdminService).assignRoleToUser(userId, "ADMIN");
             when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("ADMIN"));
             when(inviteCodeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -240,7 +240,7 @@ class InviteCodeServiceImplTest {
         void happyPath_attendeeCode() {
             InviteCode code = buildPendingCode("ATTENDEE", null);
             when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
-            when(inviteCodeRepository.findByCode("ABCD-EFGH-IJKL-MNOP")).thenReturn(Optional.of(code));
+            when(inviteCodeRepository.findByCodeForUpdate("ABCD-EFGH-IJKL-MNOP")).thenReturn(Optional.of(code)); // BUG-T2 FIX
             doNothing().when(keycloakAdminService).assignRoleToUser(userId, "ATTENDEE");
             when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("ATTENDEE"));
             when(inviteCodeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -258,7 +258,7 @@ class InviteCodeServiceImplTest {
         void staffCode_assignsRoleAndAddsToEventStaff() {
             InviteCode code = buildPendingCode("STAFF", event);
             when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
-            when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.of(code));
+            when(inviteCodeRepository.findByCodeForUpdate(anyString())).thenReturn(Optional.of(code)); // BUG-T2 FIX
             doNothing().when(keycloakAdminService).assignRoleToUser(userId, "STAFF");
             when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("STAFF"));
             when(inviteCodeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -276,7 +276,7 @@ class InviteCodeServiceImplTest {
         void alreadyRedeemedCode_throwsException() {
             InviteCode code = buildRedeemedCode();
             when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
-            when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.of(code));
+            when(inviteCodeRepository.findByCodeForUpdate(anyString())).thenReturn(Optional.of(code)); // BUG-T2 FIX
             assertThatThrownBy(() -> service.redeemInviteCode(userId, "ABCD-EFGH-IJKL-MNOP"))
                     .isInstanceOf(InvalidInviteCodeException.class)
                     .hasMessageContaining("already been redeemed");
@@ -288,7 +288,7 @@ class InviteCodeServiceImplTest {
         void expiredCode_throwsException() {
             InviteCode code = buildExpiredCode();
             when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
-            when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.of(code));
+            when(inviteCodeRepository.findByCodeForUpdate(anyString())).thenReturn(Optional.of(code)); // BUG-T2 FIX
             assertThatThrownBy(() -> service.redeemInviteCode(userId, "ABCD-EFGH-IJKL-MNOP"))
                     .isInstanceOf(InvalidInviteCodeException.class)
                     .hasMessageContaining("expired");
@@ -300,7 +300,7 @@ class InviteCodeServiceImplTest {
         void revokedCode_throwsException() {
             InviteCode code = buildRevokedCode();
             when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
-            when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.of(code));
+            when(inviteCodeRepository.findByCodeForUpdate(anyString())).thenReturn(Optional.of(code)); // BUG-T2 FIX
             assertThatThrownBy(() -> service.redeemInviteCode(userId, "ABCD-EFGH-IJKL-MNOP"))
                     .isInstanceOf(InvalidInviteCodeException.class)
                     .hasMessageContaining("revoked");
@@ -312,7 +312,7 @@ class InviteCodeServiceImplTest {
         void keycloakFailure_codeStaysPending() {
             InviteCode code = buildPendingCode("ORGANIZER", null);
             when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
-            when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.of(code));
+            when(inviteCodeRepository.findByCodeForUpdate(anyString())).thenReturn(Optional.of(code)); // BUG-T2 FIX
             doThrow(new RuntimeException("Keycloak down")).when(keycloakAdminService).assignRoleToUser(any(), any());
             assertThatThrownBy(() -> service.redeemInviteCode(userId, "ABCD-EFGH-IJKL-MNOP"))
                     .isInstanceOf(InvalidBusinessStateException.class)
@@ -326,7 +326,7 @@ class InviteCodeServiceImplTest {
             InviteCode code = buildPendingCode("ATTENDEE", null);
             code.setExpiresAt(LocalDateTime.now().minusSeconds(1));
             when(userRepository.findById(userId)).thenReturn(Optional.of(redeemer));
-            when(inviteCodeRepository.findByCode(anyString())).thenReturn(Optional.of(code));
+            when(inviteCodeRepository.findByCodeForUpdate(anyString())).thenReturn(Optional.of(code)); // BUG-T2 FIX
             when(inviteCodeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
             assertThatThrownBy(() -> service.redeemInviteCode(userId, "ABCD-EFGH-IJKL-MNOP"))
@@ -372,6 +372,11 @@ class InviteCodeServiceImplTest {
             InviteCode code = new InviteCode();
             code.setId(codeId);
             code.setStatus(InviteCodeStatus.REDEEMED);
+            // FIX: Service checks ownership/admin BEFORE status (lines 306-309 before 311-313).
+            // With createdBy=null and isAdmin=false the auth check fires first (AccessDeniedException).
+            // Set createdBy=creator so revoker==creator passes the auth check, then the status
+            // check correctly throws InvalidInviteCodeException for REDEEMED status.
+            code.setCreatedBy(creator);
             when(userRepository.existsById(creatorId)).thenReturn(true);
             when(inviteCodeRepository.findById(codeId)).thenReturn(Optional.of(code));
             assertThatThrownBy(() -> service.revokeInviteCode(creatorId, codeId, "reason", false))

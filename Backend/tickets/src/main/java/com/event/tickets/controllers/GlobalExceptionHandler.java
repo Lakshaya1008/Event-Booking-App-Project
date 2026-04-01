@@ -48,28 +48,6 @@ public class GlobalExceptionHandler {
 
     // ============= 400 BAD REQUEST — VALIDATION =============
 
-    /**
-     * FIX: Now returns ALL field validation errors, not just the first one.
-     *
-     * BEFORE: fieldErrors.get(0).getDefaultMessage() — only showed the first failing field.
-     * A request with 3 invalid fields forced 3 round-trips to discover all the problems.
-     *
-     * AFTER: All field errors are collected into errorDto.validationErrors as a list.
-     * The message summarises how many fields failed. The client can display all problems
-     * at once and the user can fix everything in a single pass.
-     *
-     * Example response for a register request missing all 3 required fields:
-     * {
-     *   "error": "VALIDATION_ERROR",
-     *   "message": "Validation failed on 3 field(s). See validationErrors for details.",
-     *   "statusCode": 400,
-     *   "validationErrors": [
-     *     "email: Email is required",
-     *     "password: Password is required",
-     *     "name: Name is required"
-     *   ]
-     * }
-     */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErrorDto> handleValidationException(
             MethodArgumentNotValidException ex, HttpServletRequest request) {
@@ -78,7 +56,6 @@ public class GlobalExceptionHandler {
         BindingResult bindingResult = ex.getBindingResult();
         List<FieldError> fieldErrors = bindingResult.getFieldErrors();
 
-        // FIX: collect ALL errors, not just the first
         List<String> allValidationErrors = fieldErrors.stream()
                 .map(fe -> fe.getField() + ": " + fe.getDefaultMessage())
                 .collect(Collectors.toList());
@@ -94,7 +71,7 @@ public class GlobalExceptionHandler {
         errorDto.setStatusDescription("BAD REQUEST - Validation failed");
         errorDto.setTimestamp(LocalDateTime.now().toString());
         errorDto.setPath(request.getRequestURI());
-        errorDto.setValidationErrors(allValidationErrors);  // FIX: full list, not just first
+        errorDto.setValidationErrors(allValidationErrors);
         errorDto.setPossibleCauses(Arrays.asList(
                 "Missing required fields in request body",
                 "Invalid data format (e.g. invalid email, weak password)",
@@ -114,7 +91,6 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ConstraintViolationException.class)
     public ResponseEntity<ErrorDto> handleConstraintViolationException(
             ConstraintViolationException ex, HttpServletRequest request) {
-        // FIX: collect all constraint violations, not just one
         List<String> allErrors = ex.getConstraintViolations().stream()
                 .map(v -> v.getPropertyPath() + ": " + v.getMessage())
                 .collect(Collectors.toList());
@@ -158,16 +134,6 @@ public class GlobalExceptionHandler {
 
     // ============= 400 BAD REQUEST — BUSINESS LOGIC (individual handlers for clarity) =============
 
-    /**
-     * FIX: Split into individual handlers instead of one big grouped handler.
-     *
-     * BEFORE: TicketsSoldOutException, EventNotFoundException, TicketNotFoundException,
-     * and others were all lumped into one @ExceptionHandler list returning the same
-     * generic "Business Logic Error" title. A client couldn't distinguish "sold out"
-     * from "event not found" by the error name alone.
-     *
-     * AFTER: Each exception gets its own specific error code and tailored messages.
-     */
     @ExceptionHandler(TicketsSoldOutException.class)
     public ResponseEntity<ErrorDto> handleTicketsSoldOutException(
             TicketsSoldOutException ex, HttpServletRequest request) {
@@ -278,13 +244,6 @@ public class GlobalExceptionHandler {
 
     // ============= INVITE CODE ERRORS =============
 
-    /**
-     * FIX: InviteCodeNotFoundException now gets its own 404 handler.
-     *
-     * BEFORE: Was caught by the generic business logic handler as "Business Logic Error" 400.
-     * A code that doesn't exist is a 404, not a 400.
-     * And the error code "Business Logic Error" gives zero information about invite codes.
-     */
     @ExceptionHandler(InviteCodeNotFoundException.class)
     public ResponseEntity<ErrorDto> handleInviteCodeNotFoundException(
             InviteCodeNotFoundException ex, HttpServletRequest request) {
@@ -311,7 +270,6 @@ public class GlobalExceptionHandler {
             InvalidInviteCodeException ex, HttpServletRequest request) {
         ErrorDto errorDto = new ErrorDto();
         errorDto.setError("INVALID_INVITE_CODE");
-        // FIX: use the specific message from the exception — it already says
         // "already been redeemed" / "has expired" / "has been revoked"
         errorDto.setMessage(ex.getMessage());
         errorDto.setStatusCode(400);
@@ -354,27 +312,12 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(errorDto, HttpStatus.CONFLICT);
     }
 
-    /**
-     * FIX: RegistrationException now shows specific failure reason instead of generic message.
-     *
-     * BEFORE: Every RegistrationException returned "Unable to complete user registration"
-     * with no indication of which step failed. The 10-step registration flow can fail at
-     * Keycloak creation, role assignment, DB save, or staff assignment — all showing the same response.
-     *
-     * AFTER: The specific failure reason from the exception message is included in the response.
-     * This tells the client (and the developer debugging it) exactly which step failed:
-     * - "Failed to assign role: ..." → Keycloak role assignment issue
-     * - "Failed to create user record: ..." → DB issue
-     * - "Failed to assign staff to event: ..." → Event assignment issue
-     * - "User already registered" → Already exists check
-     */
     @ExceptionHandler(RegistrationException.class)
     public ResponseEntity<ErrorDto> handleRegistrationException(
             RegistrationException ex, HttpServletRequest request) {
         log.error("Registration failed: {}", ex.getMessage());
         ErrorDto errorDto = new ErrorDto();
         errorDto.setError("REGISTRATION_FAILED");
-        // FIX: include the specific reason, not a blanket generic message
         errorDto.setMessage(sanitizeErrorMessage(ex.getMessage()));
         errorDto.setStatusCode(422);
         errorDto.setStatusDescription("UNPROCESSABLE ENTITY - Registration could not be completed");
@@ -629,7 +572,6 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(errorDto, HttpStatus.CONFLICT);
     }
 
-    // FIX: DataIntegrityViolationException → 409 (not 500, and does NOT leak SQL)
     @ExceptionHandler(org.springframework.dao.DataIntegrityViolationException.class)
     public ResponseEntity<ErrorDto> handleDataIntegrityViolationException(
             org.springframework.dao.DataIntegrityViolationException ex, HttpServletRequest request) {

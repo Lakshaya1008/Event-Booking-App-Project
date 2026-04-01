@@ -20,19 +20,6 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.util.*;
 
-/**
- * FIXES APPLIED:
- *
- * FIX-SC1 — Keycloak client name externalized to application.properties.
- *   BEFORE: resourceAccess.get("event-ticket-platform-app") — hardcoded string.
- *   If the Keycloak client is ever renamed, all @PreAuthorize checks silently
- *   return 403 with no obvious error message.
- *   AFTER: keycloak.client-id property injected via @Value. Change the client
- *   name in config without touching any Java code.
- *
- *   Add to application.properties:
- *     keycloak.client-id=${KEYCLOAK_CLIENT_ID:event-ticket-platform-app}
- */
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
@@ -50,10 +37,6 @@ public class SecurityConfig {
     @Value("${cors.allow-credentials:true}")
     private boolean allowCredentials;
 
-    /**
-     * FIX-SC1: Read client ID from config, not hardcoded.
-     * Add keycloak.client-id to application.properties / environment variables.
-     */
     @Value("${keycloak.client-id:event-ticket-platform-app}")
     private String keycloakClientId;
 
@@ -66,64 +49,7 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/").permitAll()
-                        .requestMatchers("/actuator/health", "/actuator/health/**",
-                                "/actuator/info").permitAll()
-                        .requestMatchers("/actuator/metrics", "/actuator/metrics/**").hasRole("ADMIN")
-                        .requestMatchers("/actuator/**").denyAll()
-                        .requestMatchers("/api/v1/auth/register").permitAll()
-                        .requestMatchers(
-                                "/swagger-ui.html", "/swagger-ui/**",
-                                "/api-docs", "/api-docs/**",
-                                "/v3/api-docs", "/v3/api-docs/**"
-                        ).permitAll()
-                        .anyRequest().authenticated()
-                )
-                .oauth2ResourceServer(oauth2 -> oauth2
-                        .jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter()))
-                        .authenticationEntryPoint(customSecurityErrorHandler)
-                        .accessDeniedHandler(customSecurityErrorHandler)
-                )
-                .exceptionHandling(ex -> ex
-                        .authenticationEntryPoint(customSecurityErrorHandler)
-                        .accessDeniedHandler(customSecurityErrorHandler)
-                );
-
-        return http.build();
-    }
-
-    @Bean
-    public JwtAuthenticationConverter jwtAuthenticationConverter() {
-        JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
-        converter.setJwtGrantedAuthoritiesConverter(this::extractAuthorities);
-        return converter;
-    }
-
-    @Bean
-    public CorsConfigurationSource corsConfigurationSource() {
-        CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(Arrays.stream(allowedOrigins.split(","))
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .toList());
-        configuration.setAllowedMethods(Arrays.stream(allowedMethods.split(","))
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .toList());
-        configuration.setAllowedHeaders(List.of("*"));
-        configuration.setAllowCredentials(allowCredentials);
-        configuration.setMaxAge(3600L);
-
-        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", configuration);
-        return source;
-    }
-
-    /**
-     * Reads roles from realm_access.roles and resource_access.<clientId>.roles.
-     * Adds ROLE_ prefix for Spring Security @PreAuthorize compatibility.
-     *
-     * FIX-SC1: Uses injected keycloakClientId instead of a hardcoded string.
-     */
+                        .requestMatchers("/actuator/health", "/actuator/health
     private Collection<GrantedAuthority> extractAuthorities(Jwt jwt) {
         Collection<GrantedAuthority> authorities = new ArrayList<>();
 
@@ -135,7 +61,6 @@ public class SecurityConfig {
             }
         }
 
-        // Client-level roles — FIX-SC1: keycloakClientId from config, not hardcoded
         Map<String, Object> resourceAccess = jwt.getClaim("resource_access");
         if (resourceAccess != null &&
                 resourceAccess.get(keycloakClientId) instanceof Map<?, ?> clientAccess) {

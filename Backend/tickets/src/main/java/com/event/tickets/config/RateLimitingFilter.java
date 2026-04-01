@@ -22,18 +22,10 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Component;
 
-/**
- * Rate Limiting Filter
- *
- * FIX #13: Replaced ConcurrentHashMap with Caffeine caches that evict entries
- * after 1 hour of inactivity. The original ConcurrentHashMap grew without bound —
- * every unique IP and userId got a permanent entry, causing OOM in long deployments.
- */
 @Component
 @Slf4j
 public class RateLimitingFilter implements Filter {
 
-    // FIX #13: Caffeine cache with 1-hour expiry replaces unbounded ConcurrentHashMap
     private final Cache<String, Bucket> ipBuckets = Caffeine.newBuilder()
             .expireAfterAccess(1, TimeUnit.HOURS)
             .build();

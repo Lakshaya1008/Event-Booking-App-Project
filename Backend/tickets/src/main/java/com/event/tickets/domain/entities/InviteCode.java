@@ -22,23 +22,6 @@ import lombok.Setter;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 
-/**
- * Invite Code Entity
- *
- * Represents a single-use, time-bound invite code for role assignment.
- *
- * Lifecycle:
- * 1. PENDING - Code generated, not yet redeemed
- * 2. REDEEMED - Code used successfully
- * 3. EXPIRED - Code past expiration time
- * 4. REVOKED - Code manually revoked before use
- *
- * Audit Trail:
- * - createdBy: User who generated the code
- * - createdAt: When code was generated
- * - redeemedBy: User who redeemed the code
- * - redeemedAt: When code was redeemed
- */
 @Entity
 @Table(name = "invite_codes")
 @EntityListeners(AuditingEntityListener.class)

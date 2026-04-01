@@ -91,23 +91,7 @@ public interface InviteCodeRepository extends JpaRepository<InviteCode, UUID> {
    */
   boolean existsByCode(String code);
 
-  /**
-   * FIX #8-1: Count pending invite codes for a specific event.
-   * Used for rate limiting on code generation per event.
-   *
-   * @param eventId The ID of the event
-   * @param status The status to filter by
-   * @return Count of invite codes matching criteria
-   */
   long countByEventIdAndStatus(UUID eventId, InviteCodeStatus status);
 
-  /**
-   * FIX #8-1: Count pending invite codes created by a specific user.
-   * Used for rate limiting on code generation per organizer.
-   *
-   * @param createdById The ID of the creator
-   * @param status The status to filter by
-   * @return Count of invite codes matching criteria
-   */
   long countByCreatedByIdAndStatus(UUID createdById, InviteCodeStatus status);
 }

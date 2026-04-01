@@ -19,23 +19,8 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-/**
- * User Provisioning Filter
- *
- * FIXES APPLIED:
- *
- * FIX-UPF1 — Added @Order(1) so this filter runs BEFORE ApprovalGateFilter (@Order(2)).
- *   BEFORE: No @Order annotation — Spring assigned Ordered.LOWEST_PRECEDENCE (MAX_VALUE),
- *   meaning this filter ran LAST, after the gate had already blocked the request.
- *   The desync warning was never logged for blocked users because they never reached this filter.
- *   AFTER: @Order(1) guarantees: UserProvisioningFilter → ApprovalGateFilter → request handler.
- *
- * DESIGN DECISION (unchanged): This filter is intentionally read-only.
- *   Auto-provisioning users on first JWT validation would bypass the explicit
- *   registration + approval workflow. This filter only detects and logs desyncs.
- */
 @Component
-@Order(1)   // FIX-UPF1: Must run BEFORE ApprovalGateFilter (@Order(2))
+@Order(1)
 @RequiredArgsConstructor
 @Slf4j
 public class UserProvisioningFilter extends OncePerRequestFilter {

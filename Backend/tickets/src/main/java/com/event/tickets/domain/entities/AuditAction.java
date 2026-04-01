@@ -30,7 +30,7 @@ public enum AuditAction {
 
     // Invite Code Operations
     INVITE_CREATED,
-    INVITE_REDEEMED,   // FIX: was defined but never used in success path
+    INVITE_REDEEMED,
     INVITE_REVOKED,
 
     // Event Operations
@@ -42,7 +42,7 @@ public enum AuditAction {
     // Ticket Operations
     TICKET_VALIDATED,
     TICKET_PURCHASED,
-    TICKET_PURCHASE_FAILED,   // FIX ISSUE 2: was referenced in TicketTypeServiceImpl but missing from enum — compile error
+    TICKET_PURCHASE_FAILED,
     TICKET_CANCELLED_BY_EVENT,
 
     // Organizer self-purchase (flagged for audit visibility)

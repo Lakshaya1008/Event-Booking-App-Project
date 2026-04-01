@@ -32,16 +32,6 @@ public class EmailServiceImpl implements EmailService {
 
     private static final String BREVO_API_URL = "https://api.brevo.com/v3/smtp/email";
 
-    /**
-     * L-13 FIX: RestTemplate injected via constructor, not created with new.
-     * new RestTemplate() bypasses Spring auto-configuration — connection timeouts,
-     * message converters, and interceptors configured via RestTemplateBuilder are ignored.
-     * More importantly, new RestTemplate() cannot be replaced by @MockBean in tests,
-     * making it impossible to unit-test email sending without live HTTP calls.
-     *
-     * A RestTemplate @Bean is declared in a @Configuration class (RestTemplateConfig).
-     * See RestTemplateConfig.java in the config package.
-     */
     private final RestTemplate restTemplate;
 
     @Value("${app.brevo.api-key}")

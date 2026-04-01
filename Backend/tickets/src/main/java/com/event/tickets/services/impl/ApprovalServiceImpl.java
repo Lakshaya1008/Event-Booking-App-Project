@@ -26,23 +26,6 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/**
- * FIXES APPLIED:
- *
- * FIX-A1 — toUserApprovalDto() now fetches the user's Keycloak roles and includes
- *   them in the UserApprovalDto. Admins can now see which role a user registered for
- *   (ORGANIZER, STAFF, ADMIN) when reviewing the pending approvals list.
- *   The roles list comes from Keycloak, so it reflects what was assigned at registration.
- *
- * FIX-A2 — approveUser() verifies the Keycloak role is still present before activating.
- *   If the role was lost during a sync failure between registration and approval,
- *   it is re-assigned before the account is enabled. This ensures the user is never
- *   activated as a blank Keycloak user with no application role.
- *
- * FIX-A3 — Role fetching in toUserApprovalDto() is defensive — if Keycloak is down
- *   or the user has no roles, an empty list is returned rather than crashing the
- *   entire pending approvals page.
- */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -57,7 +40,6 @@ public class ApprovalServiceImpl implements ApprovalService {
     @Transactional(readOnly = true)
     public Page<UserApprovalDto> getPendingApprovals(Pageable pageable) {
         log.debug("Fetching pending approvals, page: {}", pageable.getPageNumber());
-        // FIX-A1: Map with full role data so admin sees what role each user registered for.
         return userRepository.findByApprovalStatus(ApprovalStatus.PENDING, pageable)
                 .map(this::toUserApprovalDtoWithRoles);
     }
@@ -82,9 +64,6 @@ public class ApprovalServiceImpl implements ApprovalService {
                 .orElseThrow(() -> new UserNotFoundException(
                         String.format("Admin user with ID '%s' not found", adminId)));
 
-        // FIX-A2: Verify the Keycloak role is still assigned before activating.
-        // Between registration and approval, a sync failure could have left the user
-        // with no Keycloak role. Re-assign if missing.
         validateUserHasValidRole(user.getId());
 
         try {
@@ -162,7 +141,6 @@ public class ApprovalServiceImpl implements ApprovalService {
     @Override
     @Transactional(readOnly = true)
     public Page<UserApprovalDto> getAllUsersWithApprovalStatus(Pageable pageable) {
-        // FIX-A1: Include roles in full user list too.
         return userRepository.findAll(pageable).map(this::toUserApprovalDtoWithRoles);
     }
 
@@ -198,11 +176,8 @@ public class ApprovalServiceImpl implements ApprovalService {
     // ── PRIVATE HELPERS ───────────────────────────────────────────────────────
 
     /**
-     * FIX-A1: Maps a User to UserApprovalDto including their Keycloak roles.
-     * Admins see the role(s) a user registered for on the pending approvals list.
-     *
-     * Defensive: if Keycloak is unavailable, roles is set to an empty list
-     * so the entire approvals page doesn't crash.
+     * Maps a User to UserApprovalDto including current Keycloak roles.
+     * If Keycloak is unavailable, roles falls back to an empty list.
      */
     private UserApprovalDto toUserApprovalDtoWithRoles(User user) {
         List<String> roles;
@@ -225,7 +200,7 @@ public class ApprovalServiceImpl implements ApprovalService {
         dto.setRejectionReason(user.getRejectionReason());
         dto.setApprovedAt(user.getApprovedAt());
         dto.setRejectedAt(user.getRejectedAt());
-        dto.setRoles(roles);  // FIX-A1: roles now populated
+        dto.setRoles(roles);
         if (user.getApprovedBy() != null) {
             dto.setApprovedByName(user.getApprovedBy().getName());
         }

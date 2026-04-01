@@ -7,26 +7,6 @@ import lombok.NoArgsConstructor;
 import java.time.LocalDateTime;
 import java.util.List;
 
-/**
- * User Approval DTO
- *
- * FIXES APPLIED:
- *
- * FIX-DTO3 — roles list is now actually populated from Keycloak.
- *   BEFORE: roles was always set to Collections.emptyList() in
- *   toUserApprovalDtoNoRoles() — the field existed but was never filled.
- *   An admin reviewing the pending approvals list had NO way to see what
- *   role a user registered for (ORGANIZER vs STAFF vs ADMIN).
- *   AFTER: ApprovalServiceImpl.toUserApprovalDtoWithRoles() fetches the
- *   user's Keycloak roles and populates this field. Admin sees the role
- *   before deciding whether to approve or reject.
- *
- * FIX-DTO4 — approvalStatus changed from String to use consistent casing.
- *   The field is still a String (not enum) to avoid coupling the DTO to the
- *   entity layer, but is guaranteed to be one of: PENDING, APPROVED, REJECTED.
- *   Previously could be null if approvalStatus was null on legacy users.
- *   AFTER: ApprovalServiceImpl maps null → "UNKNOWN" defensively.
- */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -47,10 +27,8 @@ public class UserApprovalDto {
     private String approvalStatus;
 
     /**
-     * FIX-DTO3: Keycloak roles assigned to this user.
-     * For PENDING users this shows what role they registered for
-     * (e.g. ["ORGANIZER"] or ["STAFF"]) — the admin uses this to make
-     * an informed approval decision.
+     * Keycloak roles assigned to this user.
+     * For PENDING users this shows what role they registered for.
      * Empty list if Keycloak is temporarily unavailable.
      */
     private List<String> roles;

@@ -17,23 +17,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * FIX SUMMARY:
  *
- * 1. "Cannot resolve symbol 'VALIDATED'" (line 142 in original):
- *    TicketStatusEnum only has PURCHASED and CANCELLED — there is no VALIDATED value.
- *    Fix: remove all TicketStatusEnum.VALIDATED references.
- *    Note: the test that checked "VALIDATED tickets count as active" is replaced with
- *    the correct business rule: only PURCHASED tickets are active (CANCELLED are excluded).
- *    The service excludes CANCELLED; PURCHASED is the only other status.
- *
- * 2. "detached entity passed to persist: Event" — all 4 tests:
+ * 1. Detached entity issue across tests:
  *    @DataJpaTest rolls back each test's transaction, making the entity instances
  *    stored in @BeforeEach fields detached. Fix: store only UUIDs; re-fetch with em.find()
  *    inside persistTicket() to get managed instances for the current transaction.
  *
- * 3. "@DataJpaTest wrong tag" warning:
+ * 2. @DataJpaTest wrong tag" warning:
  *    @DataJpaTest is the correct annotation. The warning is cosmetic (IDE linting).
  *    No code change needed.
  *
- * 4. Private fields 'em' and 'ticketRepository' never assigned:
+ * 3. Private fields 'em' and 'ticketRepository' never assigned:
  *    These were instance fields without @Autowired in the original. They need @Autowired.
  *    Already present in this version.
  */

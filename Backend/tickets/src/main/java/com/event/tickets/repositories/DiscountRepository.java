@@ -46,18 +46,6 @@ public interface DiscountRepository extends JpaRepository<Discount, UUID> {
             @Param("now") LocalDateTime now
     );
 
-    /**
-     * FIX #6: Added validTo > :now to the query.
-     *
-     * BEFORE: only checked active=true. An expired discount that was never manually
-     * deactivated (active=true but validTo in the past) permanently blocked creation
-     * of any new discount for that ticket type.
-     *
-     * AFTER: also checks validTo > :now so expired-but-still-flagged-active discounts
-     * are correctly ignored, allowing new discounts to be created after expiry.
-     *
-     * NOTE: callers must pass LocalDateTime.now() as the :now parameter.
-     */
     @Query("""
       SELECT COUNT(d) > 0 FROM Discount d
       WHERE d.ticketType.id = :ticketTypeId

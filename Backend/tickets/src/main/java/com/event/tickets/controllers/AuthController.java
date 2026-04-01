@@ -41,20 +41,20 @@ public class AuthController {
    */
   @PostMapping("/register")
   public ResponseEntity<RegisterResponseDto> register(@Valid @RequestBody RegisterRequestDto request) {
-    log.info("Registration attempt: email={}, inviteCode={}", 
-        request.getEmail(), 
+    log.info("Registration attempt: email={}, inviteCode={}",
+        request.getEmail(),
         request.getInviteCode() != null ? "PROVIDED" : "NONE");
 
     try {
       RegisterResponseDto response = registrationService.register(request);
-      
-      log.info("Registration successful: email={}, role={}, requiresApproval={}", 
-          response.getEmail(), 
-          response.getAssignedRole(), 
+
+      log.info("Registration successful: email={}, role={}, requiresApproval={}",
+          response.getEmail(),
+          response.getAssignedRole(),
           response.isRequiresApproval());
 
       return ResponseEntity.status(HttpStatus.CREATED).body(response);
-      
+
     } catch (Exception e) {
       log.error("Registration failed: email={}, error={}", request.getEmail(), e.getMessage());
       throw e; // Let GlobalExceptionHandler handle the response

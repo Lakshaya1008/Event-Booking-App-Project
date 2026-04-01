@@ -14,27 +14,6 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-/**
- * FIXES APPLIED:
- *
- * FIX-DI1 — Uses SystemUser.SYSTEM_USER_UUID instead of its own private constant.
- *   Previously duplicated the all-zeros UUID in three places; now all reference
- *   the single constant in SystemUser.java.
- *
- * FIX-DI2 — normalizeKeycloakStateForApprovedUsers() moved to an @Async method
- *   called AFTER the @PostConstruct completes.
- *   BEFORE: Called synchronously inside @PostConstruct, causing N Keycloak API
- *   calls at startup (one per approved user). With 1000 users this blocked the
- *   Spring context from finishing initialization and failed if Keycloak was slow.
- *   AFTER: @PostConstruct runs quickly (DB steps only). Keycloak normalization
- *   runs in a background thread after the context is fully ready. The app is
- *   available immediately; Keycloak sync completes in the background.
- *
- * FIX-DI3 — Only normalizes users where keycloak_sync_pending=true, not all
- *   approved users. The existing @Scheduled retryKeycloakSync() in ApprovalServiceImpl
- *   already handles ongoing sync. The startup normalization is only needed for
- *   users that were stuck from a previous restart.
- */
 @Component("databaseInitializer")
 @RequiredArgsConstructor
 @Slf4j
@@ -53,7 +32,6 @@ public class DatabaseInitializer {
         migrateExistingUsers();
         createSystemUser();
         validateDatabaseState();
-        // FIX-DI2: Keycloak normalization is async — does not block startup
         normalizeKeycloakStateAsync();
     }
 
@@ -88,7 +66,6 @@ public class DatabaseInitializer {
 
     private void createSystemUser() {
         try {
-            // FIX-DI1: Reference the single constant
             if (!userRepository.existsById(SystemUser.SYSTEM_USER_UUID)) {
                 User systemUser = new User();
                 systemUser.setId(SystemUser.SYSTEM_USER_UUID);
@@ -117,23 +94,10 @@ public class DatabaseInitializer {
 
     // ── step 4 (async, post-startup) ─────────────────────────────────────────
 
-    /**
-     * FIX-DI2 + FIX-DI3: Keycloak normalization runs asynchronously after startup.
-     * Only processes users with keycloak_sync_pending=true — not ALL approved users.
-     *
-     * This is safe because:
-     * - ApprovalServiceImpl.retryKeycloakSync() already handles ongoing sync every 5 min.
-     * - Only users that failed during a previous shutdown need startup reconciliation.
-     * - Running this async means the app is available immediately.
-     *
-     * Note: @Async requires @EnableAsync on a @Configuration class.
-     * If not enabled, this will run synchronously — still correct, just blocking.
-     */
     @Async
     @Transactional
     public void normalizeKeycloakStateAsync() {
         try {
-            // FIX-DI3: Only users stuck in sync-pending, not all approved users
             List<User> syncPending = userRepository.findByKeycloakSyncPending(true).stream()
                     .filter(u -> u.getApprovalStatus() == ApprovalStatus.APPROVED)
                     .filter(u -> !SystemUser.SYSTEM_USER_UUID.equals(u.getId()))

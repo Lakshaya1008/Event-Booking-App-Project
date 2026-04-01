@@ -30,31 +30,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * FIXES APPLIED IN THIS VERSION:
- *
- * FIX I-2 — revokeInviteCode() now passes isAdmin to the service.
- *   BEFORE: The service called keycloakAdminService.userHasRole() internally — a live
- *   Keycloak API call just to check if the revoker is an admin, despite Spring Security
- *   having already verified the JWT.
- *   AFTER: hasRole(jwt, "ADMIN") is evaluated here from the already-verified JWT and
- *   passed as a boolean parameter to inviteCodeService.revokeInviteCode().
- *
- * FIX I-4 — validateInviteCreation() STAFF eventId guard consolidated.
- *   BEFORE: The null eventId guard for STAFF ran in two separate places — inside the
- *   organizer block and again in a standalone STAFF block. Correct but fragile.
- *   AFTER: Single STAFF block covers both organizers and admins. The organizer block
- *   only checks role restrictions (organizer → STAFF only, no other roles).
- *
- * FIX I-6 — default revoke reason changed to "No reason provided".
- *   BEFORE: "Revoked by creator" — misleading when an admin revokes someone else's code.
- *   AFTER: "No reason provided" — neutral and accurate for any revoker.
- *
- * Previously applied fixes preserved:
- *   H-08 FIX: ADMIN sees ALL codes; ORGANIZER sees only their own.
- *   H-09 FIX: hasRole() reads realm_access.roles — ADMIN bypass works correctly.
- *   C-08 FIX: hasRole() reads realm_access.roles, not the non-existent "roles" top-level claim.
- */
 @RestController
 @RequestMapping("/api/v1/invites")
 @RequiredArgsConstructor
@@ -98,10 +73,6 @@ public class InviteCodeController {
         return ResponseEntity.ok(response);
     }
 
-    /**
-     * FIX I-2: isAdmin derived from JWT and passed to service.
-     * FIX I-6: Default reason changed from "Revoked by creator" to "No reason provided".
-     */
     @DeleteMapping("/{codeId}")
     @PreAuthorize("hasRole('ADMIN') or hasRole('ORGANIZER')")
     public ResponseEntity<Void> revokeInviteCode(
@@ -110,7 +81,6 @@ public class InviteCodeController {
             @RequestParam(required = false, defaultValue = "No reason provided") String reason
     ) {
         UUID revokerId = parseUserId(jwt);
-        // FIX I-2: derive from already-verified JWT — no Keycloak round-trip in the service
         boolean isAdmin = hasRole(jwt, "ADMIN");
         log.info("User '{}' (admin={}) revoking invite code '{}', reason: {}", revokerId, isAdmin, codeId, reason);
         inviteCodeService.revokeInviteCode(revokerId, codeId, reason, isAdmin);
@@ -148,22 +118,6 @@ public class InviteCodeController {
         return ResponseEntity.ok(response);
     }
 
-    /**
-     * FIX I-4: validateInviteCreation() STAFF guard consolidated.
-     *
-     * BEFORE: The null-eventId guard for STAFF was checked in TWO places:
-     *   1. Inside the organizer block (organizer generating STAFF without eventId)
-     *   2. In a standalone STAFF block at the bottom (catches admin too)
-     * This was logically correct but duplicated and fragile — reordering blocks
-     * or adding a new role path could silently break the guarantee.
-     *
-     * AFTER: Single block structure:
-     *   - ORGANIZER block: enforces role restrictions only (STAFF is the only allowed role).
-     *     Does NOT check eventId — that is the STAFF block's job.
-     *   - STAFF block: enforces eventId required for ALL callers (organizer or admin).
-     *   - ADMIN-only block: ensures only admins can create ADMIN role invites.
-     * Each concern is handled in exactly one place.
-     */
     private void validateInviteCreation(Jwt jwt, String roleName, UUID eventId, UUID creatorId) {
         boolean isAdmin = hasRole(jwt, "ADMIN");
         boolean isOrganizer = hasRole(jwt, "ORGANIZER");
@@ -181,7 +135,6 @@ public class InviteCodeController {
             }
         }
 
-        // FIX I-4: Single STAFF eventId guard — covers both organizer and admin callers.
         if ("STAFF".equals(roleName)) {
             if (eventId == null) {
                 throw new IllegalArgumentException("Event ID is required for STAFF invites");
@@ -199,10 +152,6 @@ public class InviteCodeController {
         }
     }
 
-    /**
-     * C-08 FIX (preserved): Reads realm_access.roles — the actual Keycloak JWT claim.
-     * Keycloak puts roles in realm_access.roles (nested map), not at the top level.
-     */
     private boolean hasRole(Jwt jwt, String role) {
         Map<String, Object> realmAccess = jwt.getClaim("realm_access");
         if (realmAccess == null) return false;

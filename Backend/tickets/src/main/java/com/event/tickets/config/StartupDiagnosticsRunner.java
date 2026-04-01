@@ -11,27 +11,6 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 
-/**
- * StartupDiagnosticsRunner
- *
- * Runs once after the application context is fully ready.
- * Prints exactly ONE log line per check — pass or fail — no verbosity.
- *
- * Check 1 — Keycloak connectivity:
- *   Attempts a lightweight Admin API call (realm info endpoint).
- *   Prints: "Keycloak connected [realm=event-ticket-platform]"
- *       OR: "Keycloak UNREACHABLE — <reason>"
- *
- * Check 2 — Database schema completeness:
- *   Verifies all required tables exist in the public schema.
- *   Prints: "Database schema OK [14 tables present]"
- *       OR: "Database schema INCOMPLETE — missing tables: [invite_codes, qr_codes]"
- *
- * These are diagnostic-only — neither check blocks startup or throws.
- * They exist purely for operator visibility in logs on first boot.
- *
- * @Order(2) — runs after DatabaseInitializer (Order 1 via @PostConstruct).
- */
 @Component
 @Order(2)
 @RequiredArgsConstructor

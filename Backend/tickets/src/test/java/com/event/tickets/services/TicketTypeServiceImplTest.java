@@ -4,11 +4,13 @@ import com.event.tickets.domain.entities.*;
 import com.event.tickets.exceptions.*;
 import com.event.tickets.repositories.*;
 import com.event.tickets.services.impl.TicketTypeServiceImpl;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -104,9 +106,22 @@ class TicketTypeServiceImplTest {
     class PurchaseTickets {
 
         @BeforeEach
+        void initTransactionContext() {
+            // doPurchase registers a post-commit callback via TransactionSynchronizationManager.
+            // Without an active synchronization context, this throws IllegalStateException.
+            // initSynchronization() simulates the context that Spring @Transactional sets up.
+            TransactionSynchronizationManager.initSynchronization();
+        }
+
+        @AfterEach
+        void clearTransactionContext() {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+
+        @BeforeEach
         void mockHappyPath() {
             when(userRepository.findById(userId)).thenReturn(Optional.of(user));
-            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event));          // TEST-TT1
+            when(eventRepository.findByIdWithLock(eventId)).thenReturn(Optional.of(event));  // service uses pessimistic lock
             when(ticketTypeRepository.findByIdWithLock(ticketTypeId)).thenReturn(Optional.of(ticketType));
             when(ticketRepository.countActiveByTicketTypeId(ticketTypeId, TicketStatusEnum.CANCELLED)).thenReturn(0);
             when(discountService.findActiveDiscount(ticketTypeId)).thenReturn(Optional.empty());
@@ -139,7 +154,7 @@ class TicketTypeServiceImplTest {
             Event differentEvent = new Event();
             differentEvent.setId(differentEventId);
             // ticket type belongs to eventId, but caller sends differentEventId
-            when(eventRepository.findById(differentEventId)).thenReturn(Optional.of(differentEvent));
+            when(eventRepository.findByIdWithLock(differentEventId)).thenReturn(Optional.of(differentEvent));
             when(ticketTypeRepository.findByIdWithLock(ticketTypeId)).thenReturn(Optional.of(ticketType));
 
             assertThatThrownBy(() -> service.purchaseTickets(userId, differentEventId, ticketTypeId, 1))
@@ -270,7 +285,8 @@ class TicketTypeServiceImplTest {
         @DisplayName("throws when active tickets exist — uses countActiveByTicketTypeId")
         void throwsWhenActiveTicketsExist() {
             doNothing().when(authorizationService).requireOrganizerAccess(userId, eventId);
-            when(ticketTypeRepository.findByIdAndEventId(ticketTypeId, eventId))
+            // FIX: service calls findByIdAndEventIdWithLock in deleteTicketType(), not findByIdAndEventId
+            when(ticketTypeRepository.findByIdAndEventIdWithLock(ticketTypeId, eventId))
                     .thenReturn(Optional.of(ticketType));
             // FIX-TT2: service now calls countActiveByTicketTypeId, not collection iteration
             when(ticketRepository.countActiveByTicketTypeId(ticketTypeId, TicketStatusEnum.CANCELLED))
@@ -285,7 +301,8 @@ class TicketTypeServiceImplTest {
         @DisplayName("allows deletion when countActiveByTicketTypeId returns 0")
         void allowsDeletionWhenNoActiveTickets() {
             doNothing().when(authorizationService).requireOrganizerAccess(userId, eventId);
-            when(ticketTypeRepository.findByIdAndEventId(ticketTypeId, eventId))
+            // FIX: service calls findByIdAndEventIdWithLock in deleteTicketType()
+            when(ticketTypeRepository.findByIdAndEventIdWithLock(ticketTypeId, eventId))
                     .thenReturn(Optional.of(ticketType));
             when(ticketRepository.countActiveByTicketTypeId(ticketTypeId, TicketStatusEnum.CANCELLED))
                     .thenReturn(0);
@@ -306,7 +323,9 @@ class TicketTypeServiceImplTest {
         @DisplayName("throws when totalAvailable reduced below active sold count")
         void throwsWhenReducedBelowActiveSold() {
             doNothing().when(authorizationService).requireOrganizerAccess(userId, eventId);
-            when(ticketTypeRepository.findByIdAndEventId(ticketTypeId, eventId))
+            when(eventRepository.findById(eventId)).thenReturn(Optional.of(event)); // FIX-H09: event status guard
+            // FIX: service calls findByIdAndEventIdWithLock in updateTicketType(), not findByIdAndEventId
+            when(ticketTypeRepository.findByIdAndEventIdWithLock(ticketTypeId, eventId))
                     .thenReturn(Optional.of(ticketType));
             when(ticketRepository.countActiveByTicketTypeId(ticketTypeId, TicketStatusEnum.CANCELLED))
                     .thenReturn(80);

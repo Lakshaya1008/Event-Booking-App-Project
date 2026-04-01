@@ -5,25 +5,6 @@ import com.event.tickets.domain.dtos.StaffMemberDto;
 import java.util.List;
 import java.util.UUID;
 
-/**
- * Event Staff Management Service
- *
- * FIX S-6: assignStaffToEvent() and removeStaffFromEvent() now return EventStaffResponseDto
- * instead of void.
- *
- * BEFORE: Both mutating methods returned void. The controller called them, then made
- * two additional service calls to build the response:
- *   1. eventStaffService.listEventStaff(organizerId, eventId)  — reloads event + staff
- *   2. eventStaffService.getEventName(eventId)                 — reloads event again
- * That was 3 extra DB queries per assign/remove request, on top of the mutations themselves.
- *
- * AFTER: The service builds and returns the complete EventStaffResponseDto from within
- * the same transaction that performed the mutation. The event and staff data are already
- * in memory — no extra DB round-trips needed. The controller just returns what it receives.
- *
- * getEventName() is kept on the interface for any other callers, but is no longer
- * called by EventStaffController after assign/remove.
- */
 public interface EventStaffService {
 
     /**
@@ -50,10 +31,6 @@ public interface EventStaffService {
      */
     List<StaffMemberDto> listEventStaff(UUID organizerId, UUID eventId);
 
-    /**
-     * Returns the event name. Retained for external callers.
-     * EventStaffController no longer calls this separately after mutations.
-     */
     String getEventName(UUID eventId);
 
     /**

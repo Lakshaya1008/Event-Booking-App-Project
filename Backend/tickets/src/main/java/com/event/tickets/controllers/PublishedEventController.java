@@ -17,15 +17,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * Published Event Controller
- *
- * Fix applied: added hasRole('STAFF') to both endpoints.
- *
- * STAFF members validate tickets at the door — they need to see the event
- * they are assigned to. Without this fix, STAFF could not browse events at all,
- * making it impossible to look up event details before or during a shift.
- */
 @RestController
 @RequestMapping(path = "/api/v1/published-events")
 @RequiredArgsConstructor

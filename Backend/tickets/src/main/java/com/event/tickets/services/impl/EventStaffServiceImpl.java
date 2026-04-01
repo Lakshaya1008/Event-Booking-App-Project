@@ -27,51 +27,6 @@ import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
 import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
-/**
- * FIXES APPLIED IN THIS VERSION:
- *
- * FIX S-1 (BUG S-1) — staff collection no longer loaded 3× per request.
- *   BEFORE: The controller called assignStaffToEvent() (void), then listEventStaff()
- *   (reloads event + staff), then getEventName() (reloads event again) — 3+ extra DB
- *   queries per mutating request.
- *   AFTER: assignStaffToEvent() and removeStaffFromEvent() return EventStaffResponseDto
- *   built from data already in memory. The controller returns the result directly.
- *   findStaffByEventId() projection query retrieves only id/name/email per staff member.
- *
- * FIX S-2 (BUG S-2) — Keycloak call for STAFF role check is retained but documented.
- *   The business rule (user must have STAFF Keycloak role before event assignment) is
- *   correct and important. The call is kept. However, it is now wrapped in a clear
- *   try-catch: if Keycloak is unreachable, we throw a specific error rather than
- *   propagating an undifferentiated exception. Future improvement: cache the STAFF role
- *   check in the JWT or use the DB approval/role record.
- *
- * FIX S-3 (BUG S-3) — organizer loaded once, reused for audit log.
- *   BEFORE: authorizationService.requireOrganizerAccess() ran first (existsById check),
- *   then the event was loaded, then the user was loaded, then userRepository.findById(organizerId)
- *   was called again just for the audit log — a redundant second user load.
- *   AFTER: organizerId → organizer entity loaded once and reused for the audit log.
- *
- * FIX S-4 (BUG S-4) — listEventStaff() uses projection query, not full collection load.
- *   BEFORE: event.getStaff().stream().map(...) loaded all User columns for all staff.
- *   AFTER: eventRepository.findStaffByEventId() selects only (id, name, email) via JPQL.
- *   The authorization check (requireOrganizerAccess) still loads the event once.
- *
- * FIX S-5 (BUG S-5) — isStaffAssignedToEvent() uses isStaffMember() COUNT query.
- *   BEFORE: Loaded the full staff collection to call anyMatch().
- *   AFTER: eventRepository.isStaffMember() — single COUNT, zero entities loaded.
- *
- * FIX S-6 (BUG S-6) — mutating methods return EventStaffResponseDto.
- *   The controller now returns the service result directly — no extra service calls.
- *
- * FIX S-8 (BUG S-8) — getEventName() uses scalar projection query.
- *   No longer loads a full Event entity to return a String.
- *
- * Previously applied fixes preserved:
- *   FIX #14 — ID-based duplicate check and removeIf.
- *   L-21 FIX — throw on non-existent staff removal.
- *   FIX 1 — org.springframework.transaction.annotation.@Transactional.
- *   FIX 2 — RequestUtil.getCurrentRequest().
- */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -86,11 +41,6 @@ public class EventStaffServiceImpl implements EventStaffService {
 
     // ── ASSIGN ────────────────────────────────────────────────────────────────
 
-    /**
-     * FIX S-6: Returns EventStaffResponseDto — controller no longer needs extra calls.
-     * FIX S-3: Organizer loaded once, reused for audit.
-     * FIX S-1: Response built from already-in-memory data via projection query.
-     */
     @Override
     @Transactional
     public EventStaffResponseDto assignStaffToEvent(UUID organizerId, UUID eventId, UUID userId) {
@@ -103,7 +53,6 @@ public class EventStaffServiceImpl implements EventStaffService {
                 .orElseThrow(() -> new EventNotFoundException(
                         String.format("Event with ID '%s' not found", eventId)));
 
-        // FIX S-3: load organizer once — reused for audit below
         User organizer = userRepository.findById(organizerId)
                 .orElseGet(systemUserProvider::getSystemUser);
 
@@ -111,7 +60,6 @@ public class EventStaffServiceImpl implements EventStaffService {
                 .orElseThrow(() -> new UserNotFoundException(
                         String.format("User with ID '%s' not found", userId)));
 
-        // FIX S-2: Keycloak call retained (business rule: must have STAFF role).
         // Wrapped to produce a clear error if Keycloak is unreachable.
         try {
             if (!keycloakAdminService.userHasRole(userId, "STAFF")) {
@@ -129,7 +77,6 @@ public class EventStaffServiceImpl implements EventStaffService {
                             "Please try again shortly.");
         }
 
-        // FIX #14 (preserved): ID-based duplicate check
         boolean alreadyAssigned = event.getStaff().stream()
                 .anyMatch(s -> s.getId().equals(userId));
         if (alreadyAssigned) {
@@ -147,18 +94,12 @@ public class EventStaffServiceImpl implements EventStaffService {
         emitStaffAudit(AuditAction.STAFF_ASSIGNED, organizer, user, event,
                 String.format("Assigned %s as staff to event: %s", user.getName(), event.getName()));
 
-        // FIX S-1 + S-4: build response from projection query — no second entity load
         List<StaffMemberDto> staffList = eventRepository.findStaffByEventId(eventId);
         return new EventStaffResponseDto(eventId, event.getName(), staffList, staffList.size());
     }
 
     // ── REMOVE ────────────────────────────────────────────────────────────────
 
-    /**
-     * FIX S-6: Returns EventStaffResponseDto — controller no longer needs extra calls.
-     * FIX S-3: Organizer loaded once, reused for audit.
-     * FIX S-1: Response built via projection query.
-     */
     @Override
     @Transactional
     public EventStaffResponseDto removeStaffFromEvent(UUID organizerId, UUID eventId, UUID userId) {
@@ -171,7 +112,6 @@ public class EventStaffServiceImpl implements EventStaffService {
                 .orElseThrow(() -> new EventNotFoundException(
                         String.format("Event with ID '%s' not found", eventId)));
 
-        // FIX S-3: load organizer once — reused for audit below
         User organizer = userRepository.findById(organizerId)
                 .orElseGet(systemUserProvider::getSystemUser);
 
@@ -179,7 +119,6 @@ public class EventStaffServiceImpl implements EventStaffService {
                 .orElseThrow(() -> new UserNotFoundException(
                         String.format("User with ID '%s' not found", userId)));
 
-        // FIX #14 (preserved): ID-based removal
         boolean removed = event.getStaff().removeIf(s -> s.getId().equals(userId));
 
         if (!removed) {
@@ -195,17 +134,12 @@ public class EventStaffServiceImpl implements EventStaffService {
         emitStaffAudit(AuditAction.STAFF_REMOVED, organizer, user, event,
                 String.format("Removed %s from staff of event: %s", user.getName(), event.getName()));
 
-        // FIX S-1 + S-4: projection query — no second entity load
         List<StaffMemberDto> staffList = eventRepository.findStaffByEventId(eventId);
         return new EventStaffResponseDto(eventId, event.getName(), staffList, staffList.size());
     }
 
     // ── LIST ──────────────────────────────────────────────────────────────────
 
-    /**
-     * FIX S-4: Uses projection query — only id, name, email loaded per staff member.
-     * BEFORE: event.getStaff() loaded all User columns for all staff members.
-     */
     @Override
     @Transactional(readOnly = true)
     public List<StaffMemberDto> listEventStaff(UUID organizerId, UUID eventId) {
@@ -215,16 +149,11 @@ public class EventStaffServiceImpl implements EventStaffService {
             throw new EventNotFoundException(
                     String.format("Event with ID '%s' not found", eventId));
         }
-        // FIX S-4: projection query — id/name/email only, no full User entities
         return eventRepository.findStaffByEventId(eventId);
     }
 
     // ── GET EVENT NAME ────────────────────────────────────────────────────────
 
-    /**
-     * FIX S-8: Scalar projection — no full Event entity loaded.
-     * BEFORE: findById() loaded all event columns just to return event.getName().
-     */
     @Override
     @Transactional(readOnly = true)
     public String getEventName(UUID eventId) {
@@ -235,11 +164,6 @@ public class EventStaffServiceImpl implements EventStaffService {
 
     // ── IS STAFF ─────────────────────────────────────────────────────────────
 
-    /**
-     * FIX S-5: Uses isStaffMember() COUNT query — zero entities loaded.
-     * BEFORE: findById() + event.getStaff().stream().anyMatch() loaded the full
-     * staff @ManyToMany collection just to answer a yes/no question.
-     */
     @Override
     @Transactional(readOnly = true)
     public boolean isStaffAssignedToEvent(UUID eventId, UUID userId) {

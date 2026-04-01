@@ -47,32 +47,6 @@ import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
 import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
-/**
- * FIXES APPLIED:
- *
- * FIX-E1 — Status transition guard on CREATE and UPDATE.
- *   CREATE: only DRAFT is accepted. Organizers cannot publish or cancel on creation.
- *   UPDATE: enforced state machine:
- *     DRAFT      → PUBLISHED, CANCELLED
- *     PUBLISHED  → CANCELLED, COMPLETED
- *     CANCELLED  → (terminal, no transitions)
- *     COMPLETED  → (terminal, no transitions)
- *
- * FIX-E2 — getSalesDashboard() replaced in-memory ticket iteration with
- *   aggregate DB queries (SUM, COUNT grouped by ticket_type_id).
- *   Prevents loading thousands of Ticket entities into the JPA session.
- *   Requires new methods in TicketRepository (see TicketRepository.java).
- *
- * FIX-E3 — getAttendeesReport() uses a projection query instead of loading
- *   full Ticket + User entities into memory.
- *
- * FIX-E4 — sendCancellationEmails() replaced full collection load with a
- *   lightweight query returning only (email, name) pairs, deduped in SQL.
- *   Emails sent asynchronously via @Async — does not block the HTTP thread.
- *
- * FIX-E5 — COMPLETED auto-transition: a @Scheduled job marks PUBLISHED events
- *   as COMPLETED once event.end has passed.
- */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -104,7 +78,6 @@ public class EventServiceImpl implements EventService {
                 .orElseThrow(() -> new UserNotFoundException(
                         String.format("User with ID '%s' not found", organizerId)));
 
-        // FIX-E1: Only DRAFT is allowed on creation.
         // Organizers must explicitly publish after reviewing the event.
         if (event.getStatus() != null && event.getStatus() != EventStatusEnum.DRAFT) {
             throw new InvalidBusinessStateException(
@@ -133,7 +106,7 @@ public class EventServiceImpl implements EventService {
         eventToCreate.setVenue(event.getVenue());
         eventToCreate.setSalesStart(event.getSalesStart());
         eventToCreate.setSalesEnd(event.getSalesEnd());
-        eventToCreate.setStatus(EventStatusEnum.DRAFT); // FIX-E1: always DRAFT
+        eventToCreate.setStatus(EventStatusEnum.DRAFT);
         eventToCreate.setMaxCapacity(event.getMaxCapacity());
         eventToCreate.setOrganizer(organizer);
         eventToCreate.setTicketTypes(ticketTypes);
@@ -171,7 +144,6 @@ public class EventServiceImpl implements EventService {
                 .orElseThrow(() -> new EventNotFoundException(
                         String.format("Event with ID '%s' does not exist", id)));
 
-        // FIX-E1: Enforce terminal states
         if (EventStatusEnum.CANCELLED.equals(existingEvent.getStatus())) {
             throw new InvalidBusinessStateException(
                     "Cannot modify a CANCELLED event. Create a new event instead.");
@@ -181,7 +153,6 @@ public class EventServiceImpl implements EventService {
                     "Cannot modify a COMPLETED event.");
         }
 
-        // FIX-E1: Enforce status transition machine
         if (event.getStatus() != null &&
                 !event.getStatus().equals(existingEvent.getStatus())) {
             Set<EventStatusEnum> allowed = VALID_TRANSITIONS.get(existingEvent.getStatus());
@@ -280,7 +251,6 @@ public class EventServiceImpl implements EventService {
 
             log.info("Event '{}' cancelled — {} ticket(s) bulk-cancelled", id, cancelledCount);
             emitEventCancelledAudit(organizerId, savedEvent, cancelledCount);
-            // FIX-E4: async — does not block HTTP response
             sendCancellationEmailsAsync(savedEvent.getId(), savedEvent.getName());
         }
 
@@ -330,12 +300,6 @@ public class EventServiceImpl implements EventService {
 
     // ── REPORTS ───────────────────────────────────────────────────────────────
 
-    /**
-     * FIX-E2: Uses aggregate DB queries instead of loading all tickets into memory.
-     * TicketRepository provides SUM/COUNT queries grouped by ticket_type_id.
-     * The event and its ticket types are loaded (small), but ticket rows are
-     * never materialized into Ticket entities.
-     */
     @Override
     @Transactional(readOnly = true)
     public Map<String, Object> getSalesDashboard(UUID organizerId, UUID eventId) {
@@ -403,10 +367,6 @@ public class EventServiceImpl implements EventService {
         return dashboard;
     }
 
-    /**
-     * FIX-E3: Uses a projection query returning only the fields needed for the
-     * attendees report — no full Ticket or User entities loaded into memory.
-     */
     @Override
     @Transactional(readOnly = true)
     public Map<String, Object> getAttendeesReport(UUID organizerId, UUID eventId) {
@@ -441,11 +401,6 @@ public class EventServiceImpl implements EventService {
 
     // ── SCHEDULED: auto-complete past events ──────────────────────────────────
 
-    /**
-     * FIX-E5: Marks PUBLISHED events as COMPLETED once event.end has passed.
-     * Runs every hour. Without this, events stay PUBLISHED forever after their end date.
-     * Requires @EnableScheduling on a @Configuration class.
-     */
     @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 3_600_000)
     @Transactional
     public void autoCompleteExpiredEvents() {
@@ -489,12 +444,6 @@ public class EventServiceImpl implements EventService {
             throw new InvalidBusinessStateException("Sales end date must be after sales start date.");
     }
 
-    /**
-     * FIX-E4: Sends cancellation emails asynchronously using a lightweight
-     * query that returns only (email, name) pairs with DISTINCT on purchaser_id.
-     * The HTTP thread is not blocked waiting for email delivery.
-     * Requires @EnableAsync on a @Configuration class.
-     */
     @Async
     public void sendCancellationEmailsAsync(UUID eventId, String eventName) {
         try {

@@ -8,23 +8,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-/**
- * FIX-TT3 (BUG 5-1): The 3-arg purchaseTickets(userId, ticketTypeId, quantity) overload
- * has been REMOVED from this interface.
- *
- * WHY IT WAS DANGEROUS:
- * The 3-arg overload had no eventId parameter. Any internal caller using it bypassed the
- * cross-event ownership check that verifies the ticket type actually belongs to the event
- * in the URL. A crafted request could buy a ticket for Event A by calling Event B's endpoint
- * if the 3-arg overload was used.
- *
- * WHAT TO USE INSTEAD:
- * All purchase flows must go through purchaseTickets(userId, eventId, ticketTypeId, quantity).
- * This validates the ticket type belongs to the given event before proceeding.
- *
- * There is no "internal caller without eventId context" — that justification was incorrect.
- * Any caller that has a ticketTypeId can get its eventId from ticketType.getEvent().getId().
- */
 public interface TicketTypeService {
 
     /**

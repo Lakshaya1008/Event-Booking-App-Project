@@ -6,7 +6,7 @@ import java.math.RoundingMode;
 /**
  * Utility for consistent price handling across the application.
  *
- * FIX #3: Centralized price operations ensure:
+ * Centralized price operations ensure:
  * - Consistent rounding mode (HALF_UP)
  * - Consistent scale (2 decimal places)
  * - Prevent floating-point precision errors

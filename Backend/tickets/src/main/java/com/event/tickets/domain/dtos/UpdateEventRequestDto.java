@@ -15,17 +15,6 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-/**
- * C-04 FIX: maxCapacity field added.
- *
- * Previously absent from this DTO. Every PUT /events/{id} call would call
- * eventToCreate.setMaxCapacity(event.getMaxCapacity()) where getMaxCapacity()
- * returned null — silently wiping the venue capacity on every update, even
- * when the caller only meant to change the event name or status.
- *
- * maxCapacity is nullable (not @NotNull) because many events have no hard cap.
- * Callers must explicitly send the existing value to preserve it.
- */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

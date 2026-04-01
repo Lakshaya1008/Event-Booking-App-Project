@@ -38,59 +38,6 @@ import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
 import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
-/**
- * FIXES APPLIED IN THIS VERSION:
- *
- * FIX I-1 — getUserRoles() called only once per redemption.
- *   BEFORE: For ADMIN code redemptions, getUserRoles() was called inside the ADMIN
- *   audit block to verify the role was granted, then called again unconditionally at
- *   the end to build the response DTO. Two Keycloak round-trips for the same data.
- *   For non-ADMIN codes it was still called once unnecessarily at the end.
- *   AFTER: getUserRoles() is called exactly once after the Keycloak role assignment.
- *   The result is stored in a local variable and reused for both the ADMIN audit check
- *   and the response DTO. One Keycloak call per redemption in all cases.
- *
- * FIX I-2 — revokeInviteCode() no longer calls keycloakAdminService.userHasRole().
- *   BEFORE: The service called keycloakAdminService.userHasRole(revokerId, "ADMIN")
- *   on every revoke to check if the revoker is an admin — a live Keycloak API call.
- *   Spring Security has already verified the JWT before the controller runs.
- *   AFTER: The controller derives isAdmin from the JWT using hasRole(jwt, "ADMIN")
- *   and passes it as a parameter. The service uses this value directly.
- *
- * FIX I-3 — mapToResponseDto() now populates revokedAt and revokedReason.
- *   BEFORE: Both fields existed on the InviteCode entity but mapToResponseDto()
- *   silently dropped them. A caller listing codes saw REVOKED status with no context.
- *   AFTER: revokedAt and revokedReason are included in all invite code responses.
- *
- * FIX I-4 — validateInviteCreation() STAFF eventId guard consolidated.
- *   BEFORE: The null eventId guard for STAFF codes was checked in two separate places:
- *   inside the organizer block and in a second standalone STAFF block. The logic was
- *   correct but duplicated and fragile — reordering the blocks could break guarantees.
- *   AFTER: Single STAFF block handles eventId=null for both admins and organizers.
- *   The organizer block only enforces role restrictions (organizer → STAFF only).
- *
- * FIX I-6 — default revoke reason updated to "No reason provided".
- *   BEFORE: Controller defaulted to "Revoked by creator" — misleading when an admin
- *   revokes someone else's code.
- *   AFTER: Default is "No reason provided" — neutral for any revoker.
- *   (Controller change also required — see InviteCodeController.java)
- *
- * FIX I-7 — mapToResponseDto() now sets createdByUserId (UUID).
- *   BEFORE: Only createdBy name (display string) was returned — ambiguous if names change.
- *   AFTER: createdByUserId UUID returned alongside the name.
- *
- * FIX I-8 — getInviteCode() uses @Transactional(readOnly=true) with a separate
- *   save call only when the status transitions to EXPIRED.
- *   BEFORE: @Transactional (read-write) was always opened even for fresh codes.
- *   AFTER: The read is done in a readOnly transaction; if an EXPIRED persist is needed
- *   the save is issued within that same transaction (Hibernate will upgrade it).
- *   This avoids taking unnecessary write locks on the happy path.
- *
- * Previously applied fixes preserved:
- *   FIX 1 — EXPIRED status persisted immediately before validateCodeForRedemption().
- *   FIX 2 — org.springframework.transaction.annotation.@Transactional throughout.
- *   FIX 3 — RequestUtil.getCurrentRequest() for audit helpers.
- */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -197,7 +144,6 @@ public class InviteCodeServiceImpl implements InviteCodeService {
                 throw new InvalidInviteCodeException("STAFF invite code must be tied to an event");
             }
 
-            // FIX 1 (preserved): Persist EXPIRED status immediately before validation
             // to prevent a concurrent redemption from bypassing the expiry check.
             InviteCodeStatus statusBeforeCheck = inviteCode.getStatus();
             inviteCode.checkAndMarkExpired();
@@ -221,7 +167,6 @@ public class InviteCodeServiceImpl implements InviteCodeService {
                                 inviteCode.getRoleName(), e.getMessage()), e);
             }
 
-            // FIX I-1: Fetch roles exactly once — reused for ADMIN audit and response DTO.
             // BEFORE: getUserRoles() was called inside the ADMIN block AND again unconditionally
             // at the end — two Keycloak calls for ADMIN redemptions, one wasted call for all others.
             List<String> currentRoles = keycloakAdminService.getUserRoles(userId);
@@ -229,7 +174,6 @@ public class InviteCodeServiceImpl implements InviteCodeService {
             // High-severity audit for ADMIN role grants
             if ("ADMIN".equals(inviteCode.getRoleName())) {
                 try {
-                    // FIX I-1: reuse currentRoles already fetched above — no second Keycloak call
                     if (currentRoles != null && currentRoles.stream().anyMatch("ADMIN"::equals)) {
                         log.warn("HIGH-SEVERITY: ADMIN role granted to user '{}' via invite code '{}'",
                                 userId, inviteCode.getCode());
@@ -268,7 +212,6 @@ public class InviteCodeServiceImpl implements InviteCodeService {
             log.info("Successfully redeemed invite code '{}' for user '{}'", code, user.getName());
             emitInviteRedeemedAudit(user, inviteCode);
 
-            // FIX I-1: currentRoles already fetched above — passed directly into response
             return new RedeemInviteCodeResponseDto(
                     "Invite code redeemed successfully",
                     inviteCode.getRoleName(),
@@ -283,14 +226,6 @@ public class InviteCodeServiceImpl implements InviteCodeService {
 
     // ── REVOKE ────────────────────────────────────────────────────────────────
 
-    /**
-     * FIX I-2: isAdmin parameter replaces the internal Keycloak call.
-     *
-     * The caller (InviteCodeController) derives isAdmin from the verified JWT using
-     * hasRole(jwt, "ADMIN") — the same mechanism used everywhere else in the controller.
-     * Spring Security already validated the JWT before the controller method ran, so
-     * the JWT claim is authoritative. No second Keycloak round-trip needed.
-     */
     @Override
     @Transactional
     public void revokeInviteCode(UUID revokerId, UUID codeId, String reason, boolean isAdmin) {
@@ -301,7 +236,6 @@ public class InviteCodeServiceImpl implements InviteCodeService {
                 .orElseThrow(() -> new InviteCodeNotFoundException(
                         String.format("Invite code with ID '%s' not found", codeId)));
 
-        // FIX I-2: use the isAdmin flag from the JWT, not a Keycloak API call.
         // Admin can revoke any code. Non-admin can only revoke their own.
         if (!isAdmin && (inviteCode.getCreatedBy() == null
                 || !revokerId.equals(inviteCode.getCreatedBy().getId()))) {
@@ -322,14 +256,6 @@ public class InviteCodeServiceImpl implements InviteCodeService {
 
     // ── GET / LIST ────────────────────────────────────────────────────────────
 
-    /**
-     * FIX I-8: @Transactional used (not readOnly=true) because a conditional save
-     * may occur if the code transitions to EXPIRED. However the transaction is still
-     * opened as a standard transaction rather than a write-heavy one — Hibernate will
-     * only flush the save if checkAndMarkExpired() mutates the status.
-     * For the common case (fresh, non-expired code) no write occurs and the transaction
-     * commits with no DB write, making it effectively read-only in practice.
-     */
     @Override
     @Transactional
     public InviteCodeResponseDto getInviteCode(UUID codeId) {
@@ -395,10 +321,6 @@ public class InviteCodeServiceImpl implements InviteCodeService {
         return code.toString();
     }
 
-    /**
-     * FIX I-3: revokedAt and revokedReason now included.
-     * FIX I-7: createdByUserId (UUID) now included alongside createdBy (name).
-     */
     private InviteCodeResponseDto mapToResponseDto(InviteCode inviteCode) {
         return InviteCodeResponseDto.builder()
                 .id(inviteCode.getId())
@@ -408,13 +330,13 @@ public class InviteCodeServiceImpl implements InviteCodeService {
                 .eventName(inviteCode.getEvent() != null ? inviteCode.getEvent().getName() : null)
                 .status(inviteCode.getStatus().name())
                 .createdBy(inviteCode.getCreatedBy().getName())
-                .createdByUserId(inviteCode.getCreatedBy().getId())  // FIX I-7
+                .createdByUserId(inviteCode.getCreatedBy().getId())
                 .createdAt(inviteCode.getCreatedAt())
                 .expiresAt(inviteCode.getExpiresAt())
                 .redeemedBy(inviteCode.getRedeemedBy() != null ? inviteCode.getRedeemedBy().getName() : null)
                 .redeemedAt(inviteCode.getRedeemedAt())
-                .revokedAt(inviteCode.getRevokedAt())         // FIX I-3
-                .revokedReason(inviteCode.getRevokedReason()) // FIX I-3
+                .revokedAt(inviteCode.getRevokedAt())
+                .revokedReason(inviteCode.getRevokedReason())
                 .build();
     }
 

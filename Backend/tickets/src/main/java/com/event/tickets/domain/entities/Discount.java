@@ -91,10 +91,6 @@ public class Discount {
   @Column(name = "valid_from", nullable = false)
   private LocalDateTime validFrom;
 
-  /**
-   * End date/time when discount expires.
-   * Must be after {@link #validFrom} (enforced by CHECK constraint).
-   */
   @Column(name = "valid_to", nullable = false)
   private LocalDateTime validTo;
 
@@ -140,12 +136,6 @@ public class Discount {
         && !now.isAfter(validTo);
   }
 
-  /**
-   * Calculates final price after applying this discount.
-   *
-   * @param basePrice Original ticket price
-   * @return Final price after discount (never negative)
-   */
   public BigDecimal calculateFinalPrice(BigDecimal basePrice) {
     if (basePrice == null || basePrice.compareTo(BigDecimal.ZERO) <= 0) {
       throw new IllegalArgumentException("Base price must be positive");

@@ -97,10 +97,11 @@ class ApprovalServiceImplTest {
         @Test
         @DisplayName("sets status APPROVED and stamps approvedAt — NOT rejectedAt")
         void setsApprovedAtNotRejectedAt() {
+            when(keycloakAdminService.getUserRoles(adminId)).thenReturn(List.of("ADMIN")); // requireAdminRole check
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
             when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-            when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("ORGANIZER"));
+            when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("ORGANIZER")); // validateUserHasValidRole
 
             service.approveUser(userId, adminId);
 
@@ -118,6 +119,7 @@ class ApprovalServiceImplTest {
         @Test
         @DisplayName("activates user in Keycloak on approval")
         void activatesKeycloakAccount() {
+            when(keycloakAdminService.getUserRoles(adminId)).thenReturn(List.of("ADMIN"));
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
             when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -131,6 +133,7 @@ class ApprovalServiceImplTest {
         @Test
         @DisplayName("sends approval email")
         void sendsApprovalEmail() {
+            when(keycloakAdminService.getUserRoles(adminId)).thenReturn(List.of("ADMIN"));
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
             when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -145,6 +148,7 @@ class ApprovalServiceImplTest {
         @DisplayName("throws InvalidApprovalStateException when user is already APPROVED")
         void throwsWhenAlreadyApproved() {
             pendingUser.setApprovalStatus(ApprovalStatus.APPROVED);
+            when(keycloakAdminService.getUserRoles(adminId)).thenReturn(List.of("ADMIN"));
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
 
             assertThatThrownBy(() -> service.approveUser(userId, adminId))
@@ -154,6 +158,7 @@ class ApprovalServiceImplTest {
         @Test
         @DisplayName("throws UserNotFoundException when user not found")
         void throwsWhenUserNotFound() {
+            when(keycloakAdminService.getUserRoles(adminId)).thenReturn(List.of("ADMIN"));
             when(userRepository.findById(userId)).thenReturn(Optional.empty());
 
             assertThatThrownBy(() -> service.approveUser(userId, adminId))
@@ -166,29 +171,25 @@ class ApprovalServiceImplTest {
          * DB stays APPROVED; Keycloak will be reconciled by the retry scheduler.
          */
         @Test
-        @DisplayName("Keycloak activation failure — DB stays APPROVED, sync flag set, no exception thrown")
-        void keycloakFailure_dbStaysApproved_syncFlagSet() {
+        @DisplayName("Keycloak activation failure — service aborts with InvalidBusinessStateException")
+        void keycloakFailure_aborts_withException() {
+            when(keycloakAdminService.getUserRoles(adminId)).thenReturn(List.of("ADMIN"));
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
-            when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
             when(keycloakAdminService.getUserRoles(userId)).thenReturn(List.of("ORGANIZER"));
             doThrow(new RuntimeException("Keycloak down")).when(keycloakAdminService).activateUser(userId);
 
-            // Service must NOT throw — Keycloak failure is handled gracefully
-            assertThatCode(() -> service.approveUser(userId, adminId))
-                    .doesNotThrowAnyException();
-
-            // First save sets APPROVED + keycloak_sync_pending=true
-            ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
-            verify(userRepository, atLeastOnce()).save(captor.capture());
-            User firstSave = captor.getAllValues().get(0);
-            assertThat(firstSave.getApprovalStatus()).isEqualTo(ApprovalStatus.APPROVED);
-            assertThat(firstSave.isKeycloakSyncPending()).isTrue();
+            // Service catches Keycloak failure and re-throws as InvalidBusinessStateException.
+            // The save() is never reached — removing that stub avoids UnnecessaryStubbingException.
+            assertThatThrownBy(() -> service.approveUser(userId, adminId))
+                    .isInstanceOf(com.event.tickets.exceptions.InvalidBusinessStateException.class)
+                    .hasMessageContaining("Keycloak activation failed");
         }
 
         @Test
         @DisplayName("audit log saved on approval with USER_APPROVED action")
         void auditEmittedOnApproval() {
+            when(keycloakAdminService.getUserRoles(adminId)).thenReturn(List.of("ADMIN"));
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
             when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -211,6 +212,7 @@ class ApprovalServiceImplTest {
         @Test
         @DisplayName("sets rejectedAt NOT approvedAt on rejection")
         void setsRejectedAtNotApprovedAt() {
+            when(keycloakAdminService.getUserRoles(adminId)).thenReturn(List.of("ADMIN"));
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
             when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -231,6 +233,7 @@ class ApprovalServiceImplTest {
         @Test
         @DisplayName("disables Keycloak account on rejection")
         void disablesKeycloakAccount() {
+            when(keycloakAdminService.getUserRoles(adminId)).thenReturn(List.of("ADMIN"));
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
             when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -243,6 +246,7 @@ class ApprovalServiceImplTest {
         @Test
         @DisplayName("sends rejection email with reason")
         void sendsRejectionEmail() {
+            when(keycloakAdminService.getUserRoles(adminId)).thenReturn(List.of("ADMIN"));
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
             when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -259,6 +263,7 @@ class ApprovalServiceImplTest {
         @Test
         @DisplayName("Keycloak disable failure — DB stays REJECTED, sync flag set, no exception thrown")
         void keycloakFailure_dbStaysRejected_syncFlagSet() {
+            when(keycloakAdminService.getUserRoles(adminId)).thenReturn(List.of("ADMIN"));
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
             when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -278,6 +283,7 @@ class ApprovalServiceImplTest {
         @Test
         @DisplayName("audit log saved on rejection with USER_REJECTED action")
         void auditEmittedOnRejection() {
+            when(keycloakAdminService.getUserRoles(adminId)).thenReturn(List.of("ADMIN"));
             when(userRepository.findById(userId)).thenReturn(Optional.of(pendingUser));
             when(userRepository.findById(adminId)).thenReturn(Optional.of(adminUser));
             when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));

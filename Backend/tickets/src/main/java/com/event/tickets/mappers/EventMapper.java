@@ -27,27 +27,11 @@ import org.mapstruct.Mapping;
 import org.mapstruct.MappingTarget;
 import org.mapstruct.ReportingPolicy;
 
-/**
- * FIXES APPLIED:
- *
- * FIX-E7-MAP — Added salesOpen computed flag population for public event DTOs.
- *   MapStruct generates the field mappings; @AfterMapping hooks compute salesOpen
- *   based on the current time vs salesStart/salesEnd window.
- *
- *   salesOpen = true when:
- *     - salesStart is null OR salesStart is in the past, AND
- *     - salesEnd is null OR salesEnd is in the future
- *
- *   FIX-E1-MAP — CreateEventRequestDto no longer has a status field.
- *   The fromDto(CreateEventRequestDto) mapping now ignores status entirely
- *   since EventServiceImpl always forces DRAFT on creation.
- */
 @Mapper(componentModel = "spring", unmappedTargetPolicy = ReportingPolicy.IGNORE)
 public interface EventMapper {
 
     CreateTicketTypeRequest fromDto(CreateTicketTypeRequestDto dto);
 
-    // FIX-E1-MAP: status ignored — service always sets DRAFT
     @Mapping(target = "status", ignore = true)
     CreateEventRequest fromDto(CreateEventRequestDto dto);
 
@@ -69,19 +53,13 @@ public interface EventMapper {
 
     UpdateEventResponseDto toUpdateEventResponseDto(Event event);
 
-    // FIX-E7-MAP: maps salesStart, salesEnd, status via field name matching
     ListPublishedEventResponseDto toListPublishedEventResponseDto(Event event);
 
     GetPublishedEventDetailsTicketTypesResponseDto toGetPublishedEventDetailsTicketTypesResponseDto(
             TicketType ticketType);
 
-    // FIX-E7-MAP: maps salesStart, salesEnd, status via field name matching
     GetPublishedEventDetailsResponseDto toGetPublishedEventDetailsResponseDto(Event event);
 
-    /**
-     * FIX-E7-MAP: Computes salesOpen after MapStruct maps the other fields.
-     * salesOpen = salesStart has passed (or is null) AND salesEnd is in the future (or is null).
-     */
     @AfterMapping
     default void computeSalesOpenForList(Event event,
                                          @MappingTarget ListPublishedEventResponseDto dto) {

@@ -38,25 +38,6 @@ import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
 import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
-/**
- * FIXES APPLIED:
- *
- * FIX-TV1 (BUG 6-2) — validateTicket() replaced collection load with EXISTS query.
- *
- *   BEFORE: ticket.getValidations().stream().filter(VALID).findFirst() loaded ALL
- *   TicketValidation records for the ticket into the JPA session to detect a prior scan.
- *   At a busy event a ticket might have been scanned many times (each retry producing
- *   an INVALID record). All of those loaded just to find the first VALID one.
- *
- *   AFTER: ticketValidationRepository.existsByTicketIdAndStatus(ticketId, VALID)
- *   Executes one EXISTS query. Zero TicketValidation entities loaded into memory.
- *   This runs on every scan at the venue door — keeping it lean is critical.
- *
- * All previous fixes preserved:
- *   FIX 1 (previous) — Ticket.status transitions to VALIDATED on first valid scan.
- *   FIX 2 (previous) — Spring @Transactional throughout.
- *   FIX 3 (previous) — RequestUtil.getCurrentRequest() for audits.
- */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -141,7 +122,6 @@ public class TicketValidationServiceImpl implements TicketValidationService {
                     "Ticket must be in PURCHASED status to validate, but is " + ticket.getStatus());
         }
 
-        // FIX-TV1: Single EXISTS query — no TicketValidation collection loaded
         boolean hasPriorValidScan = ticketValidationRepository
                 .existsByTicketIdAndStatus(ticket.getId(), TicketValidationStatusEnum.VALID);
 
@@ -184,8 +164,6 @@ public class TicketValidationServiceImpl implements TicketValidationService {
         authorizationService.requireOrganizerOrStaffAccess(userId, ticket.getTicketType().getEvent());
         return ticketValidationRepository.findByTicketId(ticketId);
     }
-
-    // ── AUDIT HELPERS ─────────────────────────────────────────────────────────
 
     private void emitSuccessfulTicketValidation(User validator, Ticket ticket, String method) {
         try {

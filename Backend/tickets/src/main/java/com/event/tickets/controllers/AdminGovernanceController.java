@@ -26,43 +26,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * Admin Governance Controller
- *
- * ADMIN-only endpoints for role management via Keycloak Admin API.
- *
- * FIXES APPLIED IN THIS VERSION:
- *
- * FIX A-1 — revokeRoleFromUser() validates DB user BEFORE calling Keycloak.
- *   BEFORE: keycloakAdminService.revokeRoleFromUser() was called first, then
- *   userRepository.findById() was called to build the response. If the user
- *   existed in Keycloak but not in the local DB, the role was revoked and then
- *   a 404 UserNotFoundException was thrown — the Keycloak state was mutated
- *   even though the endpoint returned an error.
- *   AFTER: DB user validated first (consistent with assignRoleToUser).
- *   NOTE: KeycloakAdminServiceImpl.revokeRoleFromUser() also validates DB existence
- *   internally via userRepository.existsById() — the controller check is a fast
- *   pre-validation that avoids calling Keycloak at all if the user is unknown locally.
- *
- * FIX A-2 — UserRepository retained for now with a documented rationale.
- *   The ideal fix is to route through a UserService/ApprovalService. However, the
- *   only operation needed here is findById() to get name+email for the response DTO.
- *   Introducing a new service method purely for this read is disproportionate.
- *   The repository is injected read-only (findById only — no writes from this class).
- *   A UserService.getUserById() method should be added as a future improvement.
- *   All writes still go through Keycloak service layer — no business logic in controller.
- *
- * FIX A-3/A-4 — audit logs for ROLE_ASSIGNED and ROLE_REVOKED are written by
- *   KeycloakAdminServiceImpl directly (verified in source). No duplicate audit
- *   emission needed here.
- *
- * FIX A-8 — UserRolesResponseDto.userId is now UUID (no more .toString()).
- *
- * Security:
- * - All endpoints require ADMIN role
- * - Backend is the sole authority for Keycloak Admin API calls
- * - ADMINs cannot override event authorization
- */
 @RestController
 @RequestMapping("/api/v1/admin")
 @RequiredArgsConstructor
@@ -70,7 +33,6 @@ import org.springframework.web.bind.annotation.RestController;
 public class AdminGovernanceController {
 
     private final KeycloakAdminService keycloakAdminService;
-    // FIX A-2 note: read-only use only (findById for response DTO). No writes here.
     private final UserRepository userRepository;
 
     /**
@@ -96,7 +58,6 @@ public class AdminGovernanceController {
 
         List<String> updatedRoles = keycloakAdminService.getUserRoles(userId);
 
-        // FIX A-8: UUID directly — no .toString()
         UserRolesResponseDto response = new UserRolesResponseDto(
                 userId, user.getName(), user.getEmail(), updatedRoles);
 
@@ -104,12 +65,6 @@ public class AdminGovernanceController {
         return ResponseEntity.ok(response);
     }
 
-    /**
-     * Revoke a role from a user.
-     *
-     * FIX A-1: DB user validated BEFORE calling Keycloak — consistent with assignRoleToUser.
-     * Audit log is written by KeycloakAdminServiceImpl.revokeRoleFromUser().
-     */
     @DeleteMapping("/users/{userId}/roles/{roleName}")
     @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<UserRolesResponseDto> revokeRoleFromUser(
@@ -118,7 +73,6 @@ public class AdminGovernanceController {
     ) {
         log.info("ADMIN revoking role '{}' from user '{}'", roleName, userId);
 
-        // FIX A-1: validate DB user BEFORE Keycloak call.
         // Prevents Keycloak state mutation when user is not known locally.
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new UserNotFoundException(
@@ -128,7 +82,6 @@ public class AdminGovernanceController {
 
         List<String> updatedRoles = keycloakAdminService.getUserRoles(userId);
 
-        // FIX A-8: UUID directly — no .toString()
         UserRolesResponseDto response = new UserRolesResponseDto(
                 userId, user.getName(), user.getEmail(), updatedRoles);
 
@@ -150,7 +103,6 @@ public class AdminGovernanceController {
 
         List<String> roles = keycloakAdminService.getUserRoles(userId);
 
-        // FIX A-8: UUID directly — no .toString()
         return ResponseEntity.ok(new UserRolesResponseDto(
                 userId, user.getName(), user.getEmail(), roles));
     }

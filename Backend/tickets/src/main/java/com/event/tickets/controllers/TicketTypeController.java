@@ -39,14 +39,6 @@ public class TicketTypeController {
     private final TicketTypeMapper ticketTypeMapper;
     private final TicketMapper ticketMapper;
 
-    /**
-     * Purchase tickets.
-     *
-     * FIX: now passes eventId from the URL path into purchaseTickets().
-     * The service validates that the ticketTypeId actually belongs to that event,
-     * preventing a crafted request from buying tickets across unrelated events.
-     * The service also enforces PUBLISHED status and the sales window.
-     */
     @PostMapping(path = "/{ticketTypeId}/tickets")
     @PreAuthorize("hasRole('ATTENDEE') or hasRole('ORGANIZER')")
     public ResponseEntity<List<GetTicketResponseDto>> purchaseTicket(

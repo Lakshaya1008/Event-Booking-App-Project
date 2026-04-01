@@ -9,7 +9,6 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-/** FIX #15: price changed from Double to BigDecimal. */
 @Data
 @AllArgsConstructor
 @NoArgsConstructor

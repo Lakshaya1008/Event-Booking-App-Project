@@ -7,30 +7,6 @@ import org.springframework.boot.actuate.health.Health;
 import org.springframework.stereotype.Component;
 import com.event.tickets.services.KeycloakAdminService;
 
-/**
- * FIX #29: Keycloak Health Indicator
- *
- * Adds Keycloak connectivity check to Spring Boot Actuator health endpoint.
- *
- * BEFORE: /actuator/health showed app as UP even when Keycloak was down.
- * Kubernetes/monitoring systems had no way to detect Keycloak unavailability.
- *
- * AFTER: /actuator/health includes keycloak status:
- * {
- *   "status": "UP",
- *   "components": {
- *     "keycloak": {
- *       "status": "UP|DOWN",
- *       "details": { ... }
- *     }
- *   }
- * }
- *
- * Kubernetes can use this to:
- * - Trigger pod restart if keycloak unhealthy
- * - Remove from load balancer
- * - Alert ops team
- */
 @Component("keycloakHealthIndicator")
 @RequiredArgsConstructor
 @Slf4j

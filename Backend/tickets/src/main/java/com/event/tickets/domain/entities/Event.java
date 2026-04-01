@@ -103,12 +103,6 @@ public class Event {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
-    /**
-     * FIX #9: Optimistic locking to prevent lost updates on concurrent edits.
-     * When two organizers edit the same event simultaneously, the second update
-     * will fail with OptimisticLockingFailureException. Client must retry.
-     * Version is incremented on every update by Hibernate.
-     */
     @Version
     @Column(name = "version")
     private Long version;

@@ -10,14 +10,6 @@ import org.springframework.web.context.request.ServletRequestAttributes;
  *
  * Extracts client information from HTTP requests.
  * Used for audit logging and security tracking.
- *
- * FIX: Added getCurrentRequest() static helper.
- * Previously copy-pasted in 8 different service files. Now a single
- * source of truth — EventServiceImpl, EventStaffServiceImpl,
- * TicketTypeServiceImpl, ExportServiceImpl, InviteCodeServiceImpl,
- * QrCodeServiceImpl, RegistrationServiceImpl, TicketValidationServiceImpl
- * all call RequestUtil.getCurrentRequest() instead of duplicating the
- * RequestContextHolder boilerplate.
  */
 @UtilityClass
 public class RequestUtil {

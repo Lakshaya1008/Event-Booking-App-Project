@@ -13,18 +13,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.util.List;
 
-/**
- * One-time data initializer to backfill pricing columns for existing tickets.
- *
- * Runs AFTER application context is fully initialized (including schema updates).
- * This component is IDEMPOTENT — safe to run multiple times.
- *
- * FIX #15 follow-up: TicketType.price is now BigDecimal (was Double).
- * The original line 66 called BigDecimal.valueOf(ticket.getTicketType().getPrice())
- * which compiled when getPrice() returned Double, but fails when it returns BigDecimal
- * because BigDecimal.valueOf(BigDecimal) does not exist.
- * Fixed to use ticket.getTicketType().getPrice() directly.
- */
 @Component
 @RequiredArgsConstructor
 @Slf4j
@@ -54,7 +42,6 @@ public class DataInitializer implements ApplicationRunner {
 
                 if (ticket.getPricePaid() == null) {
                     if (ticket.getTicketType() != null && ticket.getTicketType().getPrice() != null) {
-                        // FIX #15 follow-up: getPrice() now returns BigDecimal directly.
                         // The old code used BigDecimal.valueOf(getPrice()) which worked when
                         // getPrice() returned Double but is a compile error for BigDecimal.
                         BigDecimal priceFromType = ticket.getTicketType().getPrice();

@@ -8,13 +8,6 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-/**
- * L-25 FIX: pricePaid, originalPrice, discountApplied added.
- *
- * Previously only the ticket type's base price was exposed. Attendees had no way
- * to see what they actually paid vs the list price, or how much discount was applied.
- * Financial transparency requires showing the actual transaction price.
- */
 @Data
 @AllArgsConstructor
 @NoArgsConstructor

@@ -74,7 +74,6 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
     public void assignRoleToUser(UUID userId, String roleName) {
         log.info("Assigning role '{}' to user '{}'", roleName, userId);
 
-        // FIX #12-1: Validate role name against whitelist
         if (!isValidRole(roleName)) {
             throw new KeycloakOperationException(
                     String.format("Invalid role name: %s. Valid roles are: ADMIN, ORGANIZER, ATTENDEE, STAFF", roleName));
@@ -158,7 +157,6 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
             RoleResource roleResource = realmResource.roles().get(roleName);
             RoleRepresentation role = roleResource.toRepresentation();
 
-            // Remove role from user
             userResource.roles().realmLevel().remove(Collections.singletonList(role));
 
             log.info("Successfully revoked role '{}' from user '{}'", roleName, userId);
@@ -522,19 +520,6 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
         }
     }
 
-    /**
-     * Activates a user in Keycloak with a SINGLE atomic update call.
-     *
-     * WHY: The separate setUserEnabled(), setEmailVerified(), clearRequiredActions()
-     * methods each do their own GET → modify → PUT cycle. If called sequentially,
-     * each one fetches the latest state from Keycloak and sets only its one field.
-     * In practice this should be safe, but Keycloak's toRepresentation() for
-     * programmatically-created users sometimes returns unexpected defaults
-     * (e.g. required actions populated by realm defaults after resetPassword),
-     * meaning the last call's PUT can restore stale field values from the GET.
-     *
-     * This method does ONE GET, sets all three fields, then ONE PUT — guaranteed atomic.
-     */
     @Override
     public void activateUser(UUID userId) {
         log.info("Activating user in Keycloak (single atomic update): userId={}", userId);
@@ -606,8 +591,6 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
         return null;
     }
 
-
-
     @Override
     public int getUserCount() {
         try {
@@ -622,10 +605,6 @@ public class KeycloakAdminServiceImpl implements KeycloakAdminService {
         }
     }
 
-    /**
-     * FIX #12-1: Validate role name against whitelist of valid roles.
-     * Prevents assigning invalid role names to users.
-     */
     private boolean isValidRole(String roleName) {
         if (roleName == null) {
             return false;

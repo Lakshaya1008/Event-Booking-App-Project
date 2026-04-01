@@ -1,5 +1,7 @@
 package com.event.tickets.filters;
 
+import com.event.tickets.domain.entities.ApprovalStatus;
+import com.event.tickets.domain.entities.User;
 import com.event.tickets.repositories.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -17,6 +19,8 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 
 import java.time.Instant;
+import java.util.Collections;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.*;
@@ -25,15 +29,18 @@ import static org.mockito.Mockito.*;
 /**
  * UserProvisioningFilter tests.
  *
- * This filter is intentionally read-only — it detects sync issues between Keycloak
- * and the DB (Keycloak user exists but no DB record) and logs a warning.
- * It does NOT auto-create DB records; that would bypass the registration + approval flow.
+ * BUG-T1 FIX: The previous version of this test file tested the OLD, incorrect
+ * behaviour (read-only filter that lets everything through). The actual filter
+ * source (post-BUG3 fix) is a BLOCKING filter:
  *
- * Tests verify:
- *  1. JWT present + user in DB → filter chain continues, no warning logged
- *  2. JWT present + user NOT in DB → filter chain continues, warning logged
- *  3. No JWT → filter chain continues, no DB query made
- *  4. Non-JWT principal (e.g. anonymous) → filter chain continues
+ *   • No JWT                            → chain continues (unauthenticated OK)
+ *   • JWT present + user in DB, status OK → chain continues (200)
+ *   • JWT present + user NOT in DB     → 401 "User not provisioned in system"
+ *   • JWT present + user.approvalStatus == null → 500 "User state invalid"
+ *   • JWT present + Keycloak user doesn't exist → 401 (tested via @Autowired optional)
+ *
+ * The filter does NOT auto-create users — that would bypass registration+approval.
+ * It BLOCKS users whose DB record is missing (desync = untrusted state).
  */
 @ExtendWith(MockitoExtension.class)
 @DisplayName("UserProvisioningFilter")
@@ -55,122 +62,192 @@ class UserProvisioningFilterTest {
     private void setUpJwtAuthentication(UUID subjectId) {
         Jwt jwt = Jwt.withTokenValue("test-token")
                 .header("alg", "none")
-                .claim("sub", subjectId.toString())
+                .subject(subjectId.toString())   // FIX: .subject() sets getSubject(); .claim("sub",...) does NOT
                 .claim("email", "user@test.com")
                 .issuedAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(3600))
                 .build();
-        JwtAuthenticationToken auth = new JwtAuthenticationToken(jwt);
+        // FIX: pass Collections.emptyList() as authorities so isAuthenticated() returns true.
+        // JwtAuthenticationToken(jwt) with no authorities defaults isAuthenticated=false,
+        // so the filter short-circuits at the !authentication.isAuthenticated() check,
+        // never calling userRepository.findById() at all.
+        JwtAuthenticationToken auth = new JwtAuthenticationToken(jwt, Collections.emptyList());
         SecurityContextHolder.getContext().setAuthentication(auth);
     }
 
+    private User buildUser(ApprovalStatus status) {
+        User u = new User();
+        u.setId(userId);
+        u.setName("Test User");
+        u.setEmail("user@test.com");
+        u.setApprovalStatus(status);
+        return u;
+    }
+
+    // ── JWT present + user in DB (happy path) ─────────────────────────────────
+
     @Nested
-    @DisplayName("JWT present — user in DB")
+    @DisplayName("JWT present — user in DB with valid approval status")
     class UserExistsInDb {
 
         @Test
-        @DisplayName("filter chain continues — no blocking")
-        void userInDb_chainContinues() throws Exception {
+        @DisplayName("APPROVED user — filter chain continues (200)")
+        void approvedUser_chainContinues() throws Exception {
             setUpJwtAuthentication(userId);
-            when(userRepository.existsById(userId)).thenReturn(true);
+            when(userRepository.findById(userId)).thenReturn(Optional.of(buildUser(ApprovalStatus.APPROVED)));
 
-            MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/events");
             MockHttpServletResponse response = new MockHttpServletResponse();
-            MockFilterChain chain = new MockFilterChain();
+            filter.doFilterInternal(
+                    new MockHttpServletRequest("GET", "/api/v1/events"),
+                    response,
+                    new MockFilterChain());
 
-            filter.doFilterInternal(request, response, chain);
-
-            // 200 — chain was called, filter did nothing
             assertThat(response.getStatus()).isEqualTo(200);
         }
 
         @Test
-        @DisplayName("userRepository.existsById called once with correct userId")
-        void userInDb_existsCalledWithCorrectId() throws Exception {
+        @DisplayName("PENDING user — filter chain continues (approval gate handles blocking later)")
+        void pendingUser_chainContinues() throws Exception {
             setUpJwtAuthentication(userId);
-            when(userRepository.existsById(userId)).thenReturn(true);
+            when(userRepository.findById(userId)).thenReturn(Optional.of(buildUser(ApprovalStatus.PENDING)));
 
-            MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/events");
             MockHttpServletResponse response = new MockHttpServletResponse();
-            MockFilterChain chain = new MockFilterChain();
+            filter.doFilterInternal(
+                    new MockHttpServletRequest("GET", "/api/v1/events"),
+                    response,
+                    new MockFilterChain());
 
-            filter.doFilterInternal(request, response, chain);
+            // UserProvisioningFilter lets PENDING through — ApprovalGateFilter (@Order 2) handles it
+            assertThat(response.getStatus()).isEqualTo(200);
+        }
 
-            verify(userRepository).existsById(userId);
+        @Test
+        @DisplayName("userRepository.findById called once with correct userId")
+        void findByIdCalledWithCorrectId() throws Exception {
+            setUpJwtAuthentication(userId);
+            when(userRepository.findById(userId)).thenReturn(Optional.of(buildUser(ApprovalStatus.APPROVED)));
+
+            filter.doFilterInternal(
+                    new MockHttpServletRequest("GET", "/api/v1/events"),
+                    new MockHttpServletResponse(),
+                    new MockFilterChain());
+
+            verify(userRepository).findById(userId);
         }
     }
 
+    // ── JWT present + user NOT in DB — BUG-T1 FIX ────────────────────────────
+
     @Nested
-    @DisplayName("JWT present — user NOT in DB (desync scenario)")
+    @DisplayName("JWT present — user NOT in DB (desync) — BUG-T1 FIX: returns 401")
     class UserNotInDb {
 
         @Test
-        @DisplayName("filter chain still continues — desync does NOT block the request")
-        void userNotInDb_chainStillContinues() throws Exception {
+        @DisplayName("BUG-T1 FIX — user not found in DB returns 401 (NOT 200)")
+        void userNotInDb_returns401() throws Exception {
             setUpJwtAuthentication(userId);
-            when(userRepository.existsById(userId)).thenReturn(false);
+            when(userRepository.findById(userId)).thenReturn(Optional.empty());
 
-            MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/events");
             MockHttpServletResponse response = new MockHttpServletResponse();
-            MockFilterChain chain = new MockFilterChain();
+            filter.doFilterInternal(
+                    new MockHttpServletRequest("GET", "/api/v1/events"),
+                    response,
+                    new MockFilterChain());
 
-            filter.doFilterInternal(request, response, chain);
-
-            // CRITICAL: desync is LOGGED but does NOT block — ApprovalGateFilter will
-            // block on the next filter in the chain since user isn't in DB
-            assertThat(response.getStatus()).isEqualTo(200);
+            // CRITICAL: desync is BLOCKED — the filter returns 401, does NOT let the request through
+            assertThat(response.getStatus()).isEqualTo(401);
         }
 
         @Test
-        @DisplayName("no 403 response — filter is read-only, not a blocker")
-        void userNotInDb_no403() throws Exception {
+        @DisplayName("BUG-T1 FIX — filter chain NOT called when user not found")
+        void userNotInDb_chainNotCalled() throws Exception {
             setUpJwtAuthentication(userId);
-            when(userRepository.existsById(userId)).thenReturn(false);
+            when(userRepository.findById(userId)).thenReturn(Optional.empty());
 
-            MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/events");
-            MockHttpServletResponse response = new MockHttpServletResponse();
-            MockFilterChain chain = new MockFilterChain();
+            MockFilterChain chain = mock(MockFilterChain.class);
+            filter.doFilterInternal(
+                    new MockHttpServletRequest("GET", "/api/v1/events"),
+                    new MockHttpServletResponse(),
+                    chain);
 
-            filter.doFilterInternal(request, response, chain);
-
-            assertThat(response.getStatus()).isNotEqualTo(403);
+            verify(chain, never()).doFilter(any(), any());
         }
 
         @Test
-        @DisplayName("no user is auto-created — read-only filter design preserved")
+        @DisplayName("BUG-T1 FIX — no user is auto-created — read-only behaviour preserved")
         void userNotInDb_noSaveCalledOnRepository() throws Exception {
             setUpJwtAuthentication(userId);
-            when(userRepository.existsById(userId)).thenReturn(false);
+            when(userRepository.findById(userId)).thenReturn(Optional.empty());
 
-            MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/events");
-            MockHttpServletResponse response = new MockHttpServletResponse();
-            MockFilterChain chain = new MockFilterChain();
+            filter.doFilterInternal(
+                    new MockHttpServletRequest("GET", "/api/v1/events"),
+                    new MockHttpServletResponse(),
+                    new MockFilterChain());
 
-            filter.doFilterInternal(request, response, chain);
-
-            // The filter must NEVER call save() — it is intentionally read-only
+            // The filter must NEVER call save() — presence check only
             verify(userRepository, never()).save(any());
             verify(userRepository, never()).saveAndFlush(any());
         }
     }
+
+    // ── User with null approvalStatus — returns 500 ───────────────────────────
+
+    @Nested
+    @DisplayName("JWT present — user in DB but approvalStatus is null (corrupt state)")
+    class NullApprovalStatus {
+
+        @Test
+        @DisplayName("null approvalStatus → 500 Internal Server Error")
+        void nullApprovalStatus_returns500() throws Exception {
+            User corruptUser = buildUser(null); // deliberately null
+            setUpJwtAuthentication(userId);
+            when(userRepository.findById(userId)).thenReturn(Optional.of(corruptUser));
+
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            filter.doFilterInternal(
+                    new MockHttpServletRequest("GET", "/api/v1/events"),
+                    response,
+                    new MockFilterChain());
+
+            assertThat(response.getStatus()).isEqualTo(500);
+        }
+
+        @Test
+        @DisplayName("null approvalStatus — chain NOT called")
+        void nullApprovalStatus_chainNotCalled() throws Exception {
+            User corruptUser = buildUser(null);
+            setUpJwtAuthentication(userId);
+            when(userRepository.findById(userId)).thenReturn(Optional.of(corruptUser));
+
+            MockFilterChain chain = mock(MockFilterChain.class);
+            filter.doFilterInternal(
+                    new MockHttpServletRequest("GET", "/api/v1/events"),
+                    new MockHttpServletResponse(),
+                    chain);
+
+            verify(chain, never()).doFilter(any(), any());
+        }
+    }
+
+    // ── No JWT — unauthenticated request ──────────────────────────────────────
 
     @Nested
     @DisplayName("No JWT — unauthenticated request")
     class NoJwt {
 
         @Test
-        @DisplayName("no JWT — DB not queried, filter chain continues")
+        @DisplayName("no JWT — DB not queried, filter chain continues (200)")
         void noJwt_dbNotQueried() throws Exception {
             SecurityContextHolder.clearContext();
 
-            MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/v1/auth/register");
             MockHttpServletResponse response = new MockHttpServletResponse();
-            MockFilterChain chain = new MockFilterChain();
+            filter.doFilterInternal(
+                    new MockHttpServletRequest("POST", "/api/v1/auth/register"),
+                    response,
+                    new MockFilterChain());
 
-            filter.doFilterInternal(request, response, chain);
-
-            // No JWT → no DB lookup
-            verify(userRepository, never()).existsById(any());
+            // No JWT → no DB lookup → chain continues (unauthenticated requests pass through)
+            verify(userRepository, never()).findById(any());
             assertThat(response.getStatus()).isEqualTo(200);
         }
     }

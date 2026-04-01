@@ -31,13 +31,6 @@ public class InviteCodeExpiryScheduler {
 
     private final InviteCodeRepository inviteCodeRepository;
 
-    /**
-     * Marks all PENDING invite codes whose expiresAt is in the past as EXPIRED.
-     * Uses a single bulk UPDATE query — no per-row round trips.
-     *
-     * Runs every 15 minutes. First execution 5 minutes after startup
-     * (initialDelay gives the app time to fully start before the first run).
-     */
     @Scheduled(
             fixedRateString  = "${app.scheduler.invite-expiry-rate-ms:900000}",   // 15 min
             initialDelayString = "${app.scheduler.invite-expiry-delay-ms:300000}" // 5 min after startup

@@ -82,13 +82,6 @@ public interface KeycloakAdminService {
      */
     UUID createUser(String email, String password, String name);
 
-    /**
-     * Deletes a user from Keycloak.
-     * Used for rollback when registration fails after user creation.
-     *
-     * @param userId The Keycloak user ID
-     * @throws com.event.tickets.exceptions.KeycloakUserDeletionException if deletion fails
-     */
     void deleteUser(UUID userId);
 
     /**
@@ -158,15 +151,5 @@ public interface KeycloakAdminService {
      */
     void activateUser(UUID userId);
 
-    /**
-     * FIX #29: Gets the total number of users in the realm.
-     * Used for health checks to verify Keycloak connectivity.
-     *
-     * This is a lightweight operation used by the health indicator
-     * to verify that Keycloak Admin API is accessible.
-     *
-     * @return The number of users in the realm (0 if realm is empty)
-     * @throws Exception if Keycloak API call fails (no connectivity)
-     */
     int getUserCount();
 }

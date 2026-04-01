@@ -128,12 +128,5 @@ public interface DiscountService {
    */
   Optional<Discount> findActiveDiscount(UUID ticketTypeId);
 
-  /**
-   * Calculates final price after applying discount.
-   *
-   * @param basePrice Original ticket price
-   * @param discount Discount to apply
-   * @return Final price (never negative)
-   */
   BigDecimal calculateFinalPrice(BigDecimal basePrice, Discount discount);
 }

@@ -6,17 +6,6 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-/**
- * Reject Reason DTO
- *
- * FIXES APPLIED:
- *
- * FIX-RR1 — Minimum length reduced from 10 to 3 characters.
- *   BEFORE: @Size(min = 10) blocked short but perfectly valid reasons like
- *   "Spam", "Bot", "Fake" — admins were forced to pad reasons artificially.
- *   AFTER: min = 3 allows short meaningful reasons while still preventing
- *   empty single-character rejections.
- */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

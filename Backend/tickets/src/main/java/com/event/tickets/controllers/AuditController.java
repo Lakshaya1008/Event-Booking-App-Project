@@ -22,40 +22,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * Audit Controller
- *
- * READ-ONLY access to audit logs.
- *
- * FIXES APPLIED IN THIS VERSION:
- *
- * FIX A-5 — getEventAuditLogs() now allows ADMIN access.
- *   BEFORE: @PreAuthorize("hasRole('ORGANIZER')") — ADMINs could not query logs
- *   for a specific event. They had to use GET /audit and filter client-side.
- *   AFTER: hasRole('ADMIN') or hasRole('ORGANIZER'). ADMIN bypasses the ownership
- *   check. ORGANIZER still goes through requireOrganizerAccess().
- *
- * FIX A-6 — GET /audit?action={action} endpoint added.
- *   AuditLogRepository.findByAction() and AuditLogService.findByAction() existed
- *   but were never exposed via any endpoint. Added as an optional query parameter
- *   on the existing GET /audit endpoint — cleaner than a separate URL.
- *
- * FIX A-7 — GET /audit/users/{userId} endpoint added.
- *   Allows ADMIN to query all actions targeting a specific user (USER_APPROVED,
- *   USER_REJECTED, ROLE_ASSIGNED, STAFF_ASSIGNED, etc.).
- *   Previously there was no server-side way to filter by target user.
- *
- * FIX A-9 — mapToDto() extracted to a private helper (preserved as-is).
- *   The mapping logic is correct and well-structured. A full MapStruct mapper
- *   would be the ideal final state but is out of scope for this audit cycle.
- *   The method is kept private to the controller for now — documented as
- *   a future improvement.
- *
- * Security:
- * - ADMIN:              All audit log endpoints
- * - ORGANIZER:          Their own event logs only (ownership enforced)
- * - Any authenticated:  Their own actions only (/me endpoint)
- */
 @RestController
 @RequestMapping("/api/v1/audit")
 @RequiredArgsConstructor
@@ -65,13 +31,6 @@ public class AuditController {
     private final AuditLogService auditLogService;
     private final AuthorizationService authorizationService;
 
-    /**
-     * All audit logs — ADMIN only.
-     *
-     * FIX A-6: Optional ?action= query parameter filters by AuditAction type.
-     * When action is null, returns all logs (existing behaviour).
-     * When action is provided (e.g. ?action=ROLE_ASSIGNED), filters in the DB.
-     */
     @GetMapping
     @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<Page<AuditLogDto>> getAllAuditLogs(
@@ -86,13 +45,6 @@ public class AuditController {
         return ResponseEntity.ok(auditLogService.findAll(pageable).map(this::mapToDto));
     }
 
-    /**
-     * Audit logs for a specific event.
-     *
-     * FIX A-5: ADMIN now allowed in addition to ORGANIZER.
-     * ORGANIZER still requires ownership check via requireOrganizerAccess().
-     * ADMIN bypasses ownership check — they can audit any event.
-     */
     @GetMapping("/events/{eventId}")
     @PreAuthorize("hasRole('ADMIN') or hasRole('ORGANIZER')")
     public ResponseEntity<Page<AuditLogDto>> getEventAuditLogs(
@@ -126,15 +78,6 @@ public class AuditController {
         return ResponseEntity.ok(auditLogService.findByActorId(userId, pageable).map(this::mapToDto));
     }
 
-    /**
-     * FIX A-7: All actions targeting a specific user — ADMIN only.
-     *
-     * Covers: USER_APPROVED, USER_REJECTED, ROLE_ASSIGNED, ROLE_REVOKED,
-     * STAFF_ASSIGNED, STAFF_REMOVED, ADMIN_ROLE_GRANTED_VIA_INVITE.
-     *
-     * Previously there was no server-side query for "what has been done TO user X".
-     * An admin investigating a user's history had to scroll all audit logs.
-     */
     @GetMapping("/users/{userId}")
     @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<Page<AuditLogDto>> getAuditLogsForUser(
@@ -145,11 +88,6 @@ public class AuditController {
         return ResponseEntity.ok(auditLogService.findByTargetUserId(userId, pageable).map(this::mapToDto));
     }
 
-    /**
-     * FIX A-9 note: mapToDto() kept as a private controller method for this cycle.
-     * Future improvement: extract to an AuditLogMapper (@Mapper) consistent with
-     * other mappers in the codebase (DiscountMapper, EventMapper, etc.).
-     */
     private AuditLogDto mapToDto(AuditLog auditLog) {
         return AuditLogDto.builder()
                 .id(auditLog.getId())

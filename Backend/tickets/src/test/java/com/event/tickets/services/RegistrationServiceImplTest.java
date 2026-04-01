@@ -140,7 +140,7 @@ class RegistrationServiceImplTest {
             request.setInviteCode("ABCD-EFGH-IJKL-MNOP");
 
             when(userRepository.existsByEmail(anyString())).thenReturn(false);
-            when(inviteCodeRepository.findByCode("ABCD-EFGH-IJKL-MNOP")).thenReturn(Optional.of(inviteCode));
+            when(inviteCodeRepository.findByCodeForUpdate("ABCD-EFGH-IJKL-MNOP")).thenReturn(Optional.of(inviteCode)); // BUG-T2 FIX: service calls findByCodeForUpdate(), not findByCode()
             when(keycloakAdminService.getUserIdByEmail(anyString())).thenReturn(null);
             when(keycloakAdminService.createUser(any(), any(), any())).thenReturn(keycloakUserId);
             doNothing().when(keycloakAdminService).assignRoleToUser(any(), any());
@@ -176,7 +176,7 @@ class RegistrationServiceImplTest {
             request.setInviteCode("ABCD-EFGH-IJKL-MNOP");
 
             when(userRepository.existsByEmail(anyString())).thenReturn(false);
-            when(inviteCodeRepository.findByCode("ABCD-EFGH-IJKL-MNOP")).thenReturn(Optional.of(inviteCode));
+            when(inviteCodeRepository.findByCodeForUpdate("ABCD-EFGH-IJKL-MNOP")).thenReturn(Optional.of(inviteCode)); // BUG-T2 FIX
             when(keycloakAdminService.getUserIdByEmail(anyString())).thenReturn(null);
             when(keycloakAdminService.createUser(any(), any(), any())).thenReturn(keycloakUserId);
             doNothing().when(keycloakAdminService).assignRoleToUser(any(), any());
@@ -208,7 +208,7 @@ class RegistrationServiceImplTest {
             request.setInviteCode("ABCD-EFGH-IJKL-MNOP");
 
             when(userRepository.existsByEmail(anyString())).thenReturn(false);
-            when(inviteCodeRepository.findByCode("ABCD-EFGH-IJKL-MNOP")).thenReturn(Optional.of(inviteCode));
+            when(inviteCodeRepository.findByCodeForUpdate("ABCD-EFGH-IJKL-MNOP")).thenReturn(Optional.of(inviteCode)); // BUG-T2 FIX
             when(keycloakAdminService.getUserIdByEmail(anyString())).thenReturn(null);
             when(keycloakAdminService.createUser(any(), any(), any())).thenReturn(keycloakUserId);
             doNothing().when(keycloakAdminService).assignRoleToUser(any(), any());

@@ -33,17 +33,6 @@ public class TicketValidationController {
     private final TicketValidationService ticketValidationService;
     private final TicketValidationMapper ticketValidationMapper;
 
-    /**
-     * H-03 FIX: @Valid added to @RequestBody.
-     *
-     * Previously had no @Valid, so TicketValidationRequestDto.method could be null.
-     * The routing logic TicketValidationMethod.MANUAL.equals(method) would NPE when
-     * method was null (the enum constant is non-null, but equals(null) on an enum
-     * does not NPE — however the else-branch would call validateTicketByQrCode with
-     * a null id, causing a different NPE or QrCodeNotFoundException with a null UUID).
-     * With @Valid, the @NotNull on method in the DTO is enforced before the controller
-     * body executes, returning HTTP 400 instead of an unhandled NPE.
-     */
     @PostMapping
     @PreAuthorize("hasRole('STAFF') or hasRole('ORGANIZER')")
     public ResponseEntity<TicketValidationResponseDto> validateTicket(

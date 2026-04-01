@@ -29,21 +29,6 @@ import static com.event.tickets.util.RequestUtil.extractClientIp;
 import static com.event.tickets.util.RequestUtil.extractUserAgent;
 import static com.event.tickets.util.RequestUtil.getCurrentRequest;
 
-/**
- * FIXES APPLIED IN THIS VERSION:
- *
- * FIX 1 — getCurrentRequest() private copy-paste removed.
- *   Replaced with static import of RequestUtil.getCurrentRequest().
- *   The two imports that supported the private helper
- *   (org.springframework.web.context.request.RequestContextHolder and
- *   org.springframework.web.context.request.ServletRequestAttributes) are removed.
- *   jakarta.servlet.http.HttpServletRequest is still needed as the parameter type
- *   passed to extractClientIp() / extractUserAgent().
- *
- * All prior fixes preserved:
- *   C-05/C-06 FIX: sanitizeForFilename uses sanitized.length() not input.length()
- *   H-12 FIX: BigDecimal.doubleValue() only at POI rendering boundary
- */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -227,12 +212,6 @@ public class ExportServiceImpl implements ExportService {
         return style;
     }
 
-    /**
-     * C-05/C-06 FIX: Capture the sanitized string FIRST, then apply substring
-     * on its actual length — not on input.length(). The regex operations can
-     * shorten the string (stripping special chars), so using input.length() as
-     * the upper bound caused SIOOBE whenever the sanitized result was shorter.
-     */
     private String sanitizeForFilename(String input) {
         if (input == null) return "unknown";
         String sanitized = input.toLowerCase()
@@ -244,7 +223,6 @@ public class ExportServiceImpl implements ExportService {
 
     private void auditSalesReportExport(UUID organizerId, UUID eventId) {
         try {
-            // FIX 1: RequestUtil.getCurrentRequest() — no more private copy-paste
             HttpServletRequest request = getCurrentRequest();
             User actor = userRepository.findById(organizerId)
                     .orElseGet(systemUserProvider::getSystemUser);

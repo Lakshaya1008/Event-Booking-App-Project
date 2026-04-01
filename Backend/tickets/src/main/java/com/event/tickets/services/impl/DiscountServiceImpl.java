@@ -24,37 +24,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/**
- * FIXES APPLIED IN THIS VERSION:
- *
- * FIX D-2 — @Transactional(timeout = 30) removed from deleteDiscount().
- *   BEFORE: deleteDiscount() had a 30-second transaction timeout. If the DB was slow,
- *   Spring threw TransactionTimedOutException which is NOT mapped in GlobalExceptionHandler
- *   — falling through to the catch-all 500. A simple single-row delete needs no explicit
- *   timeout; the connection pool's own timeout is sufficient.
- *   AFTER: @Transactional with no timeout. Consistent with every other write method.
- *
- * FIX D-3 — updateDiscount() post-sales guard now uses countDiscountedActiveByTicketTypeId().
- *   BEFORE: countActiveByTicketTypeId() counted ALL non-cancelled tickets regardless of
- *   whether a discount was applied. If an organizer sold 50 full-price tickets then added
- *   a discount, they could never change that discount's type or value — even though no
- *   ticket had ever benefited from it (discountApplied = 0 on all of them).
- *   AFTER: countDiscountedActiveByTicketTypeId() counts only tickets where discountApplied > 0.
- *   These are the tickets whose stored pricePaid/discountApplied would become inconsistent
- *   with the discount definition if the type or value changed. Full-price tickets are
- *   unaffected by discount definition changes and are no longer counted.
- *
- * FIX D-7 — active default logic deduplicated (minor cleanup).
- *   The @Builder.Default on Discount.active already sets it to true. The ternary in
- *   createDiscount() was redundant. The field is now set explicitly only when the caller
- *   provides a non-null value; otherwise the entity default takes over.
- *
- * Previously applied fixes preserved:
- *   FIX 1 — post-sales guard on updateDiscount() (type/value locked when tickets exist)
- *   FIX 2 — validFrom >= now guard on createDiscount() (no retroactive discounts)
- *   FIX 3 — TicketRepository injected for post-sales guard
- *   FIX #6 — existsActiveDiscountForTicketType() passes LocalDateTime.now() (in repo)
- */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -93,7 +62,6 @@ public class DiscountServiceImpl implements DiscountService {
                             "Only one active discount per ticket type is allowed.", ticketTypeId));
         }
 
-        // FIX D-7: set active only when caller provides it; entity @Builder.Default handles null → true
         boolean activeValue = request.getActive() != null ? request.getActive() : true;
 
         Discount discount = Discount.builder()
@@ -131,7 +99,6 @@ public class DiscountServiceImpl implements DiscountService {
                     String.format("Discount %s does not belong to ticket type %s", discountId, ticketTypeId));
         }
 
-        // FIX D-3: Check only tickets that had this discount applied (discountApplied > 0).
         // Full-price tickets (discountApplied = 0) are not affected by discount definition changes.
         boolean changingTypeOrValue =
                 !existing.getDiscountType().equals(request.getDiscountType()) ||
@@ -176,14 +143,6 @@ public class DiscountServiceImpl implements DiscountService {
 
     // ── DELETE ────────────────────────────────────────────────────────────────
 
-    /**
-     * FIX D-2: @Transactional(timeout = 30) removed.
-     *
-     * The 30-second timeout caused TransactionTimedOutException on slow DB calls.
-     * That exception is not handled in GlobalExceptionHandler and fell through to the
-     * catch-all 500. A single-row delete needs no explicit timeout — the JDBC connection
-     * pool's socket timeout is sufficient protection.
-     */
     @Override
     @Transactional
     public void deleteDiscount(UUID organizerId, UUID eventId, UUID ticketTypeId, UUID discountId) {
@@ -247,7 +206,6 @@ public class DiscountServiceImpl implements DiscountService {
         if (!request.getValidTo().isAfter(request.getValidFrom()))
             throw new InvalidInputException("Valid to date must be after valid from date");
 
-        // FIX 2: New discounts must start in the future — no retroactive discounts
         if (enforceValidFromFuture && request.getValidFrom().isBefore(LocalDateTime.now())) {
             throw new InvalidInputException(
                     "Valid from date must be in the future for new discounts. " +

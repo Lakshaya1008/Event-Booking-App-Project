@@ -11,5 +11,4 @@ public final class JwtUtil {
     return UUID.fromString(jwt.getSubject());
   }
 
-
 }

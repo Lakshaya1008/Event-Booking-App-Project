@@ -259,18 +259,16 @@ class TicketValidationServiceImplTest {
         @Test
         @DisplayName("second scan on PURCHASED ticket with prior VALID validation → INVALID result, no status change")
         void purchasedWithPriorValidScan_producesInvalid() {
-            // Ticket still shows PURCHASED (status hasn't been flushed to DB yet in concurrent scenario)
-            // but already has a VALID validation in the list
-            TicketValidation priorScan = new TicketValidation();
-            priorScan.setId(UUID.randomUUID());
-            priorScan.setStatus(TicketValidationStatusEnum.VALID);
-            purchasedTicket.setValidations(new ArrayList<>(List.of(priorScan)));
-            // status still PURCHASED (concurrent edge case)
+            // Ticket still shows PURCHASED (concurrent edge case where status hasn't been flushed yet)
             purchasedTicket.setStatus(TicketStatusEnum.PURCHASED);
 
             when(userRepository.findById(validatorId)).thenReturn(Optional.of(validator));
             when(ticketRepository.findById(ticketId)).thenReturn(Optional.of(purchasedTicket));
             doNothing().when(authorizationService).requireOrganizerOrStaffAccess(validatorId, event);
+            // FIX: service calls existsByTicketIdAndStatus() — NOT ticket.getValidations().
+            // Stub the repository method to simulate a prior VALID scan already in the DB.
+            when(ticketValidationRepository.existsByTicketIdAndStatus(ticketId, TicketValidationStatusEnum.VALID))
+                    .thenReturn(true);
             when(ticketValidationRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
             TicketValidation result = service.validateTicketManually(validatorId, ticketId);
@@ -278,7 +276,7 @@ class TicketValidationServiceImplTest {
             // Result is INVALID — duplicate scan
             assertThat(result.getStatus()).isEqualTo(TicketValidationStatusEnum.INVALID);
 
-            // Ticket.status NOT changed on duplicate scan
+            // Ticket.status NOT changed on duplicate scan — only save() via ticketRepository should NOT be called
             verify(ticketRepository, never()).save(any());
         }
 
