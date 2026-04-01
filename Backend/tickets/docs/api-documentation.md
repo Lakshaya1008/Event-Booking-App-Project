@@ -241,14 +241,14 @@ Everything else requires authentication and may also require approval-gate pass.
   - `name` (`@NotBlank`, size 2..100)
 
 - `RejectReasonDto`
-  - `reason` (`@NotBlank`, size 10..500)
+  - `reason` (`@NotBlank`, size 3..500)
 
 - `AssignRoleRequestDto`
   - `roleName` (`@NotBlank`, pattern `ADMIN|ORGANIZER|ATTENDEE|STAFF`)
 
 - `CreateEventRequestDto`
   - `name` required max 200
-  - `start`, `end`
+  - `start`, `end` required
   - `venue` required max 500
   - `salesStart`, `salesEnd`
   - `status` required
@@ -258,7 +258,7 @@ Everything else requires authentication and may also require approval-gate pass.
 - `UpdateEventRequestDto`
   - `id` optional (path is source of truth)
   - `name` required max 200
-  - `start`, `end`
+  - `start`, `end` required
   - `venue` required max 500
   - `salesStart`, `salesEnd`
   - `status` required
@@ -269,7 +269,7 @@ Everything else requires authentication and may also require approval-gate pass.
   - `name` required
   - `price` required, decimal >= 0.00
   - `description`
-  - `totalAvailable` required, min 1
+  - `totalAvailable` optional, min 1 (null means unlimited)
 
 - `UpdateTicketTypeRequestDto`
   - `id` optional
@@ -284,7 +284,7 @@ Everything else requires authentication and may also require approval-gate pass.
 - `CreateDiscountRequestDto`
   - `discountType` required
   - `value` required, decimal >= 0.01
-  - `validFrom` required, present/future
+  - `validFrom` required
   - `validTo` required, future
   - `active` optional
   - `description` optional
@@ -295,7 +295,7 @@ Everything else requires authentication and may also require approval-gate pass.
 - `GenerateInviteCodeRequestDto`
   - `roleName` required, pattern `ADMIN|ORGANIZER|ATTENDEE|STAFF`
   - `eventId` optional (business rule dependent on role)
-  - `expirationHours` required positive
+  - `expirationHours` required positive, max 8760
 
 - `RedeemInviteCodeRequestDto`
   - `code` required non-blank
@@ -395,7 +395,7 @@ From `GlobalExceptionHandler` + security handlers + controller behavior.
 - `405 METHOD_NOT_ALLOWED`
   - wrong HTTP method
 - `409 CONFLICT`
-  - business-state violations, invalid approval transition, delete-not-allowed, discount exists, data integrity, duplicate email, keycloak creation conflict
+  - business-state violations, invalid approval transition, delete-not-allowed, discount exists, data integrity, duplicate email, keycloak creation conflict, concurrent modification (optimistic locking)
 - `422 UNPROCESSABLE_ENTITY`
   - registration flow failure (`RegistrationException`)
 - `500 INTERNAL_SERVER_ERROR`

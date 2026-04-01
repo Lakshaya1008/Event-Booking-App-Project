@@ -703,7 +703,7 @@ Base URL: `http://localhost:8081`
 - `403` role denied or approval gate blocked
 - `404` resource not found / endpoint not found
 - `405` method not allowed
-- `409` business-state conflicts / data integrity / duplicate email
+- `409` business-state conflicts / data integrity / duplicate email / concurrent modification
 - `422` registration flow failed
 - `500` unexpected or dependency failures
 

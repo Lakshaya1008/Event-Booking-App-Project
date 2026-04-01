@@ -11,7 +11,13 @@ Generated from source code inspection (controllers/services/repositories/entitie
 - Repositories: **9**
 - Entities/enums: **18**
 - DTOs: **39**
+- Domain Requests: **4**
+- Exceptions: **26**
+- Schedulers: **1**
 - Mappers: **5**
+- Filters: **2**
+- Configs: **12**
+- Utilities: **4**
 - Main test files: **19**
 
 ---
@@ -537,3 +543,36 @@ Generated from source code inspection (controllers/services/repositories/entitie
 - `src/test/java/com/event/tickets/services/TicketTypeServiceImplTest.java`
 - `src/test/java/com/event/tickets/services/TicketValidationServiceImplTest.java`
 
+### Exceptions (26)
+- `src/main/java/com/event/tickets/exceptions/DiscountAlreadyExistsException.java`
+- `src/main/java/com/event/tickets/exceptions/DiscountNotFoundException.java`
+- `src/main/java/com/event/tickets/exceptions/EmailAlreadyInUseException.java`
+- `src/main/java/com/event/tickets/exceptions/EventNotFoundException.java`
+- `src/main/java/com/event/tickets/exceptions/EventTicketException.java`
+- `src/main/java/com/event/tickets/exceptions/EventUpdateException.java`
+- `src/main/java/com/event/tickets/exceptions/InvalidApprovalStateException.java`
+- `src/main/java/com/event/tickets/exceptions/InvalidBusinessStateException.java`
+- `src/main/java/com/event/tickets/exceptions/InvalidInputException.java`
+- `src/main/java/com/event/tickets/exceptions/InvalidInviteCodeException.java`
+- `src/main/java/com/event/tickets/exceptions/InviteCodeNotFoundException.java`
+- `src/main/java/com/event/tickets/exceptions/KeycloakOperationException.java`
+- `src/main/java/com/event/tickets/exceptions/KeycloakRoleAssignmentException.java`
+- `src/main/java/com/event/tickets/exceptions/KeycloakUserCreationException.java`
+- `src/main/java/com/event/tickets/exceptions/KeycloakUserDeletionException.java`
+- `src/main/java/com/event/tickets/exceptions/KeycloakUserUpdateException.java`
+- `src/main/java/com/event/tickets/exceptions/QrCodeGenerationException.java`
+- `src/main/java/com/event/tickets/exceptions/QrCodeNotFoundException.java`
+- `src/main/java/com/event/tickets/exceptions/RegistrationException.java`
+- `src/main/java/com/event/tickets/exceptions/ReportGenerationException.java`
+- `src/main/java/com/event/tickets/exceptions/SystemUserNotFoundException.java`
+- `src/main/java/com/event/tickets/exceptions/TicketNotFoundException.java`
+- `src/main/java/com/event/tickets/exceptions/TicketTypeDeleteNotAllowedException.java`
+- `src/main/java/com/event/tickets/exceptions/TicketTypeNotFoundException.java`
+- `src/main/java/com/event/tickets/exceptions/TicketsSoldOutException.java`
+- `src/main/java/com/event/tickets/exceptions/UserNotFoundException.java`
+
+### Schedulers (1)
+- `src/main/java/com/event/tickets/scheduler/InviteCodeExpiryScheduler.java`
+
+### Main Class (1)
+- `src/main/java/com/event/tickets/EventBookingAppApplication.java`

@@ -10,24 +10,29 @@
 -- Every QR code download silently failed.
 --
 -- FIX STEPS:
--- 1. Alter the column type to TEXT (unbounded in PostgreSQL).
--- 2. Mark all existing QrCode rows as EXPIRED -- their stored values are truncated
---    and therefore invalid base64. They will be regenerated on next access.
---    (QrCodeServiceImpl.getActiveQrCodeForTicket() will find no ACTIVE code and
---    throw QrCodeNotFoundException -- the caller should then re-generate via
---    POST /tickets/{id}/qr-codes which calls generateQrCode() again.)
--- 3. Optionally: a backfill job can regenerate all expired QR codes automatically.
---    That is out of scope for this migration -- operational decision.
+-- 1. Rename qr_code_data to qr_value if necessary.
+-- 2. Alter the column type to TEXT (unbounded in PostgreSQL).
+-- 3. Mark all existing QrCode rows as EXPIRED if the status column exists.
 --
 -- ROLLBACK:
 -- Reverting to VARCHAR(1000) would re-introduce the truncation bug.
 -- There is no safe rollback -- keep TEXT.
 
-ALTER TABLE qr_codes ALTER COLUMN qr_value TYPE TEXT;
+DO $$
+BEGIN
+    -- Rename column if it exists as qr_code_data
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='qr_codes' AND column_name='qr_code_data') THEN
+        ALTER TABLE qr_codes RENAME COLUMN qr_code_data TO qr_value;
+    END IF;
 
--- Mark existing rows as EXPIRED -- their stored base64 is truncated and invalid.
--- New purchases will generate fresh QrCode records with correct values.
-UPDATE qr_codes SET status = 'EXPIRED' WHERE status = 'ACTIVE';
+    -- Alter column type to TEXT
+    ALTER TABLE qr_codes ALTER COLUMN qr_value TYPE TEXT;
+
+    -- Mark existing rows as EXPIRED if status column exists
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='qr_codes' AND column_name='status') THEN
+        UPDATE qr_codes SET status = 'EXPIRED' WHERE status = 'ACTIVE';
+    END IF;
+END $$;
 
 COMMENT ON COLUMN qr_codes.qr_value IS
     'Base64-encoded PNG of the QR code image. '
