@@ -3,7 +3,7 @@ package com.event.tickets.filters;
 import com.event.tickets.domain.entities.ApprovalStatus;
 import com.event.tickets.domain.entities.User;
 import com.event.tickets.repositories.UserRepository;
-import com.event.tickets.services.impl.KeycloakAdminServiceImpl;
+import com.event.tickets.services.KeycloakAdminService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -28,7 +28,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class ApprovalGateFilter extends OncePerRequestFilter {
 
     private final UserRepository userRepository;
-    private final KeycloakAdminServiceImpl keycloakAdminService;
+    private final KeycloakAdminService keycloakAdminService;
     private final ObjectMapper objectMapper;
 
     @Override

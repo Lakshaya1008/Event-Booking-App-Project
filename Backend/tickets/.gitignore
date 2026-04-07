@@ -42,6 +42,7 @@ application-local.properties
 **/application-local.yml
 
 # Environment variable files - all variants blocked
+.env
 postman/.env
 .env.local
 .env.*

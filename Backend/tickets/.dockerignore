@@ -1,0 +1,13 @@
+target/
+.git/
+.gitignore
+.idea/
+*.iml
+*.log
+logs/
+*.md
+*.zip
+*.py
+application-local.properties
+.env
+
